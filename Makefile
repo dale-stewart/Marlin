@@ -54,6 +54,7 @@ help:
 	@echo "make unit-test-single-local    : Run unit tests for a single config locally"
 	@echo "make unit-test-single-local-docker : Run unit tests for a single config locally, using docker"
 	@echo "make unit-test-all-local       : Run all code tests locally"
+	@echo "make unit-test-coverage        : Run one config's unit tests with gcov, report coverage"
 	@echo "make unit-test-all-local-docker : Run all code tests locally, using docker"
 	@echo "make setup-local-docker        : Setup local docker"
 	@echo ""
@@ -121,6 +122,19 @@ unit-test-single-local-docker:
 
 unit-test-all-local:
 	platformio run -t test-marlin -e linux_native_test
+
+COVERAGE_DIR ?= .pio/coverage
+
+unit-test-coverage:
+	@command -v gcovr >/dev/null || (echo 'gcovr is not installed. Install it with "uv tool install gcovr" or "pipx install gcovr"' && exit 1)
+	rm -rf .pio/build/linux_native_coverage $(COVERAGE_DIR)
+	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e linux_native_coverage
+	@mkdir -p $(COVERAGE_DIR)/html
+	gcovr -r . .pio/build/linux_native_coverage \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' \
+	  --txt $(COVERAGE_DIR)/summary.txt --print-summary \
+	  --html-details $(COVERAGE_DIR)/html/index.html
+	@echo "HTML report: $(COVERAGE_DIR)/html/index.html"
 
 unit-test-all-local-docker:
 	@if ! $(CONTAINER_RT_BIN) images -q $(CONTAINER_IMAGE) > /dev/null ; then $(MAKE) setup-local-docker ; fi
