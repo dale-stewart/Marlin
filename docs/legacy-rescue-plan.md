@@ -91,6 +91,16 @@ of it and Phase 4 finishes the rest.
 
 **Milestone:** the first blocked surface change becomes unblocked.
 
+**Also due in this phase: re-frame `parser.feature`.** It was written before the rule
+above and is scoped to one module — "the host sends `M104 S200`, the printer understands
+the command M104". That is closer to an outcome than to a `parser.parse()` call, and
+G-code is genuinely the host's vocabulary, but it is still a feature file about a single
+file. Once the G-code handlers are rescued the parser has real callers to sit behind, and
+its scenarios should be folded into system-level features — setting a target temperature,
+running a file from the host — with the parser exercised inside them rather than
+described on its own. Coverage of `parser.cpp` should then come largely through those
+features, with its edge cases staying in unit tests.
+
 ## Phase 3 — Core modules
 
 | Target | Uncovered lines | Commits in 2 years |

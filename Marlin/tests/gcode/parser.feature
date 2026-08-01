@@ -1,3 +1,11 @@
+# NOTE: this feature is scoped to one module, which is not where scenarios belong.
+# It predates the rule that scenarios describe user-facing features and utilities are
+# exercised through them. Once the G-code handlers are under test (Phase 2 of
+# docs/legacy-rescue-plan.md) these scenarios should be folded into system-level
+# features — setting a target temperature, running a file from the host — with the
+# parser exercised inside them. Until then it stays as the safety net that made the
+# parse() restructuring safe.
+
 Feature: Understanding a command line sent by the host
 
   A host sends the printer one line of G-code at a time. Before anything can move
