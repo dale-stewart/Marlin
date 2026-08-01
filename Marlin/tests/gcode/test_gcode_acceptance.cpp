@@ -56,8 +56,14 @@ namespace {
     TEST_ASSERT_EQUAL(atoi(expected + 1), parser.codenum);
   }
 
+  // Refusing a line means nothing of it — or of the line before it — is remembered.
   void the_printer_refuses_the_command() {
     TEST_ASSERT_EQUAL('?', parser.command_letter);
+    TEST_ASSERT_EQUAL(0, parser.codenum);
+  }
+
+  void no_parameters_are_remembered() {
+    for (char c = 'A'; c <= 'Z'; c++) TEST_ASSERT_FALSE(parser.seen(c));
   }
 
   void the_value_of_is(const char param, const float expected) {
@@ -121,13 +127,19 @@ MARLIN_TEST(gcode_acceptance, a_line_protected_by_a_checksum) {
 }
 
 MARLIN_TEST(gcode_acceptance, spacing_does_not_change_the_meaning_of_a_line) {
-  const char * const lines[] = { "G0 X10", "G0   X10", "G0 X 10", "G0X10", "   G0 X10" };
+  const char * const lines[] = { "G0 X10", "G0   X10", "G0 X 10", "G0X10", "   G0 X10", "G0 X10   Y20" };
   for (const char * const line : lines) {
     the_printer_is_waiting_for_a_command();
     the_host_sends(line);
     the_printer_understands_the_command("G0");
     the_value_of_is('X', 10);
   }
+
+  // The same tolerance applies between a command letter and its number.
+  the_printer_is_waiting_for_a_command();
+  the_host_sends("M  104 S200 X10");
+  the_printer_understands_the_command("M104");
+  the_value_of_is('X', 10);
 }
 
 MARLIN_TEST(gcode_acceptance, negative_and_fractional_coordinates) {
@@ -191,4 +203,23 @@ MARLIN_TEST(gcode_acceptance, a_parameter_that_is_not_a_letter_is_taken_as_the_m
   the_host_sends("M33 !/path/to/file.g#");
   the_printer_understands_the_command("M33");
   the_message_is("!/path/to/file.g#");
+}
+
+MARLIN_TEST(gcode_acceptance, the_message_form_belongs_to_the_command_not_its_number) {
+  the_printer_is_waiting_for_a_command();
+  the_host_sends("G118 X10");
+  the_printer_understands_the_command("G118");
+  the_value_of_is('X', 10);
+  there_is_no_message();
+}
+
+MARLIN_TEST(gcode_acceptance, a_refused_line_does_not_leave_the_previous_values_in_place) {
+  the_printer_is_waiting_for_a_command();
+  the_host_sends("M104 S200");
+  the_value_of_is('S', 200);
+
+  the_host_sends("");
+  the_printer_refuses_the_command();
+  no_value_was_given_for('S');
+  no_parameters_are_remembered();
 }

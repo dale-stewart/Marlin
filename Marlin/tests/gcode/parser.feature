@@ -47,6 +47,8 @@ Feature: Understanding a command line sent by the host
       | G0 X 10        |
       | G0X10          |
       |    G0 X10      |
+      | M  104 S200 X10 |
+      | G0 X10   Y20   |
 
   Scenario: Negative and fractional coordinates
     When the host sends "G0 X-10.5 Y20.25"
@@ -88,6 +90,19 @@ Feature: Understanding a command line sent by the host
     When the host sends "M33 !/path/to/file.g#"
     Then the printer understands the command "M33"
     And the message is "!/path/to/file.g#"
+
+  Scenario: The message form belongs to the command, not to its number
+    When the host sends "G118 X10"
+    Then the printer understands the command "G118"
+    And the value of "X" is 10
+    And there is no message
+
+  Scenario: A refused line does not leave the previous command's values in place
+    Given the host has already sent "M104 S200"
+    When the host sends ""
+    Then the printer refuses the command
+    And no value was given for "S"
+    And no parameters are remembered
 
   Scenario: A refused line does not leave the previous command in place
     Given the host has already sent "M118 Hello"
