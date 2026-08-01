@@ -34,6 +34,7 @@
 #include "src/module/motion.h"
 #include "src/module/planner.h"
 #include "src/module/temperature.h"
+#include "src/gcode/queue.h"
 #include <string.h>
 
 namespace {
@@ -191,4 +192,117 @@ MARLIN_TEST(gcode_commands, an_unknown_command_changes_nothing) {
   TEST_ASSERT_EQUAL(123, motion.feedrate_percentage);
 
   motion.feedrate_percentage = was;
+}
+
+MARLIN_TEST(gcode_commands, M92_sets_steps_per_mm) {
+  const float was_x = planner.settings.axis_steps_per_mm[X_AXIS],
+              was_y = planner.settings.axis_steps_per_mm[Y_AXIS];
+
+  host_sends("M92 X100 Y200");
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, planner.settings.axis_steps_per_mm[X_AXIS]);
+  TEST_ASSERT_EQUAL_FLOAT(200.0f, planner.settings.axis_steps_per_mm[Y_AXIS]);
+
+  // An axis that is not mentioned keeps its value.
+  host_sends("M92 X80");
+  TEST_ASSERT_EQUAL_FLOAT(80.0f, planner.settings.axis_steps_per_mm[X_AXIS]);
+  TEST_ASSERT_EQUAL_FLOAT(200.0f, planner.settings.axis_steps_per_mm[Y_AXIS]);
+
+  planner.settings.axis_steps_per_mm[X_AXIS] = was_x;
+  planner.settings.axis_steps_per_mm[Y_AXIS] = was_y;
+}
+
+MARLIN_TEST(gcode_commands, M203_sets_max_feedrate) {
+  const float was = planner.settings.max_feedrate_mm_s[X_AXIS];
+
+  host_sends("M203 X250");
+  TEST_ASSERT_EQUAL_FLOAT(250.0f, planner.settings.max_feedrate_mm_s[X_AXIS]);
+
+  host_sends("M203 X300");
+  TEST_ASSERT_EQUAL_FLOAT(300.0f, planner.settings.max_feedrate_mm_s[X_AXIS]);
+
+  planner.settings.max_feedrate_mm_s[X_AXIS] = was;
+}
+
+MARLIN_TEST(gcode_commands, M201_sets_max_acceleration) {
+  const uint32_t was = planner.settings.max_acceleration_mm_per_s2[X_AXIS];
+
+  host_sends("M201 X1500");
+  TEST_ASSERT_EQUAL(1500, planner.settings.max_acceleration_mm_per_s2[X_AXIS]);
+
+  planner.settings.max_acceleration_mm_per_s2[X_AXIS] = was;
+}
+
+MARLIN_TEST(gcode_commands, M204_sets_accelerations) {
+  const float was_p = planner.settings.acceleration,
+              was_r = planner.settings.retract_acceleration,
+              was_t = planner.settings.travel_acceleration;
+
+  host_sends("M204 P500 R1000 T2000");
+  TEST_ASSERT_EQUAL_FLOAT(500.0f, planner.settings.acceleration);
+  TEST_ASSERT_EQUAL_FLOAT(1000.0f, planner.settings.retract_acceleration);
+  TEST_ASSERT_EQUAL_FLOAT(2000.0f, planner.settings.travel_acceleration);
+
+  planner.settings.acceleration = was_p;
+  planner.settings.retract_acceleration = was_r;
+  planner.settings.travel_acceleration = was_t;
+}
+
+MARLIN_TEST(gcode_commands, M205_sets_minimum_feedrates) {
+  const float was_s = planner.settings.min_feedrate_mm_s,
+              was_t = planner.settings.min_travel_feedrate_mm_s;
+
+  host_sends("M205 S10 T5");
+  TEST_ASSERT_EQUAL_FLOAT(10.0f, planner.settings.min_feedrate_mm_s);
+  TEST_ASSERT_EQUAL_FLOAT(5.0f, planner.settings.min_travel_feedrate_mm_s);
+
+  planner.settings.min_feedrate_mm_s = was_s;
+  planner.settings.min_travel_feedrate_mm_s = was_t;
+}
+
+MARLIN_TEST(gcode_commands, M206_sets_the_home_offset) {
+  const float was = motion.home_offset.x;
+
+  host_sends("M206 X5");
+  TEST_ASSERT_EQUAL_FLOAT(5.0f, motion.home_offset.x);
+
+  host_sends("M206 X-2.5");
+  TEST_ASSERT_EQUAL_FLOAT(-2.5f, motion.home_offset.x);
+
+  motion.set_home_offset(X_AXIS, was);
+}
+
+// M428 sets the home offset from the current position, so the current spot becomes the
+// new origin.
+MARLIN_TEST(gcode_commands, M110_sets_the_line_number) {
+  host_sends("M110 N42");
+  TEST_ASSERT_EQUAL(42, queue.get_current_line_number());
+
+  host_sends("M110 N0");
+  TEST_ASSERT_EQUAL(0, queue.get_current_line_number());
+
+  // A line number arriving with the command is itself recorded.
+  host_sends("N7 M110 N7");
+  TEST_ASSERT_EQUAL(7, queue.get_current_line_number());
+}
+
+// G92 does not move the machine: it makes the spot the tool is already at read as the
+// given coordinate, by shifting the workspace. The native position is untouched, so a
+// subsequent move goes where the new coordinate system says.
+MARLIN_TEST(gcode_commands, G92_shifts_the_workspace_not_the_machine) {
+  const float was_native = motion.position.x;
+  const float was_offset = TERN0(HAS_WORKSPACE_OFFSET, motion.workspace_offset.x);
+
+  host_sends("G92 X10");
+  TEST_ASSERT_EQUAL_FLOAT(was_native, motion.position.x);        // machine has not moved
+  #if HAS_WORKSPACE_OFFSET
+    // The offset now maps this native spot to logical X10.
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, motion.position.asLogical().x);
+  #endif
+
+  host_sends("G92 X0");
+  TEST_ASSERT_EQUAL_FLOAT(was_native, motion.position.x);
+  #if HAS_WORKSPACE_OFFSET
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, motion.position.asLogical().x);
+    motion.workspace_offset.x = was_offset;
+  #endif
 }
