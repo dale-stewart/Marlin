@@ -118,6 +118,12 @@ global-state correction becomes legal exactly when they are covered. `parser.h` 
 fan-in of 59 files, about 30 of which are in the compiled set, so this phase clears most
 of it and Phase 4 finishes the rest.
 
+**Prerequisite found while starting this phase:** any command that reports to serial
+hangs the test binary, because the native HAL busy-waits on a 128-byte transmit buffer
+that nothing drains outside the simulator. Tests that dispatch commands must mark the
+port as having no host attached; see `CLAUDE.md`. This affects every target in this
+phase, not just the reporting ones — most handlers report when called with no arguments.
+
 **Milestone:** the first blocked surface change becomes unblocked.
 
 **Also due in this phase: re-frame `parser.feature`.** It was written before the rule

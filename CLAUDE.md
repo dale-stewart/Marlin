@@ -101,6 +101,15 @@ is blocked by PEP 668 on this machine).
 - **`pio run -t compiledb` must come before the test build.** `preflight-checks.py`
   deletes `M115.o` and `Warnings.o` on every build to refresh their timestamps; running
   compiledb afterwards leaves them missing and the link fails on undefined references.
+- **Serial output hangs the unit test binary.** `HAL/LINUX/include/serial.h` implements
+  `write()` as `while (!transmit_buffer.free());` over a 128-byte buffer. The simulator
+  drains that buffer from its UI; the test binary has nothing draining it, so the first
+  report that overflows it spins forever — the symptom is a test that passes and then
+  the run never finishes. Any test that dispatches a G-code command must mark the port
+  as having no host attached for the duration (`MYSERIAL1.host_connected = false`), which
+  makes `write()` return immediately. See the `NoHostAttached` helper in
+  `Marlin/tests/gcode/test_gcode_commands.cpp`. Draining afterwards does not work: the
+  spin happens part-way through a single report.
 - **Object link order matters.** Linking the test binary with a sorted object list
   segfaults on start, while discovery order works — a latent static-initialisation-order
   dependency. Capture the working order once and validate with a baseline run.
