@@ -82,11 +82,30 @@ be far below the coverage number, and treat that gap as the real backlog.
   normal runtime to catch infinite loops.
 - Record: mutants generated, killed, survived, timed out, and not-covered.
 
-**Validate the harness before trusting any score.** Hand-inject an obvious fault and
-confirm the suite fails with a non-zero exit. A harness that silently fails to rebuild,
-or a tool whose mutants never reach the binary, reports a perfect score on no evidence.
-Pick a fault the tests must catch — an off-by-one in a value the tests assert on, not
-one that is arithmetically inert for the inputs they use.
+**Validate the harness before trusting any score — every harness, every time.** Hand-inject
+an obvious fault and confirm the suite fails with a non-zero exit. A harness that silently
+fails to rebuild, or a tool whose mutants never reach the binary, reports a perfect score on
+no evidence. Pick a fault the tests must catch — an off-by-one in a value the tests assert
+on, not one that is arithmetically inert for the inputs they use. A second runner, a new
+environment, or a changed test scope is a **new** harness and needs its own validation.
+
+Build these two checks into the runner itself rather than relying on discipline:
+
+- **A baseline gate.** Run the unmutated suite first and refuse to start unless it is
+  green. Without it, anything that breaks the build scores every mutant as killed.
+- **Honest failure classification.** Distinguish "the tests failed" from "the build
+  failed" by a signal that actually differs between them. Test runners often print a
+  summary line on build errors too, so the presence of output is not proof a test ran.
+
+**Pin the build configuration for the whole run.** If the project's test tooling rewrites
+config, checks out files, or restores a default (Marlin's `restore_configs` does all
+three), a mutation run started afterward silently measures a broken build. Re-apply the
+configuration immediately before the run and do not interleave other build targets while
+it is in flight.
+
+**Sanity-check the arithmetic.** A score at or above 100%, or a survivor count of zero
+where equivalent mutants are known to exist, means the harness is broken — not that the
+suite is perfect.
 
 **Timebox tool selection, and abort on toolchain contagion.** Compile-time instrumenters
 (IR plugins, coverage-style passes) require *their* compiler across every translation
@@ -183,6 +202,29 @@ Exit gate: acceptance-only coverage and mutation results meet the step 5 bar.
 Only once step 7 passes. The acceptance suite is the safety net; keep it green and
 unmodified throughout — if a refactor requires changing a scenario, the refactor
 changed behavior.
+
+### The test frontier bounds the blast radius
+
+**Refactor freely inside the target. Do not change its public surface until the code
+that calls it is itself covered and mutation tested.** Editing hundreds of untested
+call sites is refactoring untested code at one remove — the same mistake the whole
+workflow exists to prevent, just displaced onto the consumers.
+
+This is what makes cross-cutting corrections — removing global mutable state, undoing
+a singleton, replacing a leaky type that appears in a thousand signatures — a
+**sequenced migration**, not a refactor:
+
+1. Rescue the target. Refactor its internals behind the existing API.
+2. Record the surface change you want as a tracked follow-on, blocked and stated
+   plainly, with the reason it is blocked.
+3. Rescue each consumer through the same workflow.
+4. Only when a consumer is covered may its calls move to the new surface.
+5. Change the surface when the last consumer is ready, or introduce the new API
+   alongside the old and retire the old as consumers arrive.
+
+Do not let a blocked surface change become an argument for skipping the cover-first
+rule "just this once." The ordering is what makes the correction safe; the correction
+is still wanted, and saying so in the follow-on note keeps it from being forgotten.
 
 Work in small, individually reverting commits, in this order:
 
