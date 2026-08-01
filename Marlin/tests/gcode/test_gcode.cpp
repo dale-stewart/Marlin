@@ -138,3 +138,115 @@ MARLIN_TEST(gcode, parse_bang_not_special_for_other_commands) {
   TEST_ASSERT_EQUAL(33, parser.codenum);
   TEST_ASSERT_EQUAL_STRING("!/path/to/file.g#", parser.string_arg);
 }
+
+// Leading spaces before the command letter are skipped.
+MARLIN_TEST(gcode, parse_leading_spaces) {
+  char current_command[] = "   G0 X10";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('G', parser.command_letter);
+  TEST_ASSERT_EQUAL(0, parser.codenum);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+}
+
+// A multi-digit line number, and spaces after it, are skipped before the command.
+MARLIN_TEST(gcode, parse_line_number_then_spaces) {
+  char current_command[] = "N1234   M104 S200";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('M', parser.command_letter);
+  TEST_ASSERT_EQUAL(104, parser.codenum);
+  TEST_ASSERT_TRUE(parser.seenval('S'));
+  TEST_ASSERT_EQUAL(200, parser.value_int());
+}
+
+// 'N' is only a line number when followed by a digit.
+MARLIN_TEST(gcode, parse_n_without_number_is_not_a_line_number) {
+  char current_command[] = "NG0 X10";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('?', parser.command_letter);
+}
+
+// Spaces are allowed between the command letter and its code number.
+MARLIN_TEST(gcode, parse_space_between_letter_and_codenum) {
+  char current_command[] = "M  104 S200";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('M', parser.command_letter);
+  TEST_ASSERT_EQUAL(104, parser.codenum);
+}
+
+// A command letter with no code number is rejected.
+MARLIN_TEST(gcode, parse_letter_without_codenum_is_rejected) {
+  char current_command[] = "GX10";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('?', parser.command_letter);
+  TEST_ASSERT_FALSE(parser.seen('X'));
+}
+
+// A letter that is not G, M or T is not a command.
+MARLIN_TEST(gcode, parse_unknown_command_letter_is_rejected) {
+  char current_command[] = "Q1 X10";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('?', parser.command_letter);
+}
+
+// M118 takes the rest of the line as its string argument.
+MARLIN_TEST(gcode, parse_m118_takes_whole_line_as_string) {
+  char current_command[] = "M118 Hello World";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('M', parser.command_letter);
+  TEST_ASSERT_EQUAL(118, parser.codenum);
+  TEST_ASSERT_EQUAL_STRING("Hello World", parser.string_arg);
+}
+
+// The whole-line string argument is specific to the M code, not the number.
+MARLIN_TEST(gcode, parse_g118_does_not_take_whole_line) {
+  char current_command[] = "G118 X10";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('G', parser.command_letter);
+  TEST_ASSERT_EQUAL(118, parser.codenum);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+  TEST_ASSERT_EQUAL(10, parser.value_int());
+}
+
+// Parameters packed together with no separators are each found with their values.
+MARLIN_TEST(gcode, parse_packed_params) {
+  char current_command[] = "G0X10Y-20Z30.5";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+  TEST_ASSERT_EQUAL(10, parser.value_int());
+  TEST_ASSERT_TRUE(parser.seenval('Y'));
+  TEST_ASSERT_EQUAL(-20, parser.value_int());
+  TEST_ASSERT_TRUE(parser.seenval('Z'));
+  TEST_ASSERT_EQUAL_FLOAT(30.5f, parser.value_float());
+}
+
+// Parsing a line with no command clears the state left by the previous command.
+MARLIN_TEST(gcode, parse_empty_line_resets_state) {
+  char previous_command[] = "M118 Hello";
+  parser.parse(previous_command);
+  TEST_ASSERT_EQUAL(118, parser.codenum);
+  TEST_ASSERT_TRUE(parser.has_string());
+
+  char current_command[] = "";
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('?', parser.command_letter);
+  TEST_ASSERT_EQUAL(0, parser.codenum);
+  TEST_ASSERT_FALSE(parser.has_string());
+}
