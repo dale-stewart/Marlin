@@ -241,6 +241,10 @@ def main():
     ap.add_argument('--results', default='.pio/mutation/results.json')
     ap.add_argument('--rerun-survivors', metavar='RESULTS',
                     help='re-run only the survivors from a previous results file')
+    ap.add_argument('--fail-on-survivors', action='store_true',
+                    help='exit non-zero if any mutant survived (for CI gating); by default '
+                         'a completed run exits 0 and survivors are reported, since finding '
+                         'them is the normal outcome mid-rescue')
     args = ap.parse_args()
 
     target = args.target
@@ -301,7 +305,7 @@ def main():
     out.write_text(json.dumps(results, indent=1))
     counts = report(results, total_generated)
     print(f"\n  results: {args.results}")
-    return 1 if counts[SURVIVED] else 0
+    return 1 if (args.fail_on_survivors and counts[SURVIVED]) else 0
 
 
 if __name__ == '__main__':
