@@ -313,3 +313,26 @@ MARLIN_TEST(gcode, parse_signed_decimal_values) {
   TEST_ASSERT_TRUE(parser.seenval('Z'));
   TEST_ASSERT_EQUAL_FLOAT(-3.0f, parser.value_float());
 }
+
+// A checksum ('*' and the digits after it) is stripped, along with any spaces
+// before it, so the last parameter parses normally.
+MARLIN_TEST(gcode, parse_strips_checksum) {
+  char current_command[] = "N1 G0 X10*85";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('G', parser.command_letter);
+  TEST_ASSERT_EQUAL(0, parser.codenum);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+  TEST_ASSERT_EQUAL(10, parser.value_int());
+}
+
+MARLIN_TEST(gcode, parse_strips_checksum_and_preceding_spaces) {
+  char current_command[] = "N1 G0 X10   *85";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+  TEST_ASSERT_EQUAL(10, parser.value_int());
+  TEST_ASSERT_FALSE(parser.seen('S'));
+}
