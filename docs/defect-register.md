@@ -23,6 +23,9 @@ a decision for the maintainer, not a side effect of adding tests.
 | 6 | `GCodeParser::parse()` assigns `string_arg` after skipping spaces, so for a valueless parameter followed by another token it points at the space before the *next* token: `"G0 X Y"` yields `" Y"`, not `"X Y"`. | `gcode/parser.cpp:348` | The string argument is off by one token. `"G0 X"` is unaffected. M-code string handling may depend on the current shape. | open |
 | 7 | `i8tostr3rj(-128)` returns `"-28"` — the sign takes the hundreds column and the hundreds digit is lost. | `libs/numtostr.cpp:81` | Only affects the single value `-128`. | open |
 
+| 14 | A stray continuation byte (a sequence starting mid-character) is skipped: the decoder consumes it, leaves the value at 0, and returns. | `lcd/utf8.cpp:157` | A corrupted or mis-sliced string silently loses a character rather than showing a replacement glyph. Slicing by byte offset rather than character can produce this. | open |
+| 15 | A lead byte claiming more than four bytes (`0xFE`, `0xFF` — never valid UTF-8) is skipped the same way, with no indication. | `lcd/utf8.cpp:160` | As above. | open |
+
 ## Recorded as intended
 
 These follow from fixed-width display fields and are consistent across the library. They

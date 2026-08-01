@@ -89,6 +89,11 @@ already exposes `Clock::setTimeMultiplier()`, so the seam existed and no change 
 here. Check for a time, randomness or I/O dependency before assuming a phase needs no
 seam work.
 
+`lcd/utf8` is **done**: 100% line coverage, 90.4% mutation detection (95.4% once the
+sixteen provably-equivalent mutants in the binary search are excluded). Most assertions
+are against the UTF-8 standard rather than current output, and `pf_bsearch_r` is checked
+exhaustively against a linear reference for every array size up to eight.
+
 `libs/crc16` is **done**: 100% line coverage, 97.1% mutation detection. Its expected
 values come from the published CRC-16 check vectors rather than from current output, so
 these are correctness tests rather than characterization.
