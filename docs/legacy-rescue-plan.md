@@ -16,9 +16,29 @@ eight mutation runs at roughly 20 minutes each. Extrapolated to 4,600 lines that
 the order of 150 hours of mutation compute, before any tests are written. This is the
 binding constraint, and it is fixable once rather than paid 74 times.
 
-## Phase 0 — Make the loop affordable
+## Phase 0 — Make the loop affordable — **DONE**
 
-Everything else is gated on this.
+Everything else was gated on this. Delivered as
+`buildroot/share/scripts/mutation_test.py` (`make unit-test-mutation`).
+
+Measured on `parser.cpp`: a full run went from ~20 minutes to **75 seconds**, and
+re-running only the survivors takes **11 seconds**. Validated against the previous
+runner by comparing survivor sets, not just scores — both report the same 46 survivors.
+
+Most of the gain was not parallelism. Over half the per-mutant cost was PlatformIO's own
+startup, so the runner invokes the compiler and linker directly: compile the one mutated
+translation unit (0.78s), relink the 88 objects with it substituted (0.37s), run (0.002s).
+The remaining gain is running that pipeline across all cores.
+
+Two bugs found by validating against a known-good result, neither of which the baseline
+gate would have caught, since a green baseline looks identical under both:
+
+- the test binary exits 0 even when assertions fail, so classifying on exit code alone
+  reported 7.1% where the truth was 78.3%;
+- `pio run -t compiledb` after the test build leaves objects deleted by
+  `preflight-checks.py` unrebuilt, breaking every link.
+
+Original plan for this phase, for the record:
 
 | Work | Why | Expected gain |
 |---|---|---|

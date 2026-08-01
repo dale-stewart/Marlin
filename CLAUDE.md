@@ -104,8 +104,9 @@ is blocked by PEP 668 on this machine).
   needs `-stdlib=libc++`, which then rejects Marlin's own `types.h` and `temperature.h`.
   Use a source-level mutator (`universalmutator`) that builds with the project's own
   toolchain.
-- **Mutation runs take ~20 minutes per target** at this size. That, not test-writing, is
-  the binding constraint at codebase scale.
+- **Mutation runs used to take ~20 minutes per target** when each mutant went through
+  `platformio test`. With `mutation_test.py` a full target is ~75 seconds and a survivor
+  re-run ~10 seconds, so authoring tests is now the slower half again.
 - **`preflight-checks.py` gates env/board compatibility.** Envs whose names end in
   `_native_test` or `_native_coverage` are exempt, because the test targets rewrite the
   board per suite. New measurement envs should follow that naming.
