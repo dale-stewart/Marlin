@@ -306,3 +306,102 @@ MARLIN_TEST(gcode_commands, G92_shifts_the_workspace_not_the_machine) {
     motion.workspace_offset.x = was_offset;
   #endif
 }
+
+// M104 sets a hotend target without waiting for it.
+MARLIN_TEST(gcode_commands, M104_sets_the_hotend_target) {
+  const celsius_t was = thermalManager.degTargetHotend(0);
+
+  host_sends("M104 S200");
+  TEST_ASSERT_EQUAL(200, thermalManager.degTargetHotend(0));
+
+  host_sends("M104 S0");
+  TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
+
+  thermalManager.setTargetHotend(was, 0);
+}
+
+#if HAS_HEATED_BED
+
+  MARLIN_TEST(gcode_commands, M140_sets_the_bed_target) {
+    const celsius_t was = thermalManager.degTargetBed();
+
+    host_sends("M140 S60");
+    TEST_ASSERT_EQUAL(60, thermalManager.degTargetBed());
+
+    host_sends("M140 S0");
+    TEST_ASSERT_EQUAL(0, thermalManager.degTargetBed());
+
+    thermalManager.setTargetBed(was);
+  }
+
+#endif
+
+// A dry run parses commands but must not actually heat anything — it is how a host
+// checks a file without melting plastic.
+MARLIN_TEST(gcode_commands, a_dry_run_does_not_set_a_temperature) {
+  const uint8_t was_flags = marlin_debug_flags;
+  const celsius_t was = thermalManager.degTargetHotend(0);
+
+  host_sends("M104 S0");
+  host_sends("M111 S8");                 // 8 = DRYRUN
+  host_sends("M104 S250");
+  TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
+
+  marlin_debug_flags = was_flags;
+  thermalManager.setTargetHotend(was, 0);
+}
+
+#if HAS_FAN
+
+  MARLIN_TEST(gcode_commands, M106_and_M107_set_the_fan_speed) {
+    const uint8_t was = thermalManager.fan_speed[0];
+
+    host_sends("M106 S128");
+    TEST_ASSERT_EQUAL(128, thermalManager.fan_speed[0]);
+
+    // S is optional: M106 alone means full speed.
+    host_sends("M106");
+    TEST_ASSERT_EQUAL(255, thermalManager.fan_speed[0]);
+
+    host_sends("M107");
+    TEST_ASSERT_EQUAL(0, thermalManager.fan_speed[0]);
+
+    thermalManager.fan_speed[0] = was;
+  }
+
+  // Speeds are clamped to a byte rather than wrapping.
+  MARLIN_TEST(gcode_commands, fan_speed_above_the_maximum_is_clamped) {
+    const uint8_t was = thermalManager.fan_speed[0];
+    host_sends("M106 S999");
+    TEST_ASSERT_EQUAL(255, thermalManager.fan_speed[0]);
+    thermalManager.fan_speed[0] = was;
+  }
+
+#endif
+
+/**
+ * M109 and M190 wait for a temperature to be reached.
+ *
+ * Only the already-satisfied path can be tested here: nothing drives the simulated
+ * heater in the unit test build, so a command asking to reach a temperature never
+ * returns. Testing the waiting itself needs a heater the test can advance — the
+ * simulator HAL has one, this build does not. Do not add a case with a non-zero
+ * target: it will hang the suite rather than fail it.
+ */
+MARLIN_TEST(gcode_commands, M109_returns_when_no_heating_is_needed) {
+  const celsius_t was = thermalManager.degTargetHotend(0);
+
+  host_sends("M109 S0");
+  TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
+
+  thermalManager.setTargetHotend(was, 0);
+}
+
+#if HAS_HEATED_BED
+  MARLIN_TEST(gcode_commands, M190_returns_when_no_heating_is_needed) {
+    const celsius_t was = thermalManager.degTargetBed();
+    host_sends("M190 S0");
+    TEST_ASSERT_EQUAL(0, thermalManager.degTargetBed());
+    thermalManager.setTargetBed(was);
+  }
+#endif

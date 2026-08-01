@@ -110,6 +110,12 @@ is blocked by PEP 668 on this machine).
   makes `write()` return immediately. See the `NoHostAttached` helper in
   `Marlin/tests/gcode/test_gcode_commands.cpp`. Draining afterwards does not work: the
   spin happens part-way through a single report.
+- **Commands that wait for hardware hang the test binary.** `M109`/`M190` loop until a
+  temperature is reached, and nothing drives the simulated heater in the unit test
+  build, so any non-zero target never returns. Only the already-satisfied path (`S0`)
+  is testable here; exercising the wait itself needs the NATIVE_SIM HAL, whose heater
+  model advances, rather than the LINUX HAL this build uses. The same caution applies to
+  anything that calls `planner.synchronize()` with queued moves.
 - **Object link order matters.** Linking the test binary with a sorted object list
   segfaults on start, while discovery order works — a latent static-initialisation-order
   dependency. Capture the working order once and validate with a baseline run.

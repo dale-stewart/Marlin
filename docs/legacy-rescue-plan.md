@@ -124,6 +124,13 @@ that nothing drains outside the simulator. Tests that dispatch commands must mar
 port as having no host attached; see `CLAUDE.md`. This affects every target in this
 phase, not just the reporting ones — most handlers report when called with no arguments.
 
+**Second prerequisite:** commands that wait on hardware (`M109`, `M190`, anything that
+synchronises the planner with queued moves) cannot be tested in this build — the LINUX
+HAL has no heater or stepper model to advance, so the wait never ends. Only their
+already-satisfied paths are reachable. Testing the waiting itself means building the
+unit tests against the NATIVE_SIM HAL, which does simulate those devices; that is a
+Phase 4 item, not a reason to skip the commands now.
+
 **Milestone:** the first blocked surface change becomes unblocked.
 
 **Also due in this phase: re-frame `parser.feature`.** It was written before the rule
