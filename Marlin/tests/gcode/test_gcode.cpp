@@ -250,3 +250,66 @@ MARLIN_TEST(gcode, parse_empty_line_resets_state) {
   TEST_ASSERT_EQUAL(0, parser.codenum);
   TEST_ASSERT_FALSE(parser.has_string());
 }
+
+// 'T' is a command letter, not a line number, even though it sorts after 'N'.
+MARLIN_TEST(gcode, parse_t_command) {
+  char current_command[] = "T0";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('T', parser.command_letter);
+  TEST_ASSERT_EQUAL(0, parser.codenum);
+}
+
+MARLIN_TEST(gcode, parse_t_command_with_param) {
+  char current_command[] = "T1 S1";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_EQUAL('T', parser.command_letter);
+  TEST_ASSERT_EQUAL(1, parser.codenum);
+  TEST_ASSERT_TRUE(parser.seenval('S'));
+}
+
+// Only the first valueless parameter sets the string argument; a later one must
+// not replace it.
+//
+// LEGACY-BEHAVIOR: string_arg is set after spaces have been skipped, so for a
+// valueless parameter followed by another token it points at the space before the
+// *next* token rather than at the parameter itself — " Y" here, not "X Y". The
+// single-parameter case ("G0 X") has no following space and does yield "X".
+MARLIN_TEST(gcode, parse_first_valueless_param_wins_string_arg) {
+  char current_command[] = "G0 X Y";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_TRUE(parser.seen('X'));
+  TEST_ASSERT_TRUE(parser.seen('Y'));
+  TEST_ASSERT_EQUAL_STRING(" Y", parser.string_arg);
+}
+
+// Runs of spaces between a value and the next parameter are all skipped.
+MARLIN_TEST(gcode, parse_multiple_spaces_after_value) {
+  char current_command[] = "G0 X10   Y20";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+  TEST_ASSERT_EQUAL(10, parser.value_int());
+  TEST_ASSERT_TRUE(parser.seenval('Y'));
+  TEST_ASSERT_EQUAL(20, parser.value_int());
+}
+
+// Signed and fractional values are skipped in full when scanning to the next parameter.
+MARLIN_TEST(gcode, parse_signed_decimal_values) {
+  char current_command[] = "G0 X-10.5 Y20.25 Z-3";
+  parser.command_letter = -128;
+  parser.codenum = -1;
+  parser.parse(current_command);
+  TEST_ASSERT_TRUE(parser.seenval('X'));
+  TEST_ASSERT_EQUAL_FLOAT(-10.5f, parser.value_float());
+  TEST_ASSERT_TRUE(parser.seenval('Y'));
+  TEST_ASSERT_EQUAL_FLOAT(20.25f, parser.value_float());
+  TEST_ASSERT_TRUE(parser.seenval('Z'));
+  TEST_ASSERT_EQUAL_FLOAT(-3.0f, parser.value_float());
+}
