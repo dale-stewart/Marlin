@@ -84,6 +84,13 @@ namespace {
     TEST_ASSERT_EQUAL_STRING(expected, parser.string_arg);
   }
 
+  // A checksum is not part of the command: neither '*' nor its digits may survive
+  // into the message the command receives.
+  void the_checksum_is_not_left_in_the_line() {
+    if (parser.string_arg) TEST_ASSERT_NULL(strchr(parser.string_arg, '*'));
+    TEST_ASSERT_NULL(strchr(parser.command_ptr, '*'));
+  }
+
   void there_is_no_message() {
     TEST_ASSERT_FALSE(parser.has_string());
   }
@@ -124,6 +131,7 @@ MARLIN_TEST(gcode_acceptance, a_line_protected_by_a_checksum) {
   the_host_sends("N1 G0 X10*85");
   the_printer_understands_the_command("G0");
   the_value_of_is('X', 10);
+  the_checksum_is_not_left_in_the_line();
 }
 
 MARLIN_TEST(gcode_acceptance, spacing_does_not_change_the_meaning_of_a_line) {
@@ -222,4 +230,18 @@ MARLIN_TEST(gcode_acceptance, a_refused_line_does_not_leave_the_previous_values_
   the_printer_refuses_the_command();
   no_value_was_given_for('S');
   no_parameters_are_remembered();
+}
+
+MARLIN_TEST(gcode_acceptance, a_checksum_separated_from_the_command_by_spaces) {
+  the_printer_is_waiting_for_a_command();
+  the_host_sends("N1 G0 X10   *85");
+  the_printer_understands_the_command("G0");
+  the_value_of_is('X', 10);
+  the_checksum_is_not_left_in_the_line();
+}
+
+MARLIN_TEST(gcode_acceptance, a_line_with_no_checksum_keeps_its_last_parameter) {
+  the_printer_is_waiting_for_a_command();
+  the_host_sends("G0 X10 Y20");
+  the_value_of_is('Y', 20);
 }

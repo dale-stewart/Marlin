@@ -34,6 +34,7 @@ Feature: Understanding a command line sent by the host
     When the host sends "N1 G0 X10*85"
     Then the printer understands the command "G0"
     And the value of "X" is 10
+    And the checksum is not left in the line
 
   Scenario Outline: Spacing does not change the meaning of a line
     When the host sends "<line>"
@@ -64,6 +65,16 @@ Feature: Understanding a command line sent by the host
     When the host sends "M32 !/path/to/file.g#"
     Then the printer understands the command "M32"
     And the message is "/path/to/file.g"
+
+  Scenario: A checksum separated from the command by spaces
+    When the host sends "N1 G0 X10   *85"
+    Then the printer understands the command "G0"
+    And the value of "X" is 10
+    And the checksum is not left in the line
+
+  Scenario: A line with no checksum keeps its last parameter
+    When the host sends "G0 X10 Y20"
+    Then the value of "Y" is 20
 
   Scenario Outline: A line that is not a command is refused
     When the host sends "<line>"
