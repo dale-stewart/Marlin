@@ -258,7 +258,7 @@ def main():
     target_obj = re.search(r'-o\s+(\S+\.o)', compile_cmd).group(1)
     objs, libs = link_inputs(args.env)
     ctx = {'compile_cmd': compile_cmd, 'target': target, 'target_obj': str(REPO / target_obj),
-           'objs': objs, 'libs': libs, 'timeout': args.timeout}
+           'objs': objs, 'libs': libs, 'timeout': args.timeout, 'covered_count': 0}
 
     # Baseline gate: link and run the unmutated objects exactly the way every mutant
     # will be linked and run. Without this, anything that breaks the pipeline scores
@@ -274,6 +274,11 @@ def main():
     mutants_dir = REPO / '.pio' / 'mutation' / 'mutants'
     if args.rerun_survivors:
         previous = json.loads(Path(args.rerun_survivors).read_text())
+        if isinstance(previous, dict):
+            ctx['covered_count'] = previous.get('covered_lines', 0)
+            previous = previous['results']
+        else:
+            ctx['covered_count'] = 0
         mutants = [(str(mutants_dir / r['mutant']), r['line']) for r in previous if r['status'] == SURVIVED]
         total_generated = len(mutants)
         print(f"re-running {len(mutants)} survivors from {args.rerun_survivors}")
@@ -282,6 +287,7 @@ def main():
         if cov_build is None:
             cov_build = f".pio/build/{args.env.replace('_test', '_coverage')}"
         covered = covered_lines(target, cov_build or None)
+        ctx['covered_count'] = len(covered) if covered else 0
         mutants = generate_mutants(target, mutants_dir, covered)
         total_generated = len(glob.glob(str(mutants_dir / '*')))
         scope = f"{len(covered)} covered lines" if covered else "all lines"
@@ -302,9 +308,20 @@ def main():
     results.sort(key=lambda r: (r['line'], r['mutant']))
     out = REPO / args.results
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(results, indent=1))
+    # Record what population this result came from. Two runs are only comparable if they
+    # mutated the same lines: when coverage grows, new mutants appear and the score moves
+    # for reasons that have nothing to do with the tests. Without this it is easy to
+    # compare a result against one taken from a different covered-line set and read the
+    # difference as a regression.
+    out.write_text(json.dumps({
+        'target': target, 'env': args.env, 'suite': args.suite,
+        'covered_lines': ctx['covered_count'], 'generated': total_generated,
+        'run': len(mutants), 'results': results,
+    }, indent=1))
     counts = report(results, total_generated)
-    print(f"\n  results: {args.results}")
+    print(f"\n  covered lines    {ctx['covered_count']}  (results are only comparable "
+          f"between runs with the same covered-line set)")
+    print(f"  results: {args.results}")
     return 1 if (args.fail_on_survivors and counts[SURVIVED]) else 0
 
 
