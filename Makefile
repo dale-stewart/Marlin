@@ -55,6 +55,7 @@ help:
 	@echo "make unit-test-single-local-docker : Run unit tests for a single config locally, using docker"
 	@echo "make unit-test-all-local       : Run all code tests locally"
 	@echo "make unit-test-coverage        : Run one config's unit tests with gcov, report coverage"
+	@echo "make unit-test-mutation        : Mutation-test one source file (TARGET=path/to/file.cpp)"
 	@echo "make unit-test-all-local-docker : Run all code tests locally, using docker"
 	@echo "make setup-local-docker        : Setup local docker"
 	@echo ""
@@ -135,6 +136,23 @@ unit-test-coverage:
 	  --txt $(COVERAGE_DIR)/summary.txt --print-summary \
 	  --html-details $(COVERAGE_DIR)/html/index.html
 	@echo "HTML report: $(COVERAGE_DIR)/html/index.html"
+
+# Mutation testing. Coverage says a line ran; mutation says a test noticed.
+#   make unit-test-mutation TARGET=Marlin/src/gcode/parser.cpp
+#   make unit-test-mutation TARGET=... MUTATION_ENV=acceptance_native_test
+#   make unit-test-mutation TARGET=... RERUN=.pio/mutation/results.json   # survivors only
+# Restricting mutants to covered lines needs a coverage build of the same suite; run
+# "make unit-test-coverage" first, or pass MUTATION_COVERAGE= to mutate every line.
+MUTATION_ENV ?= linux_native_test
+MUTATION_RESULTS ?= .pio/mutation/results.json
+
+unit-test-mutation:
+	@if ! test -n "$(TARGET)" ; then echo "***ERROR*** Set TARGET=<source-file>" ; exit 1 ; fi
+	@command -v mutate >/dev/null || (echo 'universalmutator is not installed. Install it with "uv tool install universalmutator"' && exit 1)
+	$(PYTHON) buildroot/share/scripts/mutation_test.py $(TARGET) \
+	  --env $(MUTATION_ENV) --suite $(UNIT_TEST_CONFIG) --results $(MUTATION_RESULTS) \
+	  $(if $(RERUN),--rerun-survivors $(RERUN),) \
+	  $(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS),)
 
 unit-test-all-local-docker:
 	@if ! $(CONTAINER_RT_BIN) images -q $(CONTAINER_IMAGE) > /dev/null ; then $(MAKE) setup-local-docker ; fi

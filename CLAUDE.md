@@ -48,9 +48,22 @@ detection excluding equivalents, 18 acceptance scenarios).
 ```bash
 make unit-test-all-local                    # all three suites in test/*.ini
 make unit-test-coverage                     # one suite + gcov/gcovr report
+make unit-test-mutation TARGET=<file.cpp>   # mutation-test one source file
 pio run -t marlin_default -e acceptance_native_test        # acceptance suite alone
 pio run -t marlin_default -e acceptance_native_coverage    # ... with coverage
 ```
+
+`buildroot/share/scripts/mutation_test.py` drives the compiler and linker directly
+rather than invoking `platformio test` per mutant, and runs mutants in parallel: about
+75 seconds for a target that previously took 20 minutes. Useful options:
+
+- `MUTATION_ENV=acceptance_native_test` — measure the acceptance suite on its own
+- `RERUN=.pio/mutation/results.json` — re-run only the previous survivors (~10s)
+- `MUTATION_JOBS=N` — worker count, defaults to cores minus one
+
+Run `make unit-test-coverage` first: mutants are restricted to gcov-covered lines, and
+without a coverage build every line is mutated, which is slower and reports survivors on
+lines no test can reach.
 
 Environments added by this fork, in `ini/native.ini`:
 
@@ -77,6 +90,16 @@ is blocked by PEP 668 on this machine).
 - **PlatformIO prints a summary line even when the build ERRORs.** `1 test cases: 0
   succeeded` does not mean a test ran. Classify build failure on `ERRORED`/`error:`, or
   every non-compiling mutant scores as killed.
+- **The unit test binary exits 0 even when assertions fail.** Marlin's Unity `main` does
+  not propagate failures into the exit status; PlatformIO decides pass/fail by parsing
+  `N Tests M Failures K Ignored`. Anything judging the binary by its exit code alone
+  will call every failing mutant a survivor.
+- **`pio run -t compiledb` must come before the test build.** `preflight-checks.py`
+  deletes `M115.o` and `Warnings.o` on every build to refresh their timestamps; running
+  compiledb afterwards leaves them missing and the link fails on undefined references.
+- **Object link order matters.** Linking the test binary with a sorted object list
+  segfaults on start, while discovery order works — a latent static-initialisation-order
+  dependency. Capture the working order once and validate with a baseline run.
 - **Mull is not viable here.** Its IR plugin forces clang across the whole build, which
   needs `-stdlib=libc++`, which then rejects Marlin's own `types.h` and `temperature.h`.
   Use a source-level mutator (`universalmutator`) that builds with the project's own

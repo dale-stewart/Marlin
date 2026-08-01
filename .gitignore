@@ -108,6 +108,7 @@ applet/
 
 # PlatformIO files/dirs
 .pio*
+compile_commands.json
 .pioenvs
 .piolibdeps
 .clang_complete
