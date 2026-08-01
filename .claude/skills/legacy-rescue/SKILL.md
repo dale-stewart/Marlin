@@ -158,7 +158,14 @@ For each survivor, in descending order of risk:
 - Survivors cluster. One test often kills a whole family — if every mutation of an
   accumulator survives, the cause is usually a single missing input class, not a
   missing assertion per mutant. Fix the input gap, then re-measure before writing more.
-- Only now, do the **minimum refactoring needed to make the code testable**:
+- **Look for an existing seam before adding one.** Hardware abstraction layers,
+  simulation builds, public state, and dependency-injection points already present for
+  other reasons often provide what a test needs. A seam added where one already exists
+  is production risk bought for nothing, and it is easy to add without noticing —
+  looking takes minutes. Check the HAL, check what is already public, and check whether
+  the collaborator you are trying to fake is even active in the test build: code that
+  never runs cannot overwrite what a test writes.
+- Only when none exists, do the **minimum refactoring needed to make the code testable**:
   - Break hard dependencies by introducing a seam (parameter, interface, factory,
     or injection point) at the call site.
   - Invert dependencies on I/O, time, randomness, network, filesystem, and hardware

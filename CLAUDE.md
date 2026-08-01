@@ -110,12 +110,15 @@ is blocked by PEP 668 on this machine).
   makes `write()` return immediately. See the `NoHostAttached` helper in
   `Marlin/tests/gcode/test_gcode_commands.cpp`. Draining afterwards does not work: the
   spin happens part-way through a single report.
-- **Commands that wait for hardware hang the test binary.** `M109`/`M190` loop until a
-  temperature is reached, and nothing drives the simulated heater in the unit test
-  build, so any non-zero target never returns. Only the already-satisfied path (`S0`)
-  is testable here; exercising the wait itself needs the NATIVE_SIM HAL, whose heater
-  model advances, rather than the LINUX HAL this build uses. The same caution applies to
-  anything that calls `planner.synchronize()` with queued moves.
+- **Commands that wait for hardware need a stand-in sensor.** `M109`/`M190` loop until a
+  temperature is reached and nothing advances a heater here, so a non-zero target would
+  never return. No production seam was needed: `thermalManager.temp_hotend`/`temp_bed`
+  are public and the ADC pipeline that would overwrite them is dormant in this build
+  (it only refreshes when the temperature ISR has produced a full sample set, and that
+  ISR does not run). Tests say what the sensor reads via
+  `Marlin/tests/gcode/simulated_sensors.h`. Note `thermalManager.init()` crashes with
+  SIGFPE in this build — do not call it. The same caution applies to anything calling
+  `planner.synchronize()` with queued moves.
 - **Object link order matters.** Linking the test binary with a sorted object list
   segfaults on start, while discovery order works — a latent static-initialisation-order
   dependency. Capture the working order once and validate with a baseline run.

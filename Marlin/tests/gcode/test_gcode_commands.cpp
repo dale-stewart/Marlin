@@ -35,6 +35,7 @@
 #include "src/module/planner.h"
 #include "src/module/temperature.h"
 #include "src/gcode/queue.h"
+#include "simulated_sensors.h"
 #include <string.h>
 
 namespace {
@@ -380,28 +381,65 @@ MARLIN_TEST(gcode_commands, a_dry_run_does_not_set_a_temperature) {
 #endif
 
 /**
- * M109 and M190 wait for a temperature to be reached.
- *
- * Only the already-satisfied path can be tested here: nothing drives the simulated
- * heater in the unit test build, so a command asking to reach a temperature never
- * returns. Testing the waiting itself needs a heater the test can advance — the
- * simulator HAL has one, this build does not. Do not add a case with a non-zero
- * target: it will hang the suite rather than fail it.
+ * M109 and M190 wait until a temperature is reached, so a test must say what the
+ * sensor reads or the command never returns. See simulated_sensors.h.
  */
-MARLIN_TEST(gcode_commands, M109_returns_when_no_heating_is_needed) {
+MARLIN_TEST(gcode_commands, M109_returns_once_the_hotend_is_hot_enough) {
   const celsius_t was = thermalManager.degTargetHotend(0);
+  SimulatedSensors sensors;
 
-  host_sends("M109 S0");
-  TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
+  SimulatedSensors::hotend_reads(205.0f);
+  host_sends("M109 S200");                  // already at temperature: returns at once
+  TEST_ASSERT_EQUAL(200, thermalManager.degTargetHotend(0));
 
   thermalManager.setTargetHotend(was, 0);
 }
 
+// Asking to cool does not wait for the hotend to actually cool down — a print that ends
+// with M109 S0 should not sit there until the nozzle is cold.
+MARLIN_TEST(gcode_commands, M109_does_not_wait_when_cooling) {
+  const celsius_t was = thermalManager.degTargetHotend(0);
+  SimulatedSensors sensors;
+
+  SimulatedSensors::hotend_reads(220.0f);
+  host_sends("M109 S180");                  // hotter than the target: cooling, no wait
+  TEST_ASSERT_EQUAL(180, thermalManager.degTargetHotend(0));
+
+  thermalManager.setTargetHotend(was, 0);
+}
+
+MARLIN_TEST(gcode_commands, M109_S0_returns_immediately) {
+  const celsius_t was = thermalManager.degTargetHotend(0);
+  host_sends("M109 S0");
+  TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
+  thermalManager.setTargetHotend(was, 0);
+}
+
 #if HAS_HEATED_BED
-  MARLIN_TEST(gcode_commands, M190_returns_when_no_heating_is_needed) {
+
+  MARLIN_TEST(gcode_commands, M190_returns_once_the_bed_is_hot_enough) {
+    const celsius_t was = thermalManager.degTargetBed();
+    SimulatedSensors sensors;
+
+    SimulatedSensors::bed_reads(62.0f);
+    host_sends("M190 S60");
+    TEST_ASSERT_EQUAL(60, thermalManager.degTargetBed());
+
+    thermalManager.setTargetBed(was);
+  }
+
+  MARLIN_TEST(gcode_commands, M190_S0_returns_immediately) {
     const celsius_t was = thermalManager.degTargetBed();
     host_sends("M190 S0");
     TEST_ASSERT_EQUAL(0, thermalManager.degTargetBed());
     thermalManager.setTargetBed(was);
   }
+
 #endif
+
+// M105 reports whatever the sensors read, which is what a host graphs.
+MARLIN_TEST(gcode_commands, M105_reports_the_temperature_the_sensor_reads) {
+  SimulatedSensors sensors;
+  SimulatedSensors::hotend_reads(123.0f);
+  TEST_ASSERT_EQUAL_FLOAT(123.0f, thermalManager.degHotend(0));
+}
