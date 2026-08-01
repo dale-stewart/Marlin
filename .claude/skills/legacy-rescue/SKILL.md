@@ -56,6 +56,13 @@ Goal: any harness that runs and can fail. Do not aim for good tests yet.
 - Write **characterization tests**: assert what the code *currently does*, not what
   it should do. Capture the observed output even if it looks wrong, and mark
   suspicious assertions with a `LEGACY-BEHAVIOR:` comment for later review.
+- **Keep a defect register from the first target, not from the tenth.** A marker in a
+  test file records the behavior; it does not put the decision in front of anyone. Add
+  a row the moment you write the marker — symptom, location, who it affects, and a
+  status (open, by-design, blocked) — and separate genuine defects from deliberate
+  design limits, since a long list of "quirks" trains the reader to skip all of it. The
+  register is also where blocked design corrections from step 8 belong, so there is one
+  place to look rather than three.
 - If nothing is callable without heavy setup, test the outermost entry point first
   and work inward. A slow, ugly end-to-end test beats no test.
 

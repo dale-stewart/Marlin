@@ -35,6 +35,10 @@ The ordering is what makes the eventual correction safe. The correction is still
 — do not let a blocked surface change become an argument for skipping cover-first, and
 do not let it be quietly forgotten either.
 
+Behaviour found and recorded rather than changed is listed in
+`docs/defect-register.md` — genuine defects, deliberate design limits, and blocked
+design corrections, each pinned by a test.
+
 ### Known blocked correction
 
 `GCodeParser` is a static-only class with global mutable state (`parser.codenum`,
