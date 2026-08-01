@@ -110,6 +110,30 @@ void GCodeParser::reset() {
  * Populate the command line state (command_letter, codenum, subcode, and string_arg)
  * by parsing a single line of G-Code. 58 bytes of SRAM are used to speed up seen/value.
  */
+// Advance past a run of spaces. The parser tolerates spaces almost anywhere,
+// so this appears at every point where the scan moves on to the next thing.
+static void skip_spaces(char * &p) { while (*p == ' ') ++p; }
+
+// A host may prefix a line with N<number>. It is not part of the command, so skip
+// over it (and the spaces after it) when present.
+static void skip_line_number(char * &p) {
+  //TERN_(FASTER_GCODE_PARSER, set('N', p + 1)); // (optional) Set the 'N' parameter value
+  p += 2;                  // skip N[-0-9]
+  while (NUMERIC(*p)) ++p; // skip [0-9]*
+  skip_spaces(p);          // skip [ ]*
+}
+
+// A checksummed line ends in '*<digits>'. Cut the line short at the checksum, and at
+// any spaces before it, so the last parameter parses as if it were at end of line.
+static void strip_checksum(char * const p) {
+  char *starpos = strchr(p, '*');
+  if (starpos) {
+    --starpos;                          // *
+    while (*starpos == ' ') --starpos;  // spaces...
+    starpos[1] = '\0';
+  }
+}
+
 void GCodeParser::parse(char *p) {
 
   reset(); // No codes to report
@@ -119,15 +143,10 @@ void GCodeParser::parse(char *p) {
   };
 
   // Skip spaces
-  while (*p == ' ') ++p;
+  skip_spaces(p);
 
   // Skip N[-0-9] if included in the command line
-  if (uppercase(*p) == 'N' && NUMERIC_SIGNED(p[1])) {
-    //TERN_(FASTER_GCODE_PARSER, set('N', p + 1)); // (optional) Set the 'N' parameter value
-    p += 2;                  // skip N[-0-9]
-    while (NUMERIC(*p)) ++p; // skip [0-9]*
-    while (*p == ' ')   ++p; // skip [ ]*
-  }
+  if (uppercase(*p) == 'N' && NUMERIC_SIGNED(p[1])) skip_line_number(p);
 
   // *p now points to the current command, which should be G, M, or T
   command_ptr = p;
@@ -136,12 +155,7 @@ void GCodeParser::parse(char *p) {
   const char letter = uppercase(*p++);
 
   // Nullify asterisk and trailing whitespace
-  char *starpos = strchr(p, '*');
-  if (starpos) {
-    --starpos;                          // *
-    while (*starpos == ' ') --starpos;  // spaces...
-    starpos[1] = '\0';
-  }
+  strip_checksum(p);
 
   #if ANY(MARLIN_DEV_MODE, SWITCHING_TOOLHEAD, MAGNETIC_SWITCHING_TOOLHEAD, ELECTROMAGNETIC_SWITCHING_TOOLHEAD)
     #define SIGNED_CODENUM 1
@@ -173,7 +187,7 @@ void GCodeParser::parse(char *p) {
   switch (letter) {
     case 'G': case 'M': case 'T': TERN_(MARLIN_DEV_MODE, case 'D':) {
       // Skip spaces to get the numeric part
-      while (*p == ' ') p++;
+      skip_spaces(p);
 
       #if HAS_PRUSA_MMU2 || HAS_PRUSA_MMU3
         if (letter == 'T') {
@@ -222,7 +236,7 @@ void GCodeParser::parse(char *p) {
       #endif
 
       // Skip all spaces to get to the first argument, or nul
-      while (*p == ' ') p++;
+      skip_spaces(p);
 
       #if ENABLED(GCODE_MOTION_MODES)
         if (letter == 'G'
@@ -326,7 +340,7 @@ void GCodeParser::parse(char *p) {
 
     if (PARAM_OK(param)) {
 
-      while (*p == ' ') p++;                    // Skip spaces between parameters & values
+      skip_spaces(p);                           // Skip spaces between parameters & values
 
       #if ENABLED(GCODE_QUOTED_STRINGS)
         const bool is_str = (*p == '"'), has_val = is_str || valid_float(p);
@@ -365,7 +379,7 @@ void GCodeParser::parse(char *p) {
 
     if (!WITHIN(*p, 'A', 'Z')) {                // Another parameter right away?
       while (*p && DECIMAL_SIGNED(*p)) p++;     // Skip over the value section of a parameter
-      while (*p == ' ') p++;                    // Skip over all spaces
+      skip_spaces(p);                           // Skip over all spaces
     }
   }
 }
