@@ -51,6 +51,18 @@ Original plan for this phase, for the record:
 **Exit gate:** a full measurement of one target in under five minutes, with the runner
 committed and subject to the same rules it enforces.
 
+## Where the Gherkin lives
+
+Scenarios describe user-facing features at the system boundary, not modules. Leaf
+utilities do not get feature files of their own — they are exercised through whichever
+feature uses them, and their edge cases stay in unit tests. So Phase 1 targets are
+finished at step 5 (covered, mutation tested, survivors accounted for) and their
+step 6-7 work happens later, as the features that call them are described.
+
+Practically: `numtostr` is exercised by whatever renders a display or answers M105, and
+gets its coverage from those features plus its own unit tests. The two suites need not
+correspond one-to-one; between them they must leave nothing unexercised.
+
 ## Phase 1 — Leaf utilities
 
 `libs/numtostr` (270 uncovered lines), `lcd/utf8` (81), `libs/vector_3`, `libs/crc16`,
@@ -60,7 +72,12 @@ Pure functions, one to three includes, no hardware. `numtostr` alone is about 6%
 uncovered compiled mass and is pure string formatting. These are cheap wins that prove
 out the Phase 0 tooling and build fluency with the acceptance-suite idiom.
 
-Roughly six targets, low risk.
+Roughly six targets, low risk. Unit tests only — see "Where the Gherkin lives" above.
+
+`libs/numtostr` is **done through step 5**: 18 characterization tests plus three
+survivor-killing rounds, 98% line coverage and 96.5% mutation detection, with three
+display-corrupting defects recorded as LEGACY-BEHAVIOR rather than changed
+(`i16tostr3left` on negatives, `ftostr42_52(99.999)`, `i16tostr4signrj(-1000)`).
 
 ## Phase 2 — G-code handlers
 
