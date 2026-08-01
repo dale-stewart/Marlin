@@ -74,6 +74,30 @@ out the Phase 0 tooling and build fluency with the acceptance-suite idiom.
 
 Roughly six targets, low risk. Unit tests only — see "Where the Gherkin lives" above.
 
+**Correction: pick targets by coverable lines, not file size.** This list was drawn up
+from `wc -l`, and two of its entries turned out to be nearly empty in the compiled
+configuration: `libs/vector_3` is entirely behind `#if ABL_PLANAR ||
+AUTO_BED_LEVELING_UBL` and has **zero** coverable lines here, and `core/utility` compiles
+just five (a `serial_delay` that delegates to `safe_delay`). Both move to Phase 4, where
+a configuration that enables bed leveling makes `vector_3` reachable. Read the target
+list off the coverage report, not the directory listing.
+
+**Correction: leaf does not mean seam-free.** `Stopwatch` reads the millisecond clock, so
+its timing arithmetic is invisible to tests that complete in microseconds. The native HAL
+already exposes `Clock::setTimeMultiplier()`, so the seam existed and no change to
+`Stopwatch` was needed — but a "leaf utility" needing clock control was not anticipated
+here. Check for a time, randomness or I/O dependency before assuming a phase needs no
+seam work.
+
+`libs/crc16` is **done**: 100% line coverage, 97.1% mutation detection. Its expected
+values come from the published CRC-16 check vectors rather than from current output, so
+these are correctness tests rather than characterization.
+
+`libs/stopwatch` is **done**: 100% line coverage, 66.2% raw mutation detection — 78.2%
+once the ten mutants on `debug()` calls are excluded, which are equivalent because
+`DEBUG_STOPWATCH` compiles `debug()` to an empty inline. The remaining survivors are
+assignments overwritten before they can be observed.
+
 `libs/numtostr` is **done through step 5**: 18 characterization tests plus three
 survivor-killing rounds, 98% line coverage and 96.5% mutation detection, with three
 display-corrupting defects recorded as LEGACY-BEHAVIOR rather than changed
