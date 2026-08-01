@@ -89,7 +89,15 @@ no evidence. Pick a fault the tests must catch — an off-by-one in a value the 
 on, not one that is arithmetically inert for the inputs they use. A second runner, a new
 environment, or a changed test scope is a **new** harness and needs its own validation.
 
-Build these two checks into the runner itself rather than relying on discipline:
+**Validate a replacement harness by reproducing a known result, not by passing its own
+checks.** When you rewrite or speed up the runner, re-measure a target you have already
+measured and compare the **survivor sets**, not the headline score. A baseline gate
+cannot catch a misclassification, because a green baseline looks identical whether the
+classifier is right or wrong — one rewrite here reported 7.1% where the truth was 78.3%,
+and only set-equality against a prior run exposed it. Scores can agree by coincidence;
+survivor sets cannot.
+
+Build these checks into the runner itself rather than relying on discipline:
 
 - **A baseline gate.** Run the unmutated suite first and refuse to start unless it is
   green. Without it, anything that breaks the build scores every mutant as killed.
