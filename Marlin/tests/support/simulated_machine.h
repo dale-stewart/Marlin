@@ -84,6 +84,8 @@ public:
       HAL_timer_set_compare(MF_TIMER_TEMP, HAL_TIMER_TYPE_MAX);
     #endif
 
+    release_kill_button();
+
     was_settings = planner.settings;
     LOOP_LOGICAL_AXES(i) planner.settings.axis_steps_per_mm[i] = STEPS_PER_MM;
     LOOP_NUM_AXES(i) {
@@ -110,6 +112,26 @@ public:
     motion.position = was_position;
     marlin.setState(was_state);
     MYSERIAL1.host_connected = was_connected;
+  }
+
+  /**
+   * Say the kill button is not being held down.
+   *
+   * On a board KILL_PIN is an input with a pull-up, so it reads HIGH — released — from
+   * reset, and `Marlin::setup()` configures it that way. Simulated pins all read LOW at
+   * reset, and LOW is KILL_PIN_STATE: to the firmware the button is held. Nothing
+   * notices until something waits, because `manage_inactivity()` debounces the button
+   * over 250 passes before acting — so the 250th call to `marlin.idle()` in the process
+   * calls `kill()`, which never returns. That is exactly what M400, G4 and an arc do:
+   * wait by calling idle().
+   *
+   * `setup()` does not run in a test build, so the fixture stands in for it.
+   */
+  static void release_kill_button() {
+    #if HAS_KILL
+      SET_INPUT_PULLUP(KILL_PIN);
+      WRITE(KILL_PIN, !KILL_PIN_STATE);
+    #endif
   }
 
   // Let the machine move until the planner is empty.

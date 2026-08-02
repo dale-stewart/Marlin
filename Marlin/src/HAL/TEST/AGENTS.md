@@ -29,18 +29,29 @@ by advancing the clock rather than by calling the ISR.
 waits by spinning on `idle()`, and on hardware each pass burns microseconds while
 interrupts fire. This is a HAL responsibility, so it needed no change to Marlin itself.
 
-**Commands that wait still do not complete.** With `idletask()` advancing, `M400` was
-observed with the step timer enabled, the planner busy, and five `idle()` calls
-producing zero steps. The cause is scheduling, not the clock: when a block finishes,
-`Stepper::isr()` programs a long interval, and queueing a new block does not bring the
-timer's next fire forward. Advancing in 100 µs slices then never reaches it. On hardware
-`stepper.wake_up()` re-arms the interrupt for exactly this reason.
+**Commands that wait now complete.** `M400`, `G4` and an arc are covered by
+`tests/gcode/test_blocking_commands.cpp`.
 
-The next step is therefore in `Timer`/`timers.cpp`, not in the clock: enabling an
-interrupt (or programming a shorter compare) must bring `next_fire_ns` forward rather
-than leaving a stale far-future value. `Timer::enable()` currently calls `schedule()`,
-which is close — but `Stepper::wake_up()` only calls `ENABLE_STEPPER_DRIVER_INTERRUPT()`,
-and if the timer is already enabled that is a no-op.
+The earlier diagnosis recorded here — that `Stepper::isr()` left `next_fire_ns` stale in
+the far future and `Timer::enable()` had to pull it forward — was **wrong**, and
+`Timer`/`timers.cpp` needed no change. The "five `idle()` calls, zero steps" observation
+was simply too short a look: `Planner::get_current_block()` holds the first block back
+for `BLOCK_DELAY_FOR_1ST_MOVE` (100) interrupts while fewer than three moves are queued,
+and each of those interrupts programs a ~25 ms "nothing to run" interval, so the first
+step lands a few hundred milliseconds of simulated time in. Advancing the clock in 100 µs
+slices does reach it, and always did — that is why `run_until_idle()` worked.
+
+The real cause was a pin, not a timer. `KILL_PIN` is an input with a pull-up on a board,
+so it reads HIGH — released — from reset. Every simulated pin reads LOW at reset, and LOW
+is `KILL_PIN_STATE`, so the firmware sees the kill button held down.
+`Marlin::manage_inactivity()` debounces it over 250 passes, so the 250th `marlin.idle()`
+call in the process reached `kill()`, which spins forever waiting for the button to be
+released. Anything that waits by calling `idle()` more than 250 times hit it; nothing
+else did, which is why only the blocking commands hung.
+
+`Marlin::setup()` — which configures that pull-up — does not run in a test build, so
+`SimulatedMachine` stands in for it and releases the button. That is the general shape of
+this HAL's remaining hazards: pins power up in a state no board would ever be in.
 
 ## Rules
 
