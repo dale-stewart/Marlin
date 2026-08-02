@@ -36,6 +36,9 @@
 #include <algorithm>
 
 #include "hardware/Clock.h"
+
+// Advancing simulated time lives with the timers; idletask() below uses it.
+void HAL_test_advance_micros(const uint32_t us);
 #include "../shared/Marduino.h"
 #include "../shared/math_32bit.h"
 #include "../shared/HAL_SPI.h"
@@ -127,7 +130,24 @@ public:
   static void delay_ms(const int ms) { delay(ms); }
 
   // Tasks, called from marlin.idle()
-  static void idletask() {}
+  /**
+   * Waiting costs time here, as it does on hardware.
+   *
+   * Marlin waits by spinning on idle(): `planner.synchronize()` until the queue drains,
+   * `dwell()` until a period elapses, homing until an endstop trips. On a real board
+   * each pass through idle() burns real microseconds and interrupts fire meanwhile, so
+   * the condition eventually changes. Under a clock that only moves when asked, an idle
+   * task that did nothing would spin forever — the wait would be the one thing that
+   * could never end.
+   *
+   * So advancing the clock here is not a convenience for tests; it is what makes this
+   * HAL's idle() mean the same thing as every other HAL's. The step is small enough
+   * that a wait ends close to when it should, and advancing runs whichever timer
+   * interrupts fall inside it, which is how the queue drains while a command waits.
+   */
+  static void idletask() { HAL_test_advance_micros(IDLE_STEP_US); }
+
+  static constexpr uint32_t IDLE_STEP_US = 100;
 
   // Reset
   static constexpr uint8_t reset_reason = RST_POWER_ON;

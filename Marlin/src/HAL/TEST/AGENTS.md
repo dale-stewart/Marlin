@@ -25,22 +25,22 @@ HAL unchanged.
 **Motion works.** The five `simulated_motion` tests pass with exact step counts, driven
 by advancing the clock rather than by calling the ISR.
 
-**Commands that wait do not yet work**, and the reason is worth stating precisely
-because it was mistaken twice. `planner.synchronize()` and `dwell()` both spin on
-`marlin.idle()`, and *nothing inside `idle()` advances a clock that only moves when
-asked*. So `M400`, `G4` with a non-zero pause, and arcs — which overrun the block buffer
-and wait for space — never finish here. The motion tests work because `run_until_idle()`
-advances time from the test, outside any command.
+**`idletask()` advances the clock**, which is where waiting should cost time: Marlin
+waits by spinning on `idle()`, and on hardware each pass burns microseconds while
+interrupts fire. This is a HAL responsibility, so it needed no change to Marlin itself.
 
-This is one level up from the bug that made motion work. `Timer::getCount()` had to
-charge a tick per read because Marlin spins on the timer count and, on hardware, the
-polling itself costs time. `millis()` has exactly the same problem in `dwell()` and the
-same likely fix — but `millis()` is read all over the firmware, and making every read
-advance time would change every timeout in the suite. That wants measuring, not
-assuming, and it is the next piece of work.
+**Commands that wait still do not complete.** With `idletask()` advancing, `M400` was
+observed with the step timer enabled, the planner busy, and five `idle()` calls
+producing zero steps. The cause is scheduling, not the clock: when a block finishes,
+`Stepper::isr()` programs a long interval, and queueing a new block does not bring the
+timer's next fire forward. Advancing in 100 µs slices then never reaches it. On hardware
+`stepper.wake_up()` re-arms the interrupt for exactly this reason.
 
-Until then, blocking commands are tested nowhere: they cannot run under `HAL/LINUX`
-either.
+The next step is therefore in `Timer`/`timers.cpp`, not in the clock: enabling an
+interrupt (or programming a shorter compare) must bring `next_fire_ns` forward rather
+than leaving a stale far-future value. `Timer::enable()` currently calls `schedule()`,
+which is close — but `Stepper::wake_up()` only calls `ENABLE_STEPPER_DRIVER_INTERRUPT()`,
+and if the timer is already enabled that is a no-op.
 
 ## Rules
 
