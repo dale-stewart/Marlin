@@ -264,10 +264,12 @@ the measurement says why.
 | `motion.cpp` | **20.8%** | 20% |
 
 `stepper.cpp` cleared the gate by a wide margin — the phase paid for itself there.
-`temperature.cpp` did not move, and the reason is specific: the fixture parks
-`MF_TIMER_TEMP`'s compare at `HAL_TIMER_TYPE_MAX`, so `Temperature::isr` never fires,
-and `thermalManager.init()` still crashes with SIGFPE in this build. Temperature is
-covered only through its setters and getters. `motion.cpp` is low for the same reason at
+`temperature.cpp` did not move, and the reason is specific: the fixture starts and
+enables `MF_TIMER_STEP` under the test HAL but never starts `MF_TIMER_TEMP` at all, so
+`Temperature::isr` never fires. (Under the LINUX HAL the fixture goes further and parks
+both compares at `HAL_TIMER_TYPE_MAX` to silence POSIX signals.) `thermalManager.init()`
+also still crashes with SIGFPE in this build. Temperature is covered only through its
+setters and getters. `motion.cpp` is low for the same reason at
 one remove: `prepare_line_to_destination` and `blocking_move` are homing paths.
 
 ### Exit gate — partly met
