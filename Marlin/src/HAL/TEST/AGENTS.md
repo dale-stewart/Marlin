@@ -22,42 +22,25 @@ HAL unchanged.
 
 ## Status
 
-Complete. Motion works: the step timer is armed and enabled, `run_until_idle()` advances
-the clock instead of calling `stepper.isr()`, and both `testhal_native_test` and
-`linux_native_test` are green at 377.
+**Motion works.** The five `simulated_motion` tests pass with exact step counts, driven
+by advancing the clock rather than by calling the ISR.
 
-Two diagnoses along the way were wrong, and both are worth remembering.
+**Commands that wait do not yet work**, and the reason is worth stating precisely
+because it was mistaken twice. `planner.synchronize()` and `dwell()` both spin on
+`marlin.idle()`, and *nothing inside `idle()` advances a clock that only moves when
+asked*. So `M400`, `G4` with a non-zero pause, and arcs — which overrun the block buffer
+and wait for space — never finish here. The motion tests work because `run_until_idle()`
+advances time from the test, outside any command.
 
-The first was that `HAL_timer_interrupt_enabled` read false after `stepper.init()`
-because the HAL failed to arm the timer. It was the fixture disabling it four lines
-later - leftover code whose purpose under the LINUX HAL was suppressing POSIX signals.
-That is now `#ifndef __PLAT_TEST__`.
+This is one level up from the bug that made motion work. `Timer::getCount()` had to
+charge a tick per read because Marlin spins on the timer count and, on hardware, the
+polling itself costs time. `millis()` has exactly the same problem in `dwell()` and the
+same likely fix — but `millis()` is read all over the firmware, and making every read
+advance time would change every timeout in the suite. That wants measuring, not
+assuming, and it is the next piece of work.
 
-The second was that enabling the interrupt hung the suite in the `SimulatedMachine`
-constructor, and that the cause was re-entrancy or a zero-length period. Neither was
-true, and the premise was not either: the binary's stdout is block-buffered when piped,
-so a hang anywhere loses *all* output. It was hanging in the first motion test, and it
-hung there with interrupts still disabled.
-
-The cause was `Timer::getCount()`, in two ways - see the comment on it. It returned an
-absolute tick count where the hardware (and the LINUX HAL) return ticks since the timer
-last restarted, which wrecks `Stepper::isr()`'s interval arithmetic: `min_ticks` is
-computed as `getCount() + margin` and compared against an *interval*. And, fatally, it
-answered without moving the clock. Marlin times its step pulses by spinning on that
-counter (`AWAIT_TIMED_PULSE` in stepper.cpp), a loop that on hardware ends because the
-CPU burns cycles while the counter runs; here nothing else moved the clock inside it, so
-it spun forever. Reading the counter now costs one tick, which is the simulated
-equivalent of the cycles the poll would have taken, and is deterministic.
-
-`Timer::advance()` has been replaced by `pending()`/`fire()`, and the scheduler in
-`timers.cpp` now walks the clock to each interrupt in turn rather than jumping to the end
-of the interval and firing afterwards - a handler that reads the clock has to see the
-instant it was due. Re-entry is guarded there: a handler that advances time gets the
-time, but not nested interrupts.
-
-The two environments deliberately share fixtures: `Marlin/tests/support/` selects the
-mechanism per platform, so a test reads the same either way and the LINUX build stays
-green while this one is finished.
+Until then, blocking commands are tested nowhere: they cannot run under `HAL/LINUX`
+either.
 
 ## Rules
 

@@ -213,6 +213,23 @@ out.
 This is what Phase 4a should have proposed. The A1/A2/A3 framing above was about *which
 machine model* to use and missed that the more basic question was *which HAL*.
 
+### Where 4a actually stands
+
+Motion is done: the test HAL runs the real planner and stepper, and
+`Marlin/tests/module/test_simulated_motion.cpp` asserts exact step counts on both
+environments.
+
+Blocking commands are not, and the earlier claim that the HAL unblocked them was wrong.
+`planner.synchronize()` and `dwell()` spin on `marlin.idle()`, and nothing inside
+`idle()` advances a clock that only moves when a test asks it to — so `M400`, `G4` with
+a pause, and arcs still cannot complete. The motion tests pass because `run_until_idle()`
+advances time from outside the command.
+
+The remaining step is narrow and known: make a spin on `millis()` cost time, the same way
+`Timer::getCount()` now costs a tick per read. The caution is that `millis()` is read
+throughout the firmware, so charging every read would shift every timeout in the suite —
+it needs measuring against the existing 377 tests rather than assuming.
+
 ### Sequence
 
 1. Stand up the fake kernel and one test that advances time and observes `Stepper::isr`
