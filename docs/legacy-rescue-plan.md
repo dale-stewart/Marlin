@@ -163,10 +163,17 @@ frozen for a long time. Budget the most time here; expect seam work to dominate.
 
 ## Phase 4 — Expand the frontier
 
-Add configurations beyond `test/001-003` to pull in SD, LCD, bed leveling, probes and
-TMC drivers, with HAL fakes as needed. Each configuration is a separate coverage
-denominator and a separate mutation run, so cost multiplies — which is why this follows
-Phase 0 and the cheap targets.
+Detailed in **`docs/legacy-rescue-phase-4.md`**, written after Phases 2 and 3 reached
+their ceiling.
+
+The short version: this is two phases, not one. **4a** switches the unit tests to a
+simulated machine so interrupts happen and time can be advanced on demand — one change
+that unblocks six verified-unreachable behaviours and the largest uncovered function in
+the firmware (`stepper::isr`, 127 lines). **4b** widens the configuration matrix to
+compile the 736 platform-agnostic files that no test can currently reach.
+
+They are sequenced deliberately: 4a multiplies the value of the tests already written,
+while 4b multiplies their cost.
 
 ## Cross-cutting: a blocked-corrections register
 

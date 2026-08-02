@@ -1,0 +1,264 @@
+# Phase 4 — reaching the code the unit tests cannot compile
+
+A detailed plan for the last phase of `docs/legacy-rescue-plan.md`, written after
+Phases 2 and 3 reached their ceiling. Phases 0-3 took repository line coverage from
+7.8% to 51.7% across 372 tests; this document is about the two separate walls that
+stopped it going further, and what each would cost to remove.
+
+## What actually blocks progress
+
+Two limits, with different causes and different fixes. The plan's original Phase 4
+treated them as one item, which was wrong.
+
+### Wall 1 — code that compiles but cannot run
+
+Six behaviours were verified unreachable by probing, not assumed:
+
+| Behaviour | Why it never returns |
+|---|---|
+| `G28` homing | moves until an endstop triggers; only the stepper interrupt can trigger one |
+| `G4` dwell | waits for the planner to drain |
+| `G2`/`G3` arcs | fill the block buffer, then `buffer_line` waits for space |
+| `M400` | waits for the planner to drain |
+| `M109`/`M190` with a real target | wait for a temperature nothing advances |
+| endstop *triggering* | `endstops.update()` only records a hit while the axis is moving |
+
+All six share one cause: **the LINUX HAL has no interrupts**. Nothing advances a
+heater, steps a motor, or drains the planner. The same cause accounts for most of the
+uncovered lines in the largest modules:
+
+| Module | Coverage | Largest uncovered functions |
+|---|---|---|
+| `stepper.cpp` | 24% | **`isr` 127 lines**, `init` 14, `apply_directions` 11 |
+| `temperature.cpp` | 24% | `isr` 70, `mintemp_error` 52, `init` 38, `task` 36 |
+| `motion.cpp` | 20% | `prepare_line_to_destination` 68, `blocking_move` 42 |
+
+`stepper::isr` alone is the single largest uncovered function in the firmware.
+`thermalManager.init()` cannot even be called — it crashes with SIGFPE in this build.
+
+### Wall 2 — code that never compiles
+
+Only **62 of 798** platform-agnostic source files are in the test build. The rest are
+excluded by the feature flags in `test/001-default.ini`:
+
+| Area | Files | In the build |
+|---|---|---|
+| `lcd/` | 475 | ~2 |
+| `gcode/` | 188 | ~44 |
+| `feature/` | 81 | ~1 |
+| `module/` | 24 | ~10 |
+| `sd/` | 12 | 0 |
+
+Nothing is structurally untestable about most of it. It simply is not compiled, so no
+test can reach it. Measured against all platform-agnostic code, current real coverage
+is on the order of 1-2%.
+
+**These are independent.** Wall 1 is one build-environment change that multiplies the
+value of the 372 tests already written. Wall 2 is a matrix expansion that multiplies
+the *cost* of everything already written. They should be sequenced, not merged.
+
+---
+
+## Phase 4a — run the unit tests against a simulated machine
+
+Goal: make the six stalled behaviours testable and open `stepper::isr`,
+`temperature::isr`, homing, probing and real motion.
+
+The NATIVE_SIM HAL already exists and the simulator uses it. The question is what
+supplies the machine underneath it, and here the investigation turned up something
+that changes the decision.
+
+### What NATIVE_SIM actually depends on
+
+`Marlin/src/HAL/NATIVE_SIM` does not contain a machine model. It calls `Kernel::` —
+the interrupt scheduler — which lives in **MarlinSimUI**, an external library fetched
+from a GitHub archive and pinned by commit hash in `ini/native.ini`. The physical
+models live there too: `Heater.h` (a real thermal model — 12 V, 3.6 Ω, 13 g hotend
+mass), `StepperDriver.h`, `EndStop.h`, `bed_probe.h`, wired together by
+`virtual_printer.cpp`.
+
+Three details decide the options below:
+
+- `execution_control.h` (the Kernel) and `Heater.h` have **no UI dependency**.
+- `StepperDriver.h` and `EndStop.h` each `#include <imgui.h>` — for a debug panel, not
+  for the model.
+- `virtual_printer.cpp`, which instantiates everything, includes `imgui.h` too.
+
+So the machine model is *nearly* headless already, and the coupling to the UI is
+shallow — a handful of includes rather than a design entanglement.
+
+### Option A1 — depend on MarlinSimUI as it ships
+
+Point a new test environment at NATIVE_SIM and let PlatformIO pull the whole library.
+
+- **For:** no new code; the model is maintained upstream and already matches the
+  simulator people actually run.
+- **Against:** unit tests would require SDL2, SDL2_net, OpenGL and GLM in CI, and
+  build ImGui and ImPlot to run a test suite with no interface. It also puts a
+  third-party GitHub archive on the critical path of the test suite — pinned by hash,
+  but a dead URL becomes a red build. `.github/workflows/ci-unit-tests.yml` currently
+  needs nothing but PlatformIO.
+
+### Option A2 — compile the headless subset of MarlinSimUI
+
+Take `Kernel`, `Heater`, `StepperDriver`, `EndStop` and a cut-down `virtual_printer`,
+excluding `window`, `user_interface`, `renderer` and the vendored ImGui.
+
+- **For:** the real thermal and motion models, no SDL or OpenGL, much faster builds.
+- **Against:** needs the `imgui.h` includes stubbed or the debug panels compiled out —
+  four files, mechanical but a fork of upstream in effect. Every future upgrade of the
+  pinned hash must be re-checked against the exclusion list. This is the option most
+  likely to rot quietly.
+
+### Option A3 — a minimal in-repo simulation kernel
+
+Write, in `Marlin/tests/support/`, only what the tests need: a clock that advances on
+demand, a timer that dispatches `Temperature::isr` and `Stepper::isr` a chosen number
+of times, a heater that approaches its target when its pin is driven, and an endstop
+that trips at a chosen position.
+
+- **For:** no external dependency at all; the test suite stays buildable from a bare
+  checkout. Time becomes *explicit* — `advance(3, SECONDS)` rather than a sleep — which
+  makes the tests fast and deterministic rather than timing-dependent, the same
+  property that made the `Stopwatch` tests work. It also matches the seam that already
+  exists: the LINUX HAL reads sensors through `Gpio`, which tests can already drive.
+- **Against:** it is a second model of the machine. If it disagrees with the real
+  physics, tests pass against a fiction. The mitigation is to keep it deliberately
+  crude — a heater that moves toward its target and a stepper that counts steps is
+  enough to unblock all six behaviours, and anything more should be questioned.
+
+### Recommendation
+
+**A3, scoped hard.** The purpose is not to simulate a printer; it is to make interrupts
+happen and let time pass on demand. A crude model does that with no third-party
+dependency and no fork to maintain, and it keeps the property that has made every
+useful test in this rescue work: the test says what happens, rather than waiting to see.
+
+A2 is the fallback if the crude model turns out to be too crude — specifically if
+thermal protection or PID behaviour needs real physics to be meaningful. That decision
+can be made later without redoing 4a, because both options sit behind the same test
+fixtures.
+
+A1 should be rejected: building ImGui and OpenGL to run a headless test suite is a cost
+paid on every CI run forever, to avoid writing roughly two hundred lines of fake.
+
+### Sequence
+
+1. Stand up the fake kernel and one test that advances time and observes `Stepper::isr`
+   running. Validate it the way the mutation runner was validated — against a known
+   result, not against its own checks.
+2. Unblock the six behaviours in the order they appear above, each with the test that
+   previously could not be written.
+3. Re-measure. `stepper::isr` and `temperature::isr` are the targets that justify the
+   phase; if they do not move, stop and reconsider.
+4. Only then extend to homing, probing and thermal protection.
+
+**Exit gate:** the six behaviours have tests; `stepper.cpp` and `temperature.cpp` are
+above 60%; no new external dependency in the test build.
+
+---
+
+## Phase 4b — widen the configuration matrix
+
+Goal: compile the other 736 files so tests can reach them.
+
+Each configuration is a separate `test/NNN-name.ini`, and each one is a **separate
+coverage denominator and a separate mutation population**. This is the phase where cost
+scales, so the choice of configurations matters more than the count.
+
+### What each candidate would buy
+
+| Configuration | Unlocks | Notes |
+|---|---|---|
+| **SD + media** | `sd/` (12 files), the SD half of `queue.cpp`, `M20`-`M34` | The queue is already 67% covered; this closes most of the rest. Needs a fake filesystem — the simulator uses a FAT image, which tests could too. |
+| **LCD + menus** | a slice of `lcd/` (475 files) | The largest area by far, but most of it is per-display drivers. A single menu backend would cover the menu *logic* and leave the drivers untouched. Highest file count, lowest value per file. |
+| **Bed leveling** | `feature/bedlevel/`, `vector_3.cpp`, `G29`, probing | The most algorithmically interesting code in the firmware: matrix maths, mesh interpolation, probe sequences. Pure functions behind a hardware-shaped API. Needs 4a for probing to run. |
+| **TMC drivers** | `feature/tmc_util`, `M122`, `M906`-`M917` | Mostly register plumbing over SPI/UART; low behavioural density. |
+| **Power-loss recovery** | `feature/powerloss` | Small, self-contained, and safety-relevant — it decides whether a print resumes correctly. Pairs naturally with SD. |
+
+### Recommendation
+
+Two configurations, not five:
+
+1. **SD + power-loss recovery.** Small, closes the known gap in `queue.cpp`, and
+   power-loss recovery is behaviour a user would notice going wrong. Defect #4 in the
+   register — `Stopwatch::resume()` adding the controller's uptime — sits exactly here
+   and cannot be properly exercised without it.
+2. **Bed leveling.** The best ratio of behaviour to lines in the codebase, and it makes
+   `vector_3.cpp` reachable, which Phase 1 had to defer for exactly this reason.
+
+LCD is deliberately excluded despite being 60% of the files. Covering 475 display
+drivers is a different project with a different value proposition; the menu *logic*
+could be picked up later behind one backend if it proves worth it.
+
+### Cost
+
+Each configuration adds a full build and test run to CI, and a full mutation population
+if mutation is run against it. At current sizes a configuration costs roughly 4 seconds
+of test time and 1-3 minutes of mutation time per target.
+
+---
+
+## The three open questions, in detail
+
+### 1. Does the simulated environment replace `linux_native_test` or sit beside it?
+
+**Replace.** One environment, switched to the fake kernel.
+
+The instinct is to keep both — the current environment is proven and 372 tests depend
+on it. But two environments means every test file must state which one it belongs to,
+and the mutation runner, coverage target and CI job all fork. The value of the fake
+kernel is that time and interrupts become explicit; a test that does not use them is
+unaffected by its presence. There is no behaviour in the current environment that the
+fake kernel removes.
+
+The exception worth allowing: keep the ability to build *without* it for one release
+cycle, as a bisect tool. If a test starts failing after 4a, being able to run the same
+binary without the kernel answers "is this the fake or the firmware?" in one command.
+That is a build flag, not a second environment.
+
+**Cost of being wrong:** if the fake kernel destabilises the suite, reverting is a
+one-line environment change, because the fixtures are what tests talk to, not the HAL.
+
+### 2. Which configurations matter most?
+
+Answered above — SD + power-loss recovery, then bed leveling. The reasoning worth
+making explicit is the *selection rule*, since it is the thing that generalises:
+
+**Choose configurations by behavioural density, not file count.** Phase 1 picked targets
+by `wc -l` and two of the four turned out to be nearly empty. The same mistake at
+configuration scale is more expensive, because a configuration that pulls in 400 files
+of display drivers commits every future mutation run to carrying them.
+
+A useful proxy: how many *decisions* does the code make per line? Bed leveling is dense
+with them; a display driver is mostly transcription.
+
+### 3. Should mutation testing run across all configurations, or only the default?
+
+**Only the default, plus the configuration that owns the target.**
+
+Mutation cost is per configuration per target, and most targets are only compiled in one
+configuration anyway. Running `numtostr` mutants under four configurations measures the
+same code four times and reports the same survivors.
+
+The rule that follows: a target's mutation score belongs to the configuration that
+enables it. Where a target is compiled in several — `parser.cpp`, `queue.cpp` — run
+mutation under the default, and treat the others as coverage-only unless a defect turns
+up that is specific to one.
+
+The runner already records `covered_lines`, `env` and `suite` in its results for exactly
+this reason: two runs are only comparable within the same population, and that will
+matter much more once configurations multiply.
+
+---
+
+## What this phase does not do
+
+It does not reach the 475 LCD files, the vendor UIs, or the per-board pin
+configurations. After 4a and 4b, most of the firmware by file count is still
+unexercised. What changes is that the code that *decides things* — motion, temperature,
+levelling, the command path — is under test, and the remainder is largely transcription
+between a decision and a device.
+
+That is the honest end state of this plan: not a covered codebase, but a covered
+machine.
