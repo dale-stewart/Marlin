@@ -44,6 +44,7 @@ public:
     compare = 0;
     active = false;
     next_fire_ns = 0;
+    count_base_ns = Clock::nanos();
   }
 
   void start(const uint32_t freq) { setCompare(frequency / (freq ? freq : 1)); }
@@ -54,33 +55,80 @@ public:
 
   void setCompare(const uint32_t c) { compare = c; schedule(); }
   uint32_t getCompare() const { return compare; }
-  uint32_t getCount() const { return uint32_t(Clock::ticks(frequency)); }
+  /**
+   * Ticks since the timer last restarted — and reading it costs time.
+   *
+   * Two things about this counter are load-bearing, and both were wrong before.
+   *
+   * 1. It counts from the last restart, not from the epoch. Hardware counters reset to
+   *    zero on a compare match, and the LINUX HAL reproduces that by counting from the
+   *    last setCompare(). An absolute count breaks Stepper::isr(), which computes
+   *    `min_ticks = getCount() + margin` and compares it against an *interval*: an
+   *    ever-growing count makes every interval look too short, forcing ten
+   *    multistepping passes per ISR and a compare value of "now", which is not a period.
+   *
+   * 2. Reading it advances simulated time by one tick. Marlin times its step pulses by
+   *    spinning on this counter (`AWAIT_TIMED_PULSE` in stepper.cpp), which on hardware
+   *    ends because the CPU burns cycles while the counter runs. Here nothing else moves
+   *    the clock inside that loop, so a counter that answered the same value every time
+   *    would spin forever — and did: it hung the suite on the first move, before any
+   *    interrupt was even enabled. Charging a tick per read is the simulated equivalent
+   *    of the cycles the poll would have cost, and it is deterministic: the same spin
+   *    always takes the same number of iterations.
+   */
+  uint32_t getCount() {
+    Clock::advance_nanos(nanos_per_tick());
+    return uint32_t(Clock::nanosToTicks(Clock::nanos() - count_base_ns, frequency));
+  }
   uint32_t getOverruns() const { return 0; }
   uint32_t getAvgError() const { return 0; }
 
   /**
-   * Run any interrupts that fall inside the time just elapsed.
+   * When this timer is next due, if it is armed at all.
    *
-   * `budget` bounds how many can fire in one advance, so a compare value of zero — or
-   * a test advancing a long way — cannot spin forever. Hitting the budget is not an
-   * error: the remaining interrupts fire on the next advance.
+   * The scheduler in timers.cpp asks both timers, moves the clock to the earliest
+   * answer, and fires that one — so a handler runs with the clock reading the instant it
+   * was due, rather than the end of whatever interval the test asked for.
    */
-  void advance(const uint64_t upto_ns, const uint32_t budget = 100000) {
-    if (!active || !cbfn || !compare) return;
-    const uint64_t period = Clock::ticksToNanos(compare, frequency);
-    if (!period) return;
-    for (uint32_t fired = 0; fired < budget && next_fire_ns <= upto_ns; fired++) {
-      next_fire_ns += period;
-      cbfn();
-    }
+  bool pending(uint64_t &when) const {
+    if (!active || !cbfn) return false;
+    when = next_fire_ns;
+    return true;
+  }
+
+  /**
+   * Run the handler, as a compare match would.
+   *
+   * A match resets the counter, so the count the handler reads is time since *this*
+   * interrupt rather than since the last reprogramming. The default reschedule is one
+   * period later; handlers that program a new compare (Stepper::isr() always does)
+   * overwrite it from inside the call.
+   */
+  void fire() {
+    count_base_ns = Clock::nanos();
+    next_fire_ns = count_base_ns + period_nanos();
+    cbfn();
   }
 
 private:
-  void schedule() { next_fire_ns = Clock::nanos() + Clock::ticksToNanos(compare, frequency); }
+  uint64_t nanos_per_tick() const { return 1000000000ULL / (frequency ? frequency : 1); }
+
+  // A compare of zero would otherwise mean "due now, forever". One tick is the shortest
+  // interval the hardware could express, so that is the floor.
+  uint64_t period_nanos() const {
+    const uint64_t ns = Clock::ticksToNanos(compare, frequency);
+    return ns ? ns : nanos_per_tick();
+  }
+
+  void schedule() {
+    count_base_ns = Clock::nanos();
+    next_fire_ns = count_base_ns + period_nanos();
+  }
 
   bool active = false;
   uint32_t compare = 0;
   uint32_t frequency = 1;
   uint64_t next_fire_ns = 0;
+  uint64_t count_base_ns = 0;
   callback_fn *cbfn = nullptr;
 };

@@ -65,14 +65,15 @@ public:
     if (!hardware_ready) {
       HAL_timer_init();                        // main() never runs here
       stepper.init();
+      #ifdef __PLAT_TEST__
+        // Here an interrupt fires because time crossed the timer's compare value, so the
+        // step timer has to be armed and enabled or advancing the clock does nothing.
+        // The initial rate is a placeholder: Stepper::isr() programs the real interval
+        // for the block it is running, from its first call onward.
+        HAL_timer_start(MF_TIMER_STEP, STEPPER_TIMER_RATE / 1000);
+        ENABLE_STEPPER_DRIVER_INTERRUPT();
+      #endif
       hardware_ready = true;
-      // NOTE for the test HAL: an interrupt here fires because time crossed the
-      // timer's compare value, so motion needs the step timer armed and enabled —
-      // ENABLE_STEPPER_DRIVER_INTERRUPT() plus a sensible compare. Doing that alone is
-      // not sufficient: with interrupts live, the suite hangs before its first
-      // assertion, somewhere in this constructor. That is the open question. Until it
-      // is answered the test HAL runs everything that does not move, and the motion
-      // tests run under linux_native_test.
     }
     #ifndef __PLAT_TEST__
       // The LINUX HAL's interrupts are POSIX signals, which would arrive between
@@ -111,13 +112,26 @@ public:
     MYSERIAL1.host_connected = was_connected;
   }
 
-  // Let the machine move: run the stepper interrupt until the planner is empty.
+  // Let the machine move until the planner is empty.
   // Returns false if it did not finish, so a stuck queue fails rather than hangs.
+  //
+  // Under the test HAL the machine moves because time moves: advancing the clock runs
+  // whichever step interrupts fall inside the interval. Calling stepper.isr() by hand
+  // here would step the motors while the clock stood still — the LINUX build has to do
+  // that only because its interrupts are real signals, which a test cannot schedule.
   static bool run_until_idle(const uint32_t max_steps = 20000000) {
-    for (uint32_t i = 0; i < max_steps; i++) {
-      if (!planner.has_blocks_queued()) return true;
-      stepper.isr();
-    }
+    #ifdef __PLAT_TEST__
+      constexpr uint32_t SLICE_US = 100;
+      for (uint32_t i = 0; i < max_steps / SLICE_US; i++) {
+        if (!planner.has_blocks_queued()) return true;
+        HAL_test_advance_micros(SLICE_US);
+      }
+    #else
+      for (uint32_t i = 0; i < max_steps; i++) {
+        if (!planner.has_blocks_queued()) return true;
+        stepper.isr();
+      }
+    #endif
     return false;
   }
 

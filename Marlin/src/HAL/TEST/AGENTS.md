@@ -22,29 +22,38 @@ HAL unchanged.
 
 ## Status
 
-Compiles, and runs every test that does not move the machine. Motion is **not
-finished**, and the remaining problem is now narrower than it was.
+Complete. Motion works: the step timer is armed and enabled, `run_until_idle()` advances
+the clock instead of calling `stepper.isr()`, and both `testhal_native_test` and
+`linux_native_test` are green at 377.
 
-The first diagnosis was wrong. `HAL_timer_interrupt_enabled` read false after
-`stepper.init()` not because the HAL failed to arm the timer, but because the test
-fixture disabled it four lines later — leftover code whose purpose under the LINUX HAL
-was suppressing POSIX signals, and which has no business running here. That is fixed:
-the suppression is now `#ifndef __PLAT_TEST__`.
+Two diagnoses along the way were wrong, and both are worth remembering.
 
-What is left: with the step interrupt actually enabled, the suite hangs *before its
-first assertion*, somewhere in the `SimulatedMachine` constructor — earlier than any
-test body, and with no output to narrow it. Enabling interrupts is necessary for motion
-here, so this has to be understood rather than worked around.
+The first was that `HAL_timer_interrupt_enabled` read false after `stepper.init()`
+because the HAL failed to arm the timer. It was the fixture disabling it four lines
+later - leftover code whose purpose under the LINUX HAL was suppressing POSIX signals.
+That is now `#ifndef __PLAT_TEST__`.
 
-Worth checking first: whether an ISR fires re-entrantly through `HAL_test_advance_*`,
-and whether `Stepper::isr()` setting the compare to `HAL_TIMER_TYPE_MAX` on entry
-combines with `Timer::schedule()` to produce a zero or wrapped interval — a period of
-zero would fire the handler forever inside one advance, which matches a hang with no
-output. The `budget` argument in `Timer::advance()` was meant to bound exactly that;
-it may need to bound re-entry too.
+The second was that enabling the interrupt hung the suite in the `SimulatedMachine`
+constructor, and that the cause was re-entrancy or a zero-length period. Neither was
+true, and the premise was not either: the binary's stdout is block-buffered when piped,
+so a hang anywhere loses *all* output. It was hanging in the first motion test, and it
+hung there with interrupts still disabled.
 
-Until then the motion tests run under `linux_native_test`, which drives `stepper.isr()`
-directly and stays green at 377.
+The cause was `Timer::getCount()`, in two ways - see the comment on it. It returned an
+absolute tick count where the hardware (and the LINUX HAL) return ticks since the timer
+last restarted, which wrecks `Stepper::isr()`'s interval arithmetic: `min_ticks` is
+computed as `getCount() + margin` and compared against an *interval*. And, fatally, it
+answered without moving the clock. Marlin times its step pulses by spinning on that
+counter (`AWAIT_TIMED_PULSE` in stepper.cpp), a loop that on hardware ends because the
+CPU burns cycles while the counter runs; here nothing else moved the clock inside it, so
+it spun forever. Reading the counter now costs one tick, which is the simulated
+equivalent of the cycles the poll would have taken, and is deterministic.
+
+`Timer::advance()` has been replaced by `pending()`/`fire()`, and the scheduler in
+`timers.cpp` now walks the clock to each interrupt in turn rather than jumping to the end
+of the interval and firing afterwards - a handler that reads the clock has to see the
+instant it was due. Re-entry is guarded there: a handler that advances time gets the
+time, but not nested interrupts.
 
 The two environments deliberately share fixtures: `Marlin/tests/support/` selects the
 mechanism per platform, so a test reads the same either way and the LINUX build stays
