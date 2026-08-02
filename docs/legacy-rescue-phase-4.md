@@ -427,7 +427,27 @@ survivors are likely equivalent as a result.
 
 1. **Another survivor round on `temperature.cpp`**, which is at 54.0% against
    `stepper.cpp`'s 67.3%, and whose detections are still mostly timeouts (414 of 775).
-   The autotune internals at 804-954 and `3608` are the reachable clusters.
+
+   The survivor set was clustered from `.pio/mutation/temperature2.json` (2808 run: 361
+   KILLED, 414 TIMEOUT, 661 SURVIVED, 1372 BUILD_FAIL) and splits into two independent
+   bodies of work, so it takes two agents on two files without contention:
+
+   - **`PID_autotune()`, lines 780-1010 — roughly 200 survivors**, the largest single
+     cluster in the file. Densest at `797-808` (47), `889-918` (59) and `952-973` (40).
+     Extends `test_pid_autotune.cpp`. The lesson from the first round applies hardest
+     here: the assertions that pay are the Ziegler-Nichols algebra and the relay
+     symmetry, not the resulting gains.
+   - **The limit and shutdown paths — 133 survivors** across three separate places: the
+     MINTEMP/MAXTEMP range checks at `2973-2999` (63, and note that
+     `MAX_CONSECUTIVE_LOW_TEMPERATURE_ERROR_ALLOWED` means one low reading is not enough
+     to trigger), `disable_all_heaters()` at `3570-3588` (24), and
+     `auto_job_over_threshold()` / `auto_job_check_timer()` at `3608-3620` (43). Wants a
+     new `test_thermal_limits.cpp`. The range checks need *raw ADC* values rather than
+     celsius, which the existing sensor helpers may not yet provide.
+
+   Two agents briefed on exactly this were killed by a session limit before either
+   finished its baseline mutation run. Both worktrees were clean and both had confirmed
+   the correct base and baseline first, so nothing was lost and nothing needs undoing.
 3. **Reconsider the heater model's tuning.** The models are tuned, not derived, and the
    bed constant is load-bearing rather than cosmetic: the bed is bang-bang and
    `manage_heated_bed()` only reconsiders every `BED_CHECK_INTERVAL` (5 s), so a faster
