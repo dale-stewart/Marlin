@@ -51,14 +51,22 @@ public:
     return true;
   }
 
+  // The index must only move once the slot it refers to is finished with: the other
+  // side of the buffer decides what it may touch from the index alone. Publishing
+  // index_write before the byte lands lets a reader take the previous lap's byte out
+  // of that slot; publishing index_read before the byte is taken lets a writer
+  // overwrite it first. Both show up as a single substituted character.
   int read() volatile {
     if (empty()) return -1;
-    return buffer[mask(index_read++)];
+    const T value = buffer[mask(index_read)];
+    index_read++;
+    return value;
   }
 
   bool write(T value) volatile {
     if (full()) return false;
-    buffer[mask(index_write++)] = value;
+    buffer[mask(index_write)] = value;
+    index_write++;
     return true;
   }
 
