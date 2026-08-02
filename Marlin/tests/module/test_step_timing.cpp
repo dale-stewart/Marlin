@@ -1,0 +1,434 @@
+/**
+ * Marlin 3D Printer Firmware
+ * Copyright (c) 2024 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ */
+
+/**
+ * The journey, not just the destination.
+ *
+ * tests/module/test_simulated_motion.cpp asserts where a move ends up. That says nothing
+ * about *how* it got there: a move that ignored acceleration, started decelerating in the
+ * wrong place, or ran at half the commanded speed still delivers the same number of
+ * steps, so a final step count cannot notice any of it.
+ *
+ * Everything below asserts on *when* the step pulses arrive. The test HAL already makes
+ * that observable without a production seam: `Gpio::attachLogger()` is part of the HAL,
+ * every write to a pin carries `Clock::nanos()`, and the clock only moves when a test
+ * moves it. So a move's pulse timeline is exact and repeatable — the same view a logic
+ * analyser on the step pin would give.
+ *
+ * The claims made about that timeline are physical ones — peak speed, ramp symmetry, how
+ * the move stretches when acceleration is halved — rather than claims about the variables
+ * stepper.cpp happens to keep. Bands are given where the firmware's discrete arithmetic
+ * cannot hit the continuous answer exactly; each one says what it is allowing for.
+ *
+ * Test-HAL only: under HAL/LINUX time is the wall clock and interrupts are POSIX signals,
+ * so none of these timings would be reproducible.
+ */
+
+#ifdef __PLAT_TEST__
+
+#include "../test/unit_tests.h"
+#include "../support/simulated_machine.h"
+#include "src/HAL/TEST/hardware/Gpio.h"
+#include "src/module/planner.h"
+#include "src/module/stepper.h"
+
+#include <vector>
+#include <math.h>
+
+namespace {
+
+  /**
+   * Every rising edge on the X step pin, in simulated nanoseconds.
+   *
+   * Attaching in the constructor and detaching in the destructor matters: the logger is a
+   * single global hook, and leaving a dangling one behind would have the next test write
+   * through a destroyed object.
+   */
+  class StepTimeline : public IOLogger {
+  public:
+    StepTimeline() { Gpio::attachLogger(this); }
+    ~StepTimeline() { Gpio::attachLogger(nullptr); }
+
+    void log(GpioEvent ev) override {
+      if (ev.pin_id == X_STEP_PIN && ev.event == GpioEvent::RISE) at.push_back(ev.timestamp);
+    }
+
+    std::vector<uint64_t> at;
+
+    size_t steps() const { return at.size(); }
+    size_t gaps() const { return at.size() ? at.size() - 1 : 0; }
+
+    // Nanoseconds between step i and step i+1.
+    uint64_t gap(const size_t i) const { return at[i + 1] - at[i]; }
+
+    // First pulse to last pulse. Shorter than the whole move by the run-up to the first
+    // step and the run-out after the last, but no part of either ramp is missing.
+    uint64_t span_ns() const { return at.size() < 2 ? 0 : at.back() - at.front(); }
+
+    uint64_t shortest_gap() const {
+      uint64_t m = ~uint64_t(0);
+      for (size_t i = 0; i < gaps(); i++) if (gap(i) < m) m = gap(i);
+      return m;
+    }
+
+    size_t index_of_shortest_gap() const {
+      size_t best = 0;
+      for (size_t i = 0; i < gaps(); i++) if (gap(i) < gap(best)) best = i;
+      return best;
+    }
+
+    // Time from the first pulse to the fastest one, and from there to the last.
+    uint64_t time_speeding_up() const { return at[index_of_shortest_gap()] - at.front(); }
+    uint64_t time_slowing_down() const { return at.back() - at[index_of_shortest_gap()]; }
+
+    // The speed a step-to-step gap represents, in mm/s, at a given resolution.
+    static float mm_s(const uint64_t gap_ns, const float steps_per_mm) {
+      return 1.0e9f / (float(gap_ns) * steps_per_mm);
+    }
+
+    float peak_mm_s(const float steps_per_mm = SimulatedMachine::STEPS_PER_MM) const {
+      return mm_s(shortest_gap(), steps_per_mm);
+    }
+
+    // How many gaps are within `factor` of the fastest — the cruise plateau, if there is
+    // one, plus the shoulders either side of it.
+    size_t gaps_near_the_fastest(const float factor) const {
+      const float limit = float(shortest_gap()) * factor;
+      size_t n = 0;
+      for (size_t i = 0; i < gaps(); i++) if (float(gap(i)) <= limit) n++;
+      return n;
+    }
+  };
+
+  // Run one X move from the origin and check every step arrived, so a timeline is never
+  // read from a move that silently lost steps.
+  void move_x(const StepTimeline &line, const float mm, const float feedrate) {
+    xyze_pos_t origin = { 0 };
+    planner.set_position_mm(origin);
+    xyze_pos_t target = { 0 };
+    target.x = mm;
+    TEST_ASSERT_TRUE(planner.buffer_line(target, feedrate));
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+    TEST_ASSERT_EQUAL(int32_t(planner.settings.axis_steps_per_mm[X_AXIS] * mm), stepper.position(X_AXIS));
+    TEST_ASSERT_EQUAL(size_t(planner.settings.axis_steps_per_mm[X_AXIS] * mm), line.steps());
+  }
+
+  void set_acceleration(const float accel) {
+    LOOP_NUM_AXES(i) planner.settings.max_acceleration_mm_per_s2[i] = uint32_t(accel);
+    planner.settings.acceleration = accel;
+    planner.settings.travel_acceleration = accel;
+    planner.refresh_acceleration_rates();
+  }
+
+  /**
+   * Re-resolve the machine: a finer microstep and a stiffer ramp.
+   *
+   * The fixture's 80 steps/mm is a belted axis on full steps. At that resolution no
+   * feedrate the machine will accept produces a step rate the stepper interrupt cannot
+   * serve one step at a time, so the multistepping path never runs. 3200 steps/mm is an
+   * ordinary 1/16-microstepped leadscrew, and at 200 mm/s it asks for 640,000 steps a
+   * second — which it cannot.
+   */
+  void with_resolution(const float steps_per_mm, const float accel) {
+    LOOP_LOGICAL_AXES(i) planner.settings.axis_steps_per_mm[i] = steps_per_mm;
+    LOOP_NUM_AXES(i) planner.settings.max_feedrate_mm_s[i] = 1000.0f;
+    planner.refresh_positioning();
+    set_acceleration(accel);
+  }
+
+  // Ratio of two durations, largest first, for assertions written as "x times longer".
+  float ratio(const uint64_t a, const uint64_t b) { return float(a) / float(b); }
+
+}
+
+//
+// ---- The velocity profile ----
+//
+
+/**
+ * A move speeds up, then slows down, and never does either in the wrong direction.
+ *
+ * 10 mm at 3000 mm/s² cannot reach 300 mm/s in the distance available, so the move is a
+ * pure triangle: every step to the middle is closer to its neighbour than the one before,
+ * and every step after it is further apart. That single shape is what `accelerate_before`,
+ * `decelerate_start` and the acceleration/deceleration clocks exist to produce, and a
+ * final step count cannot see any of it.
+ */
+MARLIN_TEST(step_timing, a_move_speeds_up_and_then_slows_down) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 10.0f, 300.0f);
+
+  const size_t fastest = line.index_of_shortest_gap();
+
+  // Not flat: the ends are far slower than the middle.
+  TEST_ASSERT_TRUE(line.gap(0) > line.shortest_gap() * 8);
+  TEST_ASSERT_TRUE(line.gap(line.gaps() - 1) > line.shortest_gap() * 8);
+
+  // Monotonic up to the fastest step and monotonic away from it afterwards.
+  for (size_t i = 1; i <= fastest; i++)
+    TEST_ASSERT_TRUE(line.gap(i) <= line.gap(i - 1));
+  for (size_t i = fastest + 1; i < line.gaps(); i++)
+    TEST_ASSERT_TRUE(line.gap(i) >= line.gap(i - 1));
+}
+
+/**
+ * The peak of that triangle is where the ramp puts it: halfway.
+ *
+ * A move that accelerates and decelerates at the same rate reaches its top speed at the
+ * midpoint. Getting `decelerate_start` wrong moves the peak without changing the step
+ * count.
+ */
+MARLIN_TEST(step_timing, a_triangular_move_peaks_at_its_midpoint) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 10.0f, 300.0f);
+
+  const float where = float(line.index_of_shortest_gap()) / float(line.gaps());
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 0.5f, where);
+}
+
+/**
+ * Speeding up and slowing down take the same length of time.
+ *
+ * The two halves are computed by different code — `acceleration_time` counts up from an
+ * initial rate, `deceleration_time` counts down from the cruise rate — so a symmetric
+ * move is the test that says they agree. The 5% band allows for the two clocks starting
+ * half an interval apart, which is deliberate (`acceleration_time = deceleration_time =
+ * interval / 2`).
+ */
+MARLIN_TEST(step_timing, acceleration_and_deceleration_take_the_same_time) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 10.0f, 300.0f);
+
+  const uint64_t up = line.time_speeding_up(), down = line.time_slowing_down();
+  TEST_ASSERT_TRUE(up > 0 && down > 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 1.0f, ratio(up, down));
+}
+
+/**
+ * The top speed is the one the ramp allows, not the one that was asked for.
+ *
+ * Accelerating at `a` over half of a distance `d` and decelerating over the other half
+ * peaks at sqrt(a·d) — here sqrt(3000 × 10) = 173.2 mm/s, well below the 300 mm/s
+ * requested. The 3% band is the firmware's integer step-rate arithmetic; the value is
+ * physics, not a recorded measurement.
+ */
+MARLIN_TEST(step_timing, an_acceleration_limited_move_peaks_where_the_ramp_allows) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 10.0f, 300.0f);
+
+  const float predicted = sqrtf(3000.0f * 10.0f);
+  TEST_ASSERT_FLOAT_WITHIN(predicted * 0.03f, predicted, line.peak_mm_s());
+}
+
+/**
+ * Halving the acceleration stretches the move by root two and lowers its peak by root two.
+ *
+ * For a triangular move t = 2·sqrt(d/a) and v = sqrt(a·d), so both scale as sqrt(a). This
+ * is the assertion that says the acceleration *rate* is actually being applied rather than
+ * some fixed ramp: it is a ratio, so every fixed overhead in the measurement cancels, and
+ * the band can be tight.
+ */
+MARLIN_TEST(step_timing, halving_the_acceleration_stretches_the_move_by_root_two) {
+  SimulatedMachine machine;
+
+  uint64_t span_fast, span_slow;
+  float peak_fast, peak_slow;
+
+  {
+    StepTimeline line;
+    set_acceleration(3000.0f);
+    move_x(line, 10.0f, 300.0f);
+    span_fast = line.span_ns();
+    peak_fast = line.peak_mm_s();
+  }
+  {
+    StepTimeline line;
+    set_acceleration(1500.0f);
+    move_x(line, 10.0f, 300.0f);
+    span_slow = line.span_ns();
+    peak_slow = line.peak_mm_s();
+  }
+
+  TEST_ASSERT_FLOAT_WITHIN(0.02f, sqrtf(2.0f), ratio(span_slow, span_fast));
+  TEST_ASSERT_FLOAT_WITHIN(0.02f, sqrtf(2.0f), peak_fast / peak_slow);
+}
+
+/**
+ * A move long enough to get up to speed cruises there, at the speed it was given.
+ *
+ * 10 mm at 50 mm/s needs 0.4 mm of ramp at each end, so the middle is a plateau — the
+ * cruise branch, which computes one interval (`ticks_nominal`) and reuses it. Both halves
+ * of that matter: the plateau exists, and it is at 50 mm/s.
+ */
+MARLIN_TEST(step_timing, a_long_move_cruises_at_the_commanded_feedrate) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 10.0f, 50.0f);
+
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 50.0f, line.peak_mm_s());
+
+  // Most of the move is at that speed, rather than the peak being a single instant.
+  TEST_ASSERT_TRUE(line.gaps_near_the_fastest(1.001f) > (line.gaps() * 85) / 100);
+}
+
+/**
+ * The cruise really is a constant interval, not a slow drift.
+ *
+ * Taken across the middle half of the move, where neither ramp reaches, every gap is the
+ * same. A profile that kept adjusting the rate while cruising would still average 50 mm/s
+ * and still deliver 800 steps.
+ */
+MARLIN_TEST(step_timing, the_cruise_interval_does_not_drift) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 10.0f, 50.0f);
+
+  const size_t from = line.gaps() / 4, to = (line.gaps() * 3) / 4;
+  for (size_t i = from; i < to; i++)
+    TEST_ASSERT_EQUAL_UINT64(line.gap(from), line.gap(i));
+}
+
+/**
+ * A move too slow to need a ramp runs at one interval from beginning to end.
+ *
+ * 5 mm/s is reached in under two milliseconds, which is less than a single step interval
+ * at 80 steps/mm, so there is no observable acceleration phase at all. Every gap but the
+ * last — which absorbs the end of the block — is identical.
+ */
+MARLIN_TEST(step_timing, a_slow_move_never_ramps) {
+  SimulatedMachine machine;
+  StepTimeline line;
+  move_x(line, 2.0f, 5.0f);
+
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 5.0f, line.peak_mm_s());
+  for (size_t i = 1; i + 1 < line.gaps(); i++)
+    TEST_ASSERT_EQUAL_UINT64(line.gap(0), line.gap(i));
+}
+
+/**
+ * At a constant speed, twice the distance takes twice as long.
+ *
+ * The trivial physical claim, and the one that catches a profile that is internally
+ * consistent but scaled wrongly: both moves would still land on an exact step count.
+ */
+MARLIN_TEST(step_timing, twice_the_distance_at_one_speed_takes_twice_the_time) {
+  SimulatedMachine machine;
+
+  uint64_t span_short, span_long;
+  { StepTimeline line; move_x(line, 1.0f, 5.0f); span_short = line.span_ns(); }
+  { StepTimeline line; move_x(line, 2.0f, 5.0f); span_long  = line.span_ns(); }
+
+  TEST_ASSERT_FLOAT_WITHIN(0.02f, 2.0f, ratio(span_long, span_short));
+}
+
+//
+// ---- Multistepping ----
+//
+
+/**
+ * A step rate higher than the interrupt can serve is delivered several steps at a time.
+ *
+ * At 3200 steps/mm — an ordinary 1/16-microstepped leadscrew — 200 mm/s is 640,000 steps
+ * a second. One interrupt per step is not on offer at that rate, so the stepper emits
+ * more than one pulse per interrupt and divides the interval to match. Nothing in the
+ * existing suite goes fast enough to enter that path: at the fixture's 80 steps/mm the
+ * fastest move the machine will accept is under 25,000 steps a second.
+ *
+ * The evidence is in the pulse spacing. Doubling the feedrate from 100 to 200 mm/s can at
+ * best halve the interval between interrupts, so a one-pulse-per-interrupt driver could
+ * not put pulses closer than half of the 100 mm/s spacing. Anything much closer than that
+ * is two pulses issued back to back inside one interrupt.
+ */
+MARLIN_TEST(step_timing, a_step_rate_beyond_one_step_per_interrupt_doubles_up_the_pulses) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 20000.0f);
+
+  uint64_t closest_at_100, closest_at_200;
+  { StepTimeline line; move_x(line, 5.0f, 100.0f); closest_at_100 = line.shortest_gap(); }
+  { StepTimeline line; move_x(line, 5.0f, 200.0f); closest_at_200 = line.shortest_gap(); }
+
+  // Twice the feedrate, but far more than twice as close together.
+  TEST_ASSERT_TRUE(closest_at_200 * 3 < closest_at_100);
+}
+
+/**
+ * Multistepping loses no steps and gains none.
+ *
+ * The interval is divided and the pulses are batched, so an error in either the divisor
+ * or the batch size shows up as a position that is wrong by a factor. `move_x` checks the
+ * step count and the stepper's own position on every move, at four feedrates that span
+ * the threshold: the same 5 mm arrives at 16,000 steps whether it took one interrupt per
+ * step or two.
+ */
+MARLIN_TEST(step_timing, multistepping_delivers_exactly_the_steps_asked_for) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 20000.0f);
+
+  for (const float feedrate : { 50.0f, 100.0f, 200.0f }) {
+    StepTimeline line;
+    move_x(line, 5.0f, feedrate);
+  }
+}
+
+/**
+ * A multistepped move still takes about the time the feedrate implies.
+ *
+ * 5 mm at 200 mm/s and 20,000 mm/s² is 1 mm of ramp at each end and 3 mm of cruise:
+ * 20 ms of ramp plus 15 ms of cruise, 35 ms in all. That is a floor, because the firmware
+ * must never exceed the commanded feedrate, and the ceiling says the multistepping
+ * divisor is not costing the move a factor: getting the shift wrong by one bit halves or
+ * doubles the effective rate, which neither bound would allow.
+ */
+MARLIN_TEST(step_timing, a_multistepped_move_keeps_to_the_commanded_feedrate) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 20000.0f);
+
+  StepTimeline line;
+  move_x(line, 5.0f, 200.0f);
+
+  const uint64_t ideal_ns = 35000000;   // 2 x 200/20000 s of ramp + 3/200 s of cruise
+  TEST_ASSERT_TRUE(line.span_ns() >= ideal_ns);
+  TEST_ASSERT_TRUE(line.span_ns() < ideal_ns * 2);
+}
+
+/**
+ * Going faster than one step per interrupt still makes the move faster.
+ *
+ * Between 50 and 200 mm/s the machine crosses into multistepping, so this is the claim
+ * that crossing it does not cost the speed it was supposed to buy: four times the
+ * feedrate is at least twice the speed over the same 5 mm, and never more than four
+ * times, which is all the feedrate asked for.
+ */
+MARLIN_TEST(step_timing, crossing_into_multistepping_still_goes_faster) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 20000.0f);
+
+  uint64_t span_50, span_200;
+  { StepTimeline line; move_x(line, 5.0f, 50.0f);  span_50  = line.span_ns(); }
+  { StepTimeline line; move_x(line, 5.0f, 200.0f); span_200 = line.span_ns(); }
+
+  TEST_ASSERT_TRUE(ratio(span_50, span_200) >= 2.0f);
+  TEST_ASSERT_TRUE(ratio(span_50, span_200) <= 4.0f);
+}
+
+#endif // __PLAT_TEST__
