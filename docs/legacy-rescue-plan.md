@@ -175,14 +175,18 @@ compile the 736 platform-agnostic files that no test can currently reach.
 They are sequenced deliberately: 4a multiplies the value of the tests already written,
 while 4b multiplies their cost.
 
-**Status: 4a is in progress and has partly met its gate.** The test HAL exists, motion
-and every blocking command (`M400`, `G4`, arcs) now run, `stepper.cpp` went from 24% to
-87.8%, and the platform-agnostic total is 62.1%. `temperature.cpp` is still 25.5%
-because `Temperature::isr` does not yet fire, which also keeps homing and `M109` with a
-real target out of reach. The remaining 4a work — driving the temperature ISR, homing
-and endstops, mutation-testing the newly covered code, and pinning down one flake in
-`SerialCapture` — is enumerated at the end of the 4a section of the phase-4 document.
-4b has not started.
+**Status: 4a has met its exit gate.** The test HAL exists; motion, every blocking command
+(`M400`, `G4`, arcs) and the temperature ISR all run on simulated time. `stepper.cpp`
+24% → 87.8%, `temperature.cpp` 24% → 79.2%, platform-agnostic total 58.4% → **70.0%**,
+398 tests under the test HAL and 377 under LINUX.
+
+What remains in 4a: homing and endstop triggering (the last of the six behaviours, and
+why `motion.cpp` is still 20.8%), and — more important — **mutation-testing the newly
+covered code**, which has not been done at all. Coverage that cheap is the shape that
+hides thin assertions, so until it is mutation tested the 70.0% is reach, not protection.
+The safety paths that end in `kill()` are a blocked correction rather than a gap: they
+need a seam that lets `kill()` return, which is a production surface change. Details at
+the end of the 4a section of the phase-4 document. 4b has not started.
 
 ## Cross-cutting: a blocked-corrections register
 

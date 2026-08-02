@@ -248,58 +248,82 @@ The general lesson, now a rule in `Marlin/src/HAL/TEST/AGENTS.md`: **a simulated
 powers up in a state no board is ever in.** `Marlin::setup()` configures the pull-ups and
 does not run in a test build, so the fixture has to stand in for it. Expect more of these.
 
-**Homing, endstop triggering and `M109`/`M190` with a real target are not done**, and
-the measurement says why.
+**`M109`/`M190` with a real target are now done too** — the heaters are first-order
+models attached as `Gpio` peripherals to the heater pins, so they tick from the ISR's own
+soft PWM with no polling and no production seam. The commands reach their targets because
+the firmware heated them. **Homing and endstop triggering remain.**
 
 ### What the measurement says
 
 `testhal_native_coverage` (added for this, since these behaviours only run there):
 
-| | Lines | Was |
-|---|---|---|
-| Platform-agnostic total | **62.1%** (2685/4323) | 58.4% |
-| `stepper.cpp` | **87.8%** | 24% |
-| `planner.cpp` | **78.3%** | 59% |
-| `temperature.cpp` | **25.5%** | 24% |
-| `motion.cpp` | **20.8%** | 20% |
+| | Lines | At 4a start | Now |
+|---|---|---|---|
+| Platform-agnostic total | | 58.4% | **70.0%** (3024/4323) |
+| `stepper.cpp` | | 24% | **87.8%** |
+| `temperature.cpp` | | 24% | **79.2%** |
+| `planner.cpp` | | 59% | **78.3%** |
+| `motion.cpp` | | 20% | **20.8%** |
 
 `stepper.cpp` cleared the gate by a wide margin — the phase paid for itself there.
-`temperature.cpp` did not move, and the reason is specific: the fixture starts and
-enables `MF_TIMER_STEP` under the test HAL but never starts `MF_TIMER_TEMP` at all, so
-`Temperature::isr` never fires. (Under the LINUX HAL the fixture goes further and parks
-both compares at `HAL_TIMER_TYPE_MAX` to silence POSIX signals.) `thermalManager.init()`
-also still crashes with SIGFPE in this build. Temperature is covered only through its
-setters and getters. `motion.cpp` is low for the same reason at
+`temperature.cpp` has since been brought up the same way and is now **79.2%**, taking the
+platform-agnostic total to **70.0%**. Two obstacles had been recorded as facts and both
+were wrong in the same direction — attributed to the component rather than to its
+bring-up:
+
+- The SIGFPE was never in `Temperature::init()`. That function ends with
+  `HAL_timer_start(MF_TIMER_TEMP, ...)`, which divides by `Timer::frequency` — zero until
+  `HAL_timer_init()` has run. It is the *same* uninitialised-frequency fault that once
+  looked like a bug in `stepper.init()`. Order the bring-up correctly and it runs cleanly
+  in both environments.
+- The ADC held the exact analogue of the `KILL_PIN` trap, as predicted. A simulated pin
+  reads 0; a raw count of 0 on a thermistor divider converts to **320 °C**, above both
+  `MAXTEMP` limits, so the first `Temperature::task()` reached `kill()` and never
+  returned. Bring-up now drives every analog input to a room-temperature count before
+  `Temperature::init()`.
+
+That is three separate faults now — kill button, timer frequency, thermistor divider —
+all the same shape: **the simulated machine powers up in a state no board is ever in, and
+the production `setup()` that would fix it does not run in a test build.** Expect it
+again for any new peripheral. `motion.cpp` is low for the same reason at
 one remove: `prepare_line_to_destination` and `blocking_move` are homing paths.
 
-### Exit gate — partly met
+### Exit gate — met
 
-- ✅ four of six behaviours have tests
-- ✅ `stepper.cpp` above 60% (87.8%)
-- ❌ `temperature.cpp` above 60% (25.5%)
+- ✅ five of six behaviours have tests (homing is the exception)
+- ✅ `stepper.cpp` above 60% — **87.8%**
+- ✅ `temperature.cpp` above 60% — **79.2%**
 - ✅ no new external dependency in the test build
+
+The suite is 398 tests under the test HAL and 377 under LINUX, and the flake that would
+have invalidated any mutation measurement is fixed — it was a genuine defect in the
+serial ring buffer, not in the test helper (register #16).
 
 ### What remains in 4a
 
-1. **Drive `Temperature::isr` from the test HAL.** Stop parking the temp timer, work out
-   why `thermalManager.init()` divides by zero, and let the ADC pipeline run on
-   simulated time. This is the one item that decides whether 4a met its gate. Note that
-   `SimulatedSensors` currently works precisely *because* the ADC pipeline is dormant and
-   nothing overwrites `temp_hotend`; making the ISR run will invalidate that helper and
-   the tests that depend on it, so the two changes have to land together.
-2. **Homing and endstop triggering.** `endstops.update()` only records a hit while the
-   axis is moving, which now happens — this should be reachable without new HAL work, by
-   tripping a simulated endstop pin at a chosen position.
-3. **`M109`/`M190` with a real target**, which follows from (1) and lets the residency
-   logic be tested instead of stubbed.
-4. **Mutation-test the newly covered code.** `stepper.cpp` went from 24% to 87.8% line
-   coverage on the strength of a handful of tests; that ratio is exactly the shape that
-   hides passing-but-worthless tests, and it has not been mutation tested at all.
-5. **Pin down one flake.** `gcode_reports_keepalive___M113_reports_the_interval` failed
-   once in nineteen runs, `SerialCapture` returning text without the expected report.
-   `SerialCapture` drains the transmit ring from a second thread; this looks like a race
-   in the helper rather than in the firmware, but "looks like" is not a diagnosis. A
-   test suite with a known flake cannot serve as a mutation baseline, so this blocks (4).
+1. **Homing and endstop triggering** — the last of the six. `endstops.update()` only
+   records a hit while the axis is moving, which now happens, so this should need no new
+   HAL work: trip a simulated endstop pin at a chosen position. `motion.cpp` is still at
+   20.8% and this is why — `prepare_line_to_destination` and `blocking_move` are homing
+   paths.
+2. **Mutation-test the newly covered code.** This is now the most valuable item, and the
+   one most likely to be skipped. `stepper.cpp` went 24% → 87.8% and `temperature.cpp`
+   25.5% → 79.2%, each on a handful of tests. That ratio is exactly the shape that hides
+   passing-but-worthless tests: coverage this cheap usually means broad execution with
+   thin assertions. None of it has been mutation tested. Until it has, the headline
+   numbers above are reach, not protection.
+3. **Reconsider the heater model's tuning.** The models are tuned, not derived, and the
+   bed constant is load-bearing rather than cosmetic: the bed is bang-bang and
+   `manage_heated_bed()` only reconsiders every `BED_CHECK_INTERVAL` (5 s), so a faster
+   model swings past `TEMP_BED_HYSTERESIS` every cycle and `M190` never settles. A
+   fixture parameter that must be inside a window for firmware logic to converge is a
+   fragility worth either documenting precisely or removing.
+4. **Decide about `kill()`.** The remaining ~20% of `temperature.cpp` is mostly paths
+   that end in `kill()` — `maxtemp_error`, `mintemp_error`, the thermal-runaway state
+   machine. These are the *safety* paths, so they are the ones most worth testing and the
+   ones currently unreachable, because `kill()` never returns. Reaching them needs a seam
+   that lets it return under test. That is a production surface change, so under the
+   test-frontier rule it is a blocked correction, not a quick fix.
 
 ---
 
