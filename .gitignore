@@ -181,3 +181,6 @@ tags
 .env
 schema.json
 sqlite*.db
+
+# Agent worktrees (transient)
+.claude/worktrees/

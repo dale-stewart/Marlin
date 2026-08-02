@@ -48,6 +48,15 @@ Evidence, measured on an isolated worktree at `525d497f` with the same binary ot
 clean run of the fixed binary proves nothing unless the harness is known to detect the
 fault.
 
+## Test harness defects
+
+Not firmware. These are faults in the instrument, listed here so that a behaviour the
+suite cannot reach is not mistaken for a behaviour the firmware does not have.
+
+| # | Symptom | Where | Impact | Status |
+|---|---|---|---|---|
+| 18 | `Timer::enable()` calls `schedule()`, which restarts the period: `next_fire_ns = now + period`. Real hardware does not — `HAL_timer_enable_interrupt()` sets an interrupt-enable bit and leaves the counter running, so a pending compare match still happens when it always would have. Under this HAL, anything that disables and re-enables a timer more often than that timer's own period starves it forever. `Stepper::endstop_triggered()` is exactly that: its `ATOMIC_SECTION_START/END` is a `suspend()`/`wake_up()` pair on MF_TIMER_STEP, and while a closed switch sits in front of a moving axis `Endstops::poll()` calls it from *every* temperature interrupt (~1 ms), against a step interval at the head of a block of ~2.8 ms. | `HAL/TEST/hardware/Timer.h:52` | A move that *begins* with its endstop already closed never completes: the abort the ISR was asked to perform is never carried out, `axis_did_move` is never cleared, and the next temperature interrupt asks again. Simulated time keeps advancing, so it presents as a hang, not a failure. A switch that closes *during* a move is unaffected, because by then the step interval is far shorter than the temperature period. The behaviour this costs is homing an axis that is already sitting on its switch — i.e. a second `G28` without `HOMING_BACKOFF_POST_MM`. Deleting `schedule()` from `enable()` was verified to fix it with the rest of the suite still green. Pinned by `endstops___a_move_that_starts_against_a_closed_switch_stalls`. | open |
+
 ## Recorded as intended
 
 These follow from fixed-width display fields and are consistent across the library. They

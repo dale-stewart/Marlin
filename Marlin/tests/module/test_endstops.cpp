@@ -60,12 +60,12 @@ MARLIN_TEST(endstops, nothing_is_triggered_to_begin_with) {
 }
 
 /**
- * Pressing a switch cannot be observed here.
+ * A printer that is not moving reports nothing, however its switches are set.
  *
- * endstops.update() only records a hit when the axis is moving *towards* the switch —
- * it reads the stepper's direction — so with no stepper interrupt running, a pressed
- * pin changes nothing. Driving the pin (Gpio::set) works and needs no production seam;
- * what is missing is the motion. This belongs with homing in the NATIVE_SIM work.
+ * `endstops.update()` only records a hit when the axis is moving *towards* the switch —
+ * it reads the stepper's direction — so a pressed pin on a stationary machine changes
+ * nothing. That is the behaviour, not a limitation of the harness: pressing a switch
+ * on a *moving* axis is covered in `test_homing.cpp`, which runs under the test HAL.
  */
 MARLIN_TEST(endstops, an_idle_printer_reports_nothing_triggered) {
   EndstopFixture fixture;
