@@ -5,7 +5,7 @@ pinned by a test carrying a `LEGACY-BEHAVIOR:` comment, so the current behaviour
 drift unnoticed — and so that fixing one starts from a failing test rather than a
 guess.
 
-Nothing here has been fixed, with one recorded exception (#16) where the defect was in
+Nothing here has been fixed, with two recorded exceptions (#16 and #18) where the defect was in
 the measuring instrument itself. Changing any of the rest changes what the firmware does,
 which is a decision for the maintainer, not a side effect of adding tests.
 
@@ -55,7 +55,21 @@ suite cannot reach is not mistaken for a behaviour the firmware does not have.
 
 | # | Symptom | Where | Impact | Status |
 |---|---|---|---|---|
-| 18 | `Timer::enable()` calls `schedule()`, which restarts the period: `next_fire_ns = now + period`. Real hardware does not — `HAL_timer_enable_interrupt()` sets an interrupt-enable bit and leaves the counter running, so a pending compare match still happens when it always would have. Under this HAL, anything that disables and re-enables a timer more often than that timer's own period starves it forever. `Stepper::endstop_triggered()` is exactly that: its `ATOMIC_SECTION_START/END` is a `suspend()`/`wake_up()` pair on MF_TIMER_STEP, and while a closed switch sits in front of a moving axis `Endstops::poll()` calls it from *every* temperature interrupt (~1 ms), against a step interval at the head of a block of ~2.8 ms. | `HAL/TEST/hardware/Timer.h:52` | A move that *begins* with its endstop already closed never completes: the abort the ISR was asked to perform is never carried out, `axis_did_move` is never cleared, and the next temperature interrupt asks again. Simulated time keeps advancing, so it presents as a hang, not a failure. A switch that closes *during* a move is unaffected, because by then the step interval is far shorter than the temperature period. The behaviour this costs is homing an axis that is already sitting on its switch — i.e. a second `G28` without `HOMING_BACKOFF_POST_MM`. Deleting `schedule()` from `enable()` was verified to fix it with the rest of the suite still green. Pinned by `endstops___a_move_that_starts_against_a_closed_switch_stalls`. | open |
+| 18 | `Timer::enable()` calls `schedule()`, which restarts the period: `next_fire_ns = now + period`. Real hardware does not — `HAL_timer_enable_interrupt()` sets an interrupt-enable bit and leaves the counter running, so a pending compare match still happens when it always would have. Under this HAL, anything that disables and re-enables a timer more often than that timer's own period starves it forever. `Stepper::endstop_triggered()` is exactly that: its `ATOMIC_SECTION_START/END` is a `suspend()`/`wake_up()` pair on MF_TIMER_STEP, and while a closed switch sits in front of a moving axis `Endstops::poll()` calls it from *every* temperature interrupt (~1 ms), against a step interval at the head of a block of ~2.8 ms. | `HAL/TEST/hardware/Timer.h:52` | A move that *begins* with its endstop already closed never completes: the abort the ISR was asked to perform is never carried out, `axis_did_move` is never cleared, and the next temperature interrupt asks again. Simulated time keeps advancing, so it presents as a hang, not a failure. A switch that closes *during* a move is unaffected, because by then the step interval is far shorter than the temperature period. The behaviour this costs is homing an axis that is already sitting on its switch — i.e. a second `G28` without `HOMING_BACKOFF_POST_MM`. **Fixed** by deleting `schedule()` from `enable()`. Now pinned the other way, by `endstops___a_move_that_starts_against_a_closed_switch_is_abandoned_at_once`. | fixed |
+
+**Why this one was fixed rather than recorded.** Same reasoning as #16: the defect was in
+the instrument, not the firmware. `HAL/TEST` is compiled only into the `testhal_*`
+environments and ships to nobody, and its entire purpose is to behave like the hardware
+it stands in for — so a divergence from hardware semantics is not behaviour to preserve,
+it is the instrument being wrong. It also cost real coverage: homing an axis already on
+its switch was unreachable, and presented as a hang rather than a failure.
+
+Recording it instead was considered and rejected. A characterization test would have
+pinned a livelock, and "this move never completes" is not behaviour any firmware
+maintainer would want protected.
+
+The test that pinned the stall carried a message saying what to do when the stall was
+fixed, which is why the change surfaced immediately rather than silently passing.
 
 ## Recorded as intended
 

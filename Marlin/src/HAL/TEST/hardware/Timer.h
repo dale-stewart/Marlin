@@ -49,7 +49,17 @@ public:
 
   void start(const uint32_t freq) { setCompare(frequency / (freq ? freq : 1)); }
 
-  void enable()  { active = true; schedule(); }
+  /**
+   * Enable is not arm.
+   *
+   * Hardware sets an interrupt-enable bit and leaves the counter running, so a compare
+   * match that was already pending still happens when it always would have. Restarting
+   * the period here instead would starve any timer that is disabled and re-enabled more
+   * often than its own period — which `Stepper::endstop_triggered()` does, since its
+   * ATOMIC_SECTION is a suspend/wake_up pair on the step timer and `Endstops::poll()`
+   * calls it from every temperature interrupt.
+   */
+  void enable()  { active = true; }
   void disable() { active = false; }
   bool enabled() const { return active; }
 

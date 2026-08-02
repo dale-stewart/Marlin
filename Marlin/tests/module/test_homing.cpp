@@ -287,9 +287,10 @@ MARLIN_TEST(homing, G28_bumps_the_switch_twice_with_a_backoff_between) {
 /**
  * Homing is idempotent: doing it again lands in the same place.
  *
- * The carriage is driven away from the switch in between, because a second G28 from the
- * home position — with the switch still closed — does not terminate under this HAL. See
- * `a_move_that_starts_against_a_closed_switch_stalls` below for why.
+ * The carriage is driven away from the switch in between, which is what a machine with
+ * HOMING_BACKOFF_POST_MM would do for itself. Homing a second time straight off a closed
+ * switch is a separate case, covered by
+ * `a_move_that_starts_against_a_closed_switch_is_abandoned_at_once`.
  */
 MARLIN_TEST(homing, homing_again_lands_in_the_same_place) {
   SimulatedMachine machine;
@@ -383,11 +384,14 @@ MARLIN_TEST(homing, G28_X_does_not_home_the_other_axes) {
  * interval is far shorter than the temperature period — which is why every other test
  * in this file passes.
  *
- * Deleting `schedule()` from `enable()` was verified to fix it, and is left for the
- * owner of the HAL to make: this test pins what the HAL does today. The one behaviour
- * it costs is homing an axis that is already sitting on its switch.
+ * `schedule()` has since been deleted from `enable()`, which is why this test now asserts
+ * that the move is abandoned rather than that it stalls. The test is kept because it is
+ * the only one that exercises a move *beginning* against a closed switch: every other
+ * test in this file closes the switch while the axis is already up to speed, where the
+ * step interval is far shorter than the temperature period and the re-arming bug could
+ * never have bitten.
  */
-MARLIN_TEST(endstops, a_move_that_starts_against_a_closed_switch_stalls) {
+MARLIN_TEST(endstops, a_move_that_starts_against_a_closed_switch_is_abandoned_at_once) {
   SimulatedMachine machine;
   EndstopsWatching watching;
 
@@ -402,21 +406,12 @@ MARLIN_TEST(endstops, a_move_that_starts_against_a_closed_switch_stalls) {
   const bool hit_seen = TEST(endstops.trigger_state(), X_MIN);
   const int32_t moved = x.position() - int32_t(1.0f * SPM);
 
-  // Recover before asserting: a failed assertion leaves this function by longjmp, so
-  // anything after it — including the fixture destructors — would not run, and the next
-  // test would inherit a stuck block and a switch that is still closed.
-  x.place_at(int32_t(20.0f * SPM));
-  const bool freed = SimulatedMachine::run_until_idle(500000);
-
-  TEST_ASSERT_FALSE_MESSAGE(drained, "the stall is fixed — this test should now assert "
-                                     "that the move completes, and homing twice should "
-                                     "be testable from the switch");
+  // The block is discarded on the next step interrupt, so the queue drains ...
+  TEST_ASSERT_TRUE_MESSAGE(drained, "the move never completed");
   TEST_ASSERT_TRUE_MESSAGE(hit_seen, "the hit was not recorded");
-  TEST_ASSERT_EQUAL_INT_MESSAGE(0, moved, "the carriage moved further into the switch");
 
-  // And it is the closed switch that holds it: opening it frees the block on the next
-  // step interrupt. That is what makes the cause the re-arming rather than the block.
-  TEST_ASSERT_TRUE_MESSAGE(freed, "opening the switch did not release the block");
+  // ... and the carriage does not travel further into the switch to get there.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, moved, "the carriage moved further into the switch");
 }
 
 #endif // __PLAT_TEST__
