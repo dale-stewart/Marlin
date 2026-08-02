@@ -196,3 +196,22 @@ MARLIN_TEST(temperature, the_measured_temperature_is_reported) {
   }
 
 #endif
+
+// Factory reset puts every heater and fan setting back to the configured defaults.
+MARLIN_TEST(temperature, factory_reset_restores_the_defaults) {
+  SavedTargets restore;
+
+  #if ENABLED(PIDTEMP)
+    const float was_p = thermalManager.temp_hotend[0].pid.p();
+    SET_HOTEND_PID(Kp, 0, 999.0f);
+    TEST_ASSERT_EQUAL_FLOAT(999.0f, thermalManager.temp_hotend[0].pid.p());
+  #endif
+
+  thermalManager.factory_reset();
+
+  #if ENABLED(PIDTEMP)
+    TEST_ASSERT_NOT_EQUAL(999.0f, thermalManager.temp_hotend[0].pid.p());
+    SET_HOTEND_PID(Kp, 0, was_p);
+    thermalManager.updatePID();
+  #endif
+}

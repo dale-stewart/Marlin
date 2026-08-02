@@ -168,3 +168,16 @@ MARLIN_TEST(motion, all_steppers_can_be_enabled_and_disabled_together) {
   TEST_ASSERT_FALSE(stepper.axis_is_enabled(X_AXIS));
   TEST_ASSERT_FALSE(stepper.axis_is_enabled(Y_AXIS));
 }
+
+// The stepper's idea of where it is can be set directly, which is what homing and
+// G92.9 rely on.
+MARLIN_TEST(motion, the_stepper_position_can_be_set_and_read) {
+  stepper.set_axis_position(X_AXIS, 1234);
+  TEST_ASSERT_EQUAL(1234, stepper.position(X_AXIS));
+
+  stepper.set_axis_position(X_AXIS, -500);
+  TEST_ASSERT_EQUAL(-500, stepper.position(X_AXIS));
+
+  stepper.set_axis_position(X_AXIS, 0);
+  TEST_ASSERT_EQUAL(0, stepper.position(X_AXIS));
+}
