@@ -90,11 +90,22 @@ MARLIN_TEST(temperature, heating_and_cooling_are_told_apart) {
   TEST_ASSERT_FALSE(thermalManager.isHeatingHotend(0));
 }
 
+/**
+ * What the sensor reads is what the manager reports.
+ *
+ * The sensor is driven at the ADC, so the reading is quantised: near 123 C a count is
+ * about 0.15 C and 123.5 is not exactly representable. The test asks what the hardware
+ * will actually produce rather than asserting a value it cannot. The rounding assertion
+ * survives that intact — the reading is a little over 123.5, so a whole-degree report
+ * of 124 still distinguishes rounding from truncation.
+ */
 MARLIN_TEST(temperature, the_measured_temperature_is_reported) {
   SimulatedSensors sensors;
 
-  SimulatedSensors::hotend_reads(123.5f);
-  TEST_ASSERT_EQUAL_FLOAT(123.5f, thermalManager.degHotend(0));
+  const celsius_float_t reading = SimulatedSensors::hotend_reads(123.5f);
+  TEST_ASSERT_FLOAT_WITHIN(0.25f, 123.5f, reading);           // quantisation, not error
+  TEST_ASSERT_TRUE(reading > 123.5f);                         // ... and above the .5
+  TEST_ASSERT_EQUAL_FLOAT(reading, thermalManager.degHotend(0));
   TEST_ASSERT_EQUAL(124, thermalManager.wholeDegHotend(0));   // rounded, not truncated
 }
 
@@ -139,6 +150,9 @@ MARLIN_TEST(temperature, the_measured_temperature_is_reported) {
    * or two under its target still extrudes rather than refusing mid-print every time
    * the reading dips. Pinned as a relationship rather than a pair of numbers, so the
    * test follows the configured window instead of contradicting it.
+   *
+   * The boundary itself is pinned by the two nearest readings the sensor can actually
+   * produce either side of it, rather than by a round number the ADC cannot express.
    */
   MARLIN_TEST(temperature, the_cold_extrusion_limit_has_a_tolerance) {
     SavedTargets restore;
@@ -151,11 +165,22 @@ MARLIN_TEST(temperature, the_measured_temperature_is_reported) {
     TEST_ASSERT_FALSE(thermalManager.tooColdToExtrude(0));
 
     // Just inside the tolerance: still allowed.
-    SimulatedSensors::hotend_reads(float(170 - TEMP_WINDOW));
+    const celsius_float_t inside = SimulatedSensors::hotend_reads_at_least(float(170 - TEMP_WINDOW));
+    TEST_ASSERT_TRUE(inside >= float(170 - TEMP_WINDOW));
     TEST_ASSERT_FALSE(thermalManager.tooColdToExtrude(0));
 
-    // Below the tolerance: refused.
-    SimulatedSensors::hotend_reads(float(170 - TEMP_WINDOW - 1));
+    // A hair under it: still allowed, because the comparison is made on the rounded
+    // whole degree rather than on the measured value. Driving the sensor at the ADC is
+    // what makes this visible — the reading is a fraction of a degree low, which the
+    // whole-degree check does not see.
+    const celsius_float_t just_under = SimulatedSensors::hotend_reads_below(float(170 - TEMP_WINDOW));
+    TEST_ASSERT_TRUE(just_under < float(170 - TEMP_WINDOW));
+    TEST_ASSERT_EQUAL(170 - TEMP_WINDOW, thermalManager.wholeDegHotend(0));
+    TEST_ASSERT_FALSE(thermalManager.tooColdToExtrude(0));
+
+    // A whole degree under the tolerance: refused.
+    SimulatedSensors::hotend_reads_below(float(170 - TEMP_WINDOW) - 0.5f);
+    TEST_ASSERT_EQUAL(170 - TEMP_WINDOW - 1, thermalManager.wholeDegHotend(0));
     TEST_ASSERT_TRUE(thermalManager.tooColdToExtrude(0));
   }
 

@@ -50,8 +50,31 @@ released. Anything that waits by calling `idle()` more than 250 times hit it; no
 else did, which is why only the blocking commands hung.
 
 `Marlin::setup()` — which configures that pull-up — does not run in a test build, so
-`SimulatedMachine` stands in for it and releases the button. That is the general shape of
+`SimulatedHardware` stands in for it and releases the button. That is the general shape of
 this HAL's remaining hazards: pins power up in a state no board would ever be in.
+
+**Temperature works too.** `Temperature::init()` arms and enables `MF_TIMER_TEMP`, so
+advancing the clock runs the real `Temperature::isr()` and the real ADC pipeline.
+`tests/support/simulated_hardware.h` does the bring-up once per process.
+
+Two things had to be true first, and both were pins or timers rather than logic:
+
+- `thermalManager.init()` was recorded as crashing with SIGFPE. It does — under the
+  LINUX HAL, and only if `HAL_timer_init()` has not run. `Temperature::init()` calls
+  `HAL_timer_start(MF_TIMER_TEMP, …)`, and `LINUX/hardware/Timer.cpp` divides by the
+  timer's own `frequency`, which is zero until `Timer::init()` has set it. Exactly the
+  cause that once broke `stepper.init()`. This HAL guards the division, so it never
+  crashed here at all.
+- The thermistor inputs are the ADC's version of `KILL_PIN`. A simulated pin reads zero,
+  zero is a shorted sensor, and a shorted sensor converts to 320 °C — over
+  `HEATER_0_MAXTEMP` and `BED_MAXTEMP`. The first `Temperature::task()` after the ISR
+  starts producing readings would call `kill()`. `SimulatedHardware` drives every analog
+  input to a room-temperature count before anything can read one.
+
+Note also that `Stepper::init()` ends by starting *and enabling* the step timer. Under
+the LINUX HAL that is a live POSIX timer delivering SIGRTMIN at 122 Hz into the real
+stepper ISR, so anything that initialises the hardware there must mask it immediately —
+`SimulatedHardware` does, rather than leaving it to whichever fixture happens to follow.
 
 ## Rules
 

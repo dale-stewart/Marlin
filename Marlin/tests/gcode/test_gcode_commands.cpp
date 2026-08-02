@@ -443,10 +443,13 @@ MARLIN_TEST(gcode_commands, M109_S0_returns_immediately) {
 #endif
 
 // M105 reports whatever the sensors read, which is what a host graphs.
+// The sensor is driven at the ADC, so what it can read is quantised; the assertion is
+// against the conversion the driven count predicts, not against a round number.
 MARLIN_TEST(gcode_commands, M105_reports_the_temperature_the_sensor_reads) {
   SimulatedSensors sensors;
   SimulatedSensors::hotend_reads(123.0f);
-  TEST_ASSERT_EQUAL_FLOAT(123.0f, thermalManager.degHotend(0));
+  TEST_ASSERT_FLOAT_WITHIN(0.25f, 123.0f, thermalManager.degHotend(0));
+  TEST_ASSERT_EQUAL_FLOAT(SimulatedSensors::hotend_would_read(123.0f), thermalManager.degHotend(0));
 }
 
 MARLIN_TEST(gcode_commands, M118_echoes_its_argument_to_the_host) {

@@ -75,7 +75,25 @@ namespace {
     }
   };
 
-  void the_hotend_is_already_at(const celsius_float_t c) { SimulatedSensors::hotend_reads(c); }
+  // Returns the reading the sensor actually achieved, which is the nearest one it can
+  // express — see as_reported() below.
+  celsius_float_t the_hotend_is_already_at(const celsius_float_t c) {
+    return SimulatedSensors::hotend_reads(c);
+  }
+
+  /**
+   * How the hotend reading should appear in a report.
+   *
+   * The sensor is driven at the ADC now, so it reads the nearest count to what the
+   * scenario asked for rather than the exact figure — near 123 C that is about 0.15 C
+   * away. The scenario still says "the reply mentions the temperature the hotend is at";
+   * this is that temperature, formatted the way M105 formats it.
+   */
+  std::string as_reported(const celsius_float_t c) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.2f", double(c));
+    return std::string(buf);
+  }
 
   void the_printer_is_in_dry_run_mode() { marlin_debug_flags |= 8; }   // 8 = DRYRUN
 
@@ -162,6 +180,10 @@ namespace {
   }
 
   void the_reply_mentions(const std::string &reply, const char * const text) {
+    TEST_ASSERT_TRUE(reply.find(text) != std::string::npos);
+  }
+
+  void the_reply_mentions(const std::string &reply, const std::string &text) {
     TEST_ASSERT_TRUE(reply.find(text) != std::string::npos);
   }
 
@@ -309,10 +331,10 @@ MARLIN_TEST(preparing_to_print, a_dry_run_heats_nothing) {
 MARLIN_TEST(reporting_status, reporting_temperatures) {
   ConnectedPrinter printer;
   SimulatedSensors sensors;
-  the_hotend_is_already_at(123.0f);
+  const celsius_float_t at = the_hotend_is_already_at(123.0f);
 
   const std::string reply = the_reply_to("M105");
-  the_reply_mentions(reply, "T:123");
+  the_reply_mentions(reply, "T:" + as_reported(at));
   the_reply_mentions(reply, "B:");
 }
 

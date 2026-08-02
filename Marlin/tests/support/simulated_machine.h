@@ -28,9 +28,10 @@
  *
  * The fix is smaller than it looks. The timers only need initialising, not *running*:
  * once HAL_timer_init() has set them up, the interrupt handlers can be called directly
- * and the real stepper ISR steps the real planner. So this fixture initialises the
- * hardware, immediately masks the signals so nothing fires behind the test's back, and
- * lets the test say when time passes.
+ * and the real stepper ISR steps the real planner. Bringing the board up is shared with
+ * every other fixture that needs working hardware, so it lives in simulated_hardware.h;
+ * under the LINUX HAL this fixture then masks the signals so nothing fires behind the
+ * test's back, and lets the test say when time passes.
  *
  * That is the property worth keeping: time is explicit. `run_until_idle()` is a loop
  * the test controls, not a sleep, so the tests stay fast and repeatable.
@@ -45,11 +46,7 @@
 #include "src/module/motion.h"
 #include "src/module/temperature.h"
 #include "src/MarlinCore.h"
-#ifdef __PLAT_TEST__
-  #include "src/HAL/TEST/timers.h"
-#else
-  #include "src/HAL/LINUX/timers.h"
-#endif
+#include "simulated_hardware.h"
 
 class SimulatedMachine {
 public:
@@ -62,19 +59,7 @@ public:
     was_state = marlin.state;
     marlin.setState(MF_RUNNING);               // motion is ignored while not running
 
-    if (!hardware_ready) {
-      HAL_timer_init();                        // main() never runs here
-      stepper.init();
-      #ifdef __PLAT_TEST__
-        // Here an interrupt fires because time crossed the timer's compare value, so the
-        // step timer has to be armed and enabled or advancing the clock does nothing.
-        // The initial rate is a placeholder: Stepper::isr() programs the real interval
-        // for the block it is running, from its first call onward.
-        HAL_timer_start(MF_TIMER_STEP, STEPPER_TIMER_RATE / 1000);
-        ENABLE_STEPPER_DRIVER_INTERRUPT();
-      #endif
-      hardware_ready = true;
-    }
+    SimulatedHardware::ensure_ready();          // main() never runs here
     #ifndef __PLAT_TEST__
       // The LINUX HAL's interrupts are POSIX signals, which would arrive between
       // assertions. Silence them and drive stepper.isr() by hand instead.
@@ -114,25 +99,8 @@ public:
     MYSERIAL1.host_connected = was_connected;
   }
 
-  /**
-   * Say the kill button is not being held down.
-   *
-   * On a board KILL_PIN is an input with a pull-up, so it reads HIGH — released — from
-   * reset, and `Marlin::setup()` configures it that way. Simulated pins all read LOW at
-   * reset, and LOW is KILL_PIN_STATE: to the firmware the button is held. Nothing
-   * notices until something waits, because `manage_inactivity()` debounces the button
-   * over 250 passes before acting — so the 250th call to `marlin.idle()` in the process
-   * calls `kill()`, which never returns. That is exactly what M400, G4 and an arc do:
-   * wait by calling idle().
-   *
-   * `setup()` does not run in a test build, so the fixture stands in for it.
-   */
-  static void release_kill_button() {
-    #if HAS_KILL
-      SET_INPUT_PULLUP(KILL_PIN);
-      WRITE(KILL_PIN, !KILL_PIN_STATE);
-    #endif
-  }
+  // See SimulatedHardware: the button reads "held" from reset, and waiting reaches it.
+  static void release_kill_button() { SimulatedHardware::release_kill_button(); }
 
   // Let the machine move until the planner is empty.
   // Returns false if it did not finish, so a stuck queue fails rather than hangs.
@@ -172,7 +140,6 @@ public:
   }
 
 private:
-  static inline bool hardware_ready = false;   // init the HAL once per process
   bool was_connected;
   MarlinState was_state;
   planner_settings_t was_settings;
