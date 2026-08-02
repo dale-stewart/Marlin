@@ -309,6 +309,24 @@ to gcov-covered lines:
 | `stepper.cpp` | 87.8% | 559 | 86 | 75 | 398 | **28.8%** |
 | `temperature.cpp` | 79.2% | 1433 | 139 | 322 | 972 | **32.2%** |
 
+After a round of tests written against those survivors:
+
+| Target | Testable | Killed | Timed out | Survived | Score | Killed-by-assertion |
+|---|---|---|---|---|---|---|
+| `stepper.cpp` | 559 | 182 | 80 | 297 | **46.9%** | 15.4% → **32.6%** |
+| `temperature.cpp` | 1436 | 361 | 414 | 661 | **54.0%** | 9.7% → **25.1%** |
+
+`stepper.cpp` is measured against an identical population (559 testable, 202 covered
+lines), so its two scores are directly comparable. `temperature.cpp` is **not** quite:
+the new tests reached three more lines, so the population moved from 1433/397 to
+1436/400. The gain is far larger than that drift, but the two numbers are not the same
+measurement and should not be quoted as though they were.
+
+The number that matters is killed-by-assertion, which roughly doubled for `stepper.cpp`
+and more than doubled for `temperature.cpp`. Timeouts still account for a large share of
+`temperature.cpp`'s detections (414 of 775), so that suite still notices stoppage more
+than wrongness.
+
 The suspicion was right and the gap is wider than guessed. Two caveats make it wider
 still:
 
@@ -332,14 +350,30 @@ large cluster says the same thing: *the tests assert the destination, never the 
 | `temperature.cpp` 4821, 5015 | ~30 | the seconds-remaining arithmetic in the `M109`/`M190` progress reports |
 | `temperature.cpp` 2973, 2999 | ~42 | sensor-range and direction checks on the paths that end in `kill()` |
 
-So the work is three or four input/assertion classes:
+So the work is three or four input/assertion classes. The first and third are **done** and
+produced the gains above; what the round taught about the other two is worth recording:
 
-1. **Assert timing, not just totals** — that the step interval changes across a move, and
-   that acceleration and deceleration are symmetric.
-2. **Add a move fast enough to need multistepping.** No amount of assertion will kill the
-   2442-2444 cluster; those branches need `steps_per_isr > 1` to execute at all.
-3. **Assert what autotune computes**, not merely that `M303` completes.
-4. Accept that the `kill()` clusters stay alive until that seam exists (item 4 below).
+1. ✅ **Assert timing, not just totals.** Derived relationships turned out to be the
+   productive form — halving the acceleration stretches a move by √2, a triangular move
+   peaks at its midpoint, acceleration and deceleration take equal time. A relationship
+   that follows from the physics is hard to satisfy by accident, which is exactly the
+   property that kills mutants; a recorded output is not.
+2. ⚠️ **A move fast enough to need multistepping** — partly done, and the remainder is now
+   precisely specified. The cluster only fell from 80 survivors to 69, because
+   `MULTISTEPPING_LIMIT` is **16**: line 2442 needs `steps_per_isr >= 16`, sixteen pulses
+   inside one interrupt, and the new tests reach only 2× or 4×. Roughly 3200 steps/mm at
+   200 mm/s should get there. No assertion can substitute for the input.
+3. ✅ **Assert what autotune computes.** The Ziegler-Nichols relations themselves —
+   `Kp = 0.6·Ku`, `Ki = 2·Kp/Tu` — plus the relay levels being a mirrored pair within the
+   power limits and every cycle straddling the target.
+4. The `kill()` clusters remain alive as expected (`temperature.cpp` 2973-2999, ~53
+   survivors), and stay that way until that seam exists (item 4 below).
+
+Remaining clusters after the round: `stepper.cpp` 2442-2444 (69, needs the fast input),
+2538 and 1884-1920 (~48, adaptive-ISR timing); `temperature.cpp` 3608 (17), the
+`kill()` paths (~53), autotune internals at 804-954 (~42), and 4846/5040 (21) — the last
+being the region of defect #17, where the behaviour is degenerate by definition and some
+survivors are likely equivalent as a result.
 
 ### What remains in 4a
 

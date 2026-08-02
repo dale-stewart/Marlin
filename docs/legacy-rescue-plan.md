@@ -180,14 +180,18 @@ while 4b multiplies their cost.
 24% → 87.8%, `temperature.cpp` 24% → 79.2%, platform-agnostic total 58.4% → **70.0%**,
 398 tests under the test HAL and 377 under LINUX.
 
-Mutation testing has since confirmed that the coverage is reach rather than protection:
-`stepper.cpp` scores **28.8%** and `temperature.cpp` **32.2%**, and most of even that is
-timeouts rather than assertion failures (9.7% killed-by-assertion for `temperature.cpp`).
-The survivors are a few missing assertion classes, not thousands of problems — the tests
-assert the destination and never the journey.
+Mutation testing then confirmed that the coverage was reach rather than protection —
+`stepper.cpp` scored **28.8%** and `temperature.cpp` **32.2%** — and one round of tests
+written against the survivors has since taken them to **46.9%** and **54.0%**, with
+killed-by-assertion roughly doubling in both. The lesson worth carrying: the productive
+assertions were *derived relationships* (halving acceleration stretches a move by √2; the
+applied PID gains are the Ziegler-Nichols relations of Ku and Tu), because a relationship
+that follows from the physics is hard to satisfy by accident. Recorded outputs are not.
 
-What remains in 4a: killing those survivors (the largest piece), and homing and endstop
-triggering (the last of the six behaviours, and why `motion.cpp` is still 20.8%).
+What remains in 4a: another survivor round (the largest piece — including one cluster that
+needs a faster *input* rather than any assertion, since `MULTISTEPPING_LIMIT` is 16 and no
+test yet reaches 16 steps per interrupt), and homing and endstop triggering (the last of
+the six behaviours, and why `motion.cpp` is still 20.8%).
 The safety paths that end in `kill()` are a blocked correction rather than a gap: they
 need a seam that lets `kill()` return, which is a production surface change. Details at
 the end of the 4a section of the phase-4 document. 4b has not started.

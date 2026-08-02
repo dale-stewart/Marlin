@@ -169,6 +169,20 @@ For each survivor, in descending order of risk:
   behind a disabled build flag) cannot be killed. Document each one with a reason; do
   not contort tests to chase them, and never enable a feature flag purely to make a
   mutant killable.
+- **Assert derived relationships, not recorded outputs.** The highest-yield tests state
+  something that follows from the domain and would be hard to satisfy by accident:
+  halving the acceleration stretches a move by √2, the tuned gains are the
+  Ziegler-Nichols relations of the measured Ku and Tu, doubling the distance doubles the
+  time. A test that records what the code currently returns passes for any implementation
+  that returns the same thing — including a wrong one — so it kills almost nothing.
+  Symptom to watch for: high line coverage with a low score, and clusters concentrated in
+  the code that computes *how* rather than *what*. In one measurement here, a module at
+  87.8% line coverage scored 28.8%, because every test asserted a final position and
+  none asserted the trajectory that produced it.
+- **Separate "needs an assertion" from "needs an input" before writing anything.** A
+  survivor on a line that never executes cannot be killed by any assertion — coverage may
+  still report the line as covered because the enclosing function ran. Check which of the
+  two you are looking at; guessing wrong costs a whole round.
 - Survivors cluster. One test often kills a whole family — if every mutation of an
   accumulator survives, the cause is usually a single missing input class, not a
   missing assertion per mutant. Fix the input gap, then re-measure before writing more.
