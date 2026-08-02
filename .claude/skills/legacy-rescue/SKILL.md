@@ -100,9 +100,9 @@ environment, or a changed test scope is a **new** harness and needs its own vali
 checks.** When you rewrite or speed up the runner, re-measure a target you have already
 measured and compare the **survivor sets**, not the headline score. A baseline gate
 cannot catch a misclassification, because a green baseline looks identical whether the
-classifier is right or wrong — one rewrite here reported 7.1% where the truth was 78.3%,
-and only set-equality against a prior run exposed it. Scores can agree by coincidence;
-survivor sets cannot.
+classifier is right or wrong — one runner rewrite reported a score off by more than
+seventy points, and only set-equality against a prior run exposed it. Scores can agree by
+coincidence; survivor sets cannot.
 
 Build these checks into the runner itself rather than relying on discipline:
 
@@ -122,15 +122,15 @@ either: a 1-in-40 flake passes the gate 39 times out of 40.
 So treat a known intermittent failure as blocking, not as background annoyance, and note
 that scores measured before you found it were taken against a baseline you now know was
 unreliable. Say so when you report them rather than quietly reusing the numbers. If the
-flake turns out to be a genuine defect in code the tests depend on — the serial buffer,
-the clock, the harness itself — that is the one case where fixing beats recording, since
-a characterization test cannot pin behaviour that is not deterministic.
+flake turns out to be a genuine defect in code the tests depend on — a shared buffer, a
+clock, the harness itself — that is the one case where fixing beats recording, since a
+characterization test cannot pin behaviour that is not deterministic.
 
 **Pin the build configuration for the whole run.** If the project's test tooling rewrites
-config, checks out files, or restores a default (Marlin's `restore_configs` does all
-three), a mutation run started afterward silently measures a broken build. Re-apply the
-configuration immediately before the run and do not interleave other build targets while
-it is in flight.
+config, checks out files, or restores a default, a mutation run started afterward
+silently measures a broken build. Find out whether it does before the first run — this is
+a common and well-hidden property of test targets. Re-apply the configuration immediately
+before the run, and do not interleave other build targets while it is in flight.
 
 **Sanity-check the arithmetic.** A score at or above 100%, or a survivor count of zero
 where equivalent mutants are known to exist, means the harness is broken — not that the
@@ -170,29 +170,35 @@ For each survivor, in descending order of risk:
   not contort tests to chase them, and never enable a feature flag purely to make a
   mutant killable.
 - **Assert derived relationships, not recorded outputs.** The highest-yield tests state
-  something that follows from the domain and would be hard to satisfy by accident:
-  halving the acceleration stretches a move by √2, the tuned gains are the
-  Ziegler-Nichols relations of the measured Ku and Tu, doubling the distance doubles the
-  time. A test that records what the code currently returns passes for any implementation
-  that returns the same thing — including a wrong one — so it kills almost nothing.
-  Symptom to watch for: high line coverage with a low score, and clusters concentrated in
-  the code that computes *how* rather than *what*. In one measurement here, a module at
-  87.8% line coverage scored 28.8%, because every test asserted a final position and
-  none asserted the trajectory that produced it.
+  something that follows from the domain and would be hard to satisfy by accident: a
+  known invariant, a conservation law, a scaling relation ("doubling the input doubles
+  the elapsed time"), a round-trip that must return the original, an ordering that must
+  hold. A test that records what the code currently returns passes for *any*
+  implementation returning the same thing — including a wrong one — so it kills almost
+  nothing.
+
+  The symptom is **high line coverage with a low mutation score**, with survivors
+  concentrated in code that computes *how* rather than *what*: intermediate values,
+  timing, iteration counts, and the steps between a call and its result. That code runs —
+  hence the coverage — but only its endpoint is observed. Ask what the code computes on
+  the way, and assert a relationship the domain guarantees about it.
 - **Separate "needs an assertion" from "needs an input" before writing anything.** A
-  survivor on a line that never executes cannot be killed by any assertion — coverage may
-  still report the line as covered because the enclosing function ran. Check which of the
-  two you are looking at; guessing wrong costs a whole round.
+  survivor on a line that never executes cannot be killed by any assertion, and no amount
+  of rewriting will change that — coverage may still report the line as covered because
+  the enclosing function ran, or because the tool attributes it to a covered region.
+  Check which of the two you are looking at; guessing wrong costs a whole round. Branches
+  guarded by a threshold no test input reaches are the usual case.
 - Survivors cluster. One test often kills a whole family — if every mutation of an
   accumulator survives, the cause is usually a single missing input class, not a
   missing assertion per mutant. Fix the input gap, then re-measure before writing more.
-- **Look for an existing seam before adding one.** Hardware abstraction layers,
-  simulation builds, public state, and dependency-injection points already present for
-  other reasons often provide what a test needs. A seam added where one already exists
-  is production risk bought for nothing, and it is easy to add without noticing —
-  looking takes minutes. Check the HAL, check what is already public, and check whether
-  the collaborator you are trying to fake is even active in the test build: code that
-  never runs cannot overwrite what a test writes.
+- **Look for an existing seam before adding one.** Platform or hardware abstraction
+  layers, simulation and test builds, public state, configuration switches, and
+  dependency-injection points already present for other reasons often provide what a test
+  needs. A seam added where one already exists is production risk bought for nothing, and
+  it is easy to add without noticing — looking takes minutes. Check any abstraction layer
+  the project already has, check what is already public, and check whether the
+  collaborator you are trying to fake is even active in the test build: code that never
+  runs cannot overwrite what a test writes.
 - Only when none exists, do the **minimum refactoring needed to make the code testable**:
   - Break hard dependencies by introducing a seam (parameter, interface, factory,
     or injection point) at the call site.
@@ -250,12 +256,12 @@ the step definitions do the translating. If a step reads like a function call wi
 parentheses removed, push the detail down into the step.
 
     # Mechanism — belongs in a step definition, not in the feature
-    When ftostr52sp is called with 12.345
+    When formatAmount is called with 12.345
     Then the result is "  12.35"
 
     # Outcome — what a user would actually observe
-    When the nozzle reaches 12.345 degrees
-    Then the display shows the temperature to two decimal places
+    When the balance reaches 12.345
+    Then the statement shows the amount to two decimal places
 
 - Use the domain's vocabulary. If a scenario cannot be written without naming a private
   class, it belongs at a lower level.
@@ -346,18 +352,20 @@ whether a surface change is safe to make.
 
 ### Write the brief so a wrong answer is cheap
 
-- **Give evidence, not conclusions.** State observations ("five `idle()` calls, the
-  planner busy, zero steps") and mark any diagnosis as *to be verified, not trusted*.
-  A confident wrong theory in a brief is worse than no theory: the agent spends its
-  budget defending yours. Twice in this repository a recorded diagnosis was wrong and
-  the agent that ignored it found the real cause.
+- **Give evidence, not conclusions.** State the observations — the exact commands, the
+  values seen, the state the system was in — and mark any diagnosis as *to be verified,
+  not trusted*. A confident wrong theory in a brief is worse than no theory: the agent
+  spends its budget defending yours instead of looking. Expect this to happen; a recorded
+  diagnosis that has never been tested is a hypothesis wearing a fact's clothing, and the
+  agents that ignore one are often the ones that find the real cause.
 - **List what has been ruled out**, so the agent does not re-run your dead ends.
-- **Make the definition of done a set of values**, not "it stops hanging" — exact step
-  counts, an exact test total in each environment. "Both suites green" invites an agent
-  to weaken an assertion until they are.
+- **Make the definition of done a set of values**, not "it stops failing" — exact
+  expected results, an exact test total in each environment. "The suites are green"
+  invites an agent to weaken an assertion until they are.
 - **State the harness gotchas up front.** Buffered output hiding where a hang really is,
-  a runner that prints a summary line even when the build failed, an exit code that
-  lies. Each of these has cost hours; each is one sentence in a brief.
+  a runner that prints a summary line even when the build failed, an exit code that lies
+  about test failures. Each of these costs hours to rediscover; each is one sentence in a
+  brief. Keep the project's list somewhere durable and paste the relevant ones in.
 - **Say what must not change** — the file the fix must not reach for, the suite that
   must not move, and "do not commit" so you can review the diff.
 
@@ -380,9 +388,13 @@ share one.
 
 ### Verify before you relay
 
-Read the diff, run both suites yourself, and check that no assertion was weakened and
-no forbidden file was touched. An agent's report is a claim. Relaying it unverified
-launders a claim into a fact, and a rescue's only product is trustworthy measurement.
+Read the diff, run the suites yourself, and check that no assertion was weakened and no
+forbidden file was touched. An agent's report is a claim. Relaying it unverified launders
+a claim into a fact, and a rescue's only product is trustworthy measurement.
+
+Watch specifically for an assertion that has become **self-consistent rather than
+correct** — checking a result against the same accessor the code under test used to
+produce it. It passes, it looks like a real assertion, and it constrains nothing.
 
 **Re-run the agent's evidence, control first.** When an agent claims to have fixed an
 intermittent fault, build the unfixed version too and confirm *your* harness reproduces
@@ -394,9 +406,11 @@ someone else's result, and it is where a plausible non-fix gets caught.
 
 Recurring roles belong in a file (`.claude/agents/*.md`) so the working rules — reproduce
 before theorising, suspect your own scaffolding first, change one thing per build,
-timeouts short enough that a hang is cheap information — are stated once. Note that
-agent definitions load at session start, so a newly written one is not selectable until
-the session restarts; inline the rules that first time.
+timeouts short enough that a failure is cheap information — are stated once. Two roles
+recur in almost every rescue and are worth defining early: a **harness debugger** for
+hangs and environment differences, and a **mutant killer** for survivor batches. Note
+that agent definitions typically load at session start, so a newly written one may not be
+selectable until the session restarts; inline the rules that first time.
 
 ## Guardrails
 

@@ -19,6 +19,12 @@ with the intent of eventually applying it across the codebase.
 - The skill is the primary deliverable. Findings from running it belong back in
   `SKILL.md`, not just in the commit log.
 
+**The skill must stay portable.** `SKILL.md` is meant to be lifted into other projects,
+so it states the *general* rule and never names Marlin, a G-code command, or a firmware
+symbol. When a run here teaches something, split it: the transferable principle goes to
+`SKILL.md` in neutral terms, the concrete instance stays in this file. If an example only
+makes sense to someone who knows this firmware, it belongs here.
+
 ## Order of operations: refactor only behind the test frontier
 
 A refactor may change whatever is **inside** a rescued target. It must **not** change
@@ -46,6 +52,38 @@ design corrections, each pinned by a test.
 that global state is wanted, and is **blocked** until its consumers are rescued.
 `Marlin/src/gcode/parser.cpp` itself has been rescued (95% line coverage, ~83% mutation
 detection excluding equivalents, 18 acceptance scenarios).
+
+## What the skill's general rules look like here
+
+These are the concrete instances behind rules stated abstractly in `SKILL.md`. Read them
+as worked examples, not as additional rules.
+
+**"Assert derived relationships, not recorded outputs."** In this firmware the productive
+assertions are the physics: halving the acceleration stretches a move by √2; a triangular
+move peaks at its midpoint; acceleration and deceleration take equal time; the applied PID
+gains are the Ziegler-Nichols relations of the measured `Ku` and `Tu`; the autotune relay
+levels are a mirrored pair inside the power limits. Asserting a final step count instead
+is what left `stepper.cpp` at 87.8% line coverage and 28.8% mutation detection. See
+`Marlin/tests/module/test_step_timing.cpp` and `test_pid_autotune.cpp`.
+
+**"Separate needs-an-assertion from needs-an-input."** `MULTISTEPPING_LIMIT` is 16, so
+`stepper.cpp:2442` needs `steps_per_isr >= 16` — sixteen pulses inside one interrupt —
+before any assertion can touch it. Roughly 3200 steps/mm at 200 mm/s gets there; the
+current tests reach 2× or 4× and leave ~69 mutants alive that no assertion can kill.
+
+**"Watch for an assertion that is self-consistent rather than correct."** An acceptance
+test once asserted that the `M105` reply contained the formatted value of
+`thermalManager.degHotend(0)` — the same accessor `M105` formats its output from. It
+would have passed with the sensor pipeline delivering any value at all. Assert against
+`SimulatedSensors::hotend_would_read()`, which predicts independently of the pipeline.
+
+**"Pin the build configuration."** Here that is `restore_configs`; see the gotchas below.
+
+**Delegating to subagents in this repo.** `.claude/agents/hal-debugger.md` and
+`mutant-killer.md` exist for the two recurring roles. Give any agent that builds its own
+worktree — all PlatformIO environments share `.pio/build/<env>`, so two agents building
+concurrently overwrite each other's binary and interleave `restore_configs`, and an agent
+measuring a flake over hundreds of runs will silently measure someone else's build.
 
 ## Test, coverage, and mutation tooling
 
