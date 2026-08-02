@@ -180,10 +180,14 @@ while 4b multiplies their cost.
 24% → 87.8%, `temperature.cpp` 24% → 79.2%, platform-agnostic total 58.4% → **70.0%**,
 398 tests under the test HAL and 377 under LINUX.
 
-What remains in 4a: homing and endstop triggering (the last of the six behaviours, and
-why `motion.cpp` is still 20.8%), and — more important — **mutation-testing the newly
-covered code**, which has not been done at all. Coverage that cheap is the shape that
-hides thin assertions, so until it is mutation tested the 70.0% is reach, not protection.
+Mutation testing has since confirmed that the coverage is reach rather than protection:
+`stepper.cpp` scores **28.8%** and `temperature.cpp` **32.2%**, and most of even that is
+timeouts rather than assertion failures (9.7% killed-by-assertion for `temperature.cpp`).
+The survivors are a few missing assertion classes, not thousands of problems — the tests
+assert the destination and never the journey.
+
+What remains in 4a: killing those survivors (the largest piece), and homing and endstop
+triggering (the last of the six behaviours, and why `motion.cpp` is still 20.8%).
 The safety paths that end in `kill()` are a blocked correction rather than a gap: they
 need a seam that lets `kill()` return, which is a production surface change. Details at
 the end of the 4a section of the phase-4 document. 4b has not started.

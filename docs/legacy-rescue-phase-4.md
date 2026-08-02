@@ -299,6 +299,48 @@ The suite is 398 tests under the test HAL and 377 under LINUX, and the flake tha
 have invalidated any mutation measurement is fixed — it was a genuine defect in the
 serial ring buffer, not in the test helper (register #16).
 
+### The coverage is reach, not protection — measured
+
+Both new targets were mutation tested against `testhal_native_test`, mutants restricted
+to gcov-covered lines:
+
+| Target | Lines covered | Testable mutants | Killed | Timed out | Survived | Score |
+|---|---|---|---|---|---|---|
+| `stepper.cpp` | 87.8% | 559 | 86 | 75 | 398 | **28.8%** |
+| `temperature.cpp` | 79.2% | 1433 | 139 | 322 | 972 | **32.2%** |
+
+The suspicion was right and the gap is wider than guessed. Two caveats make it wider
+still:
+
+- **Most detections are timeouts, not assertions.** Killed-by-assertion alone is 15.4%
+  for `stepper.cpp` and **9.7%** for `temperature.cpp`. A timeout counts as detected —
+  the suite would not pass — but it means the mutant broke a wait loop and the test hung,
+  not that anything checked a value. Timeouts are a weaker signal, and a suite whose
+  detections are mostly timeouts is one that notices *stoppage* rather than *wrongness*.
+- The denominators exclude build failures (625 and 1371), which is correct, but the
+  populations are large enough that the two scores are only comparable to future runs
+  with the same covered-line set.
+
+**The survivors are a handful of missing classes, not two thousand problems.** Every
+large cluster says the same thing: *the tests assert the destination, never the journey.*
+
+| Where | Cluster | What is unasserted |
+|---|---|---|
+| `stepper.cpp` 2442-2444, 2538, 1884-1920 | ~137 | multistepping and adaptive-ISR timing — and every test move is slow enough that `steps_per_isr` is always 1, so these branches are never even entered |
+| `stepper.cpp` 2583, 2642, 2722-2729, 3083 | ~58 | the trapezoidal profile: `accelerate_before`, `decelerate_start`, `acceleration_time`, `ticks_nominal`. A mutant that corrupts acceleration still delivers the same total step count, and total step count is all the tests check |
+| `temperature.cpp` 795-985 | ~123 | PID autotune. `M303` runs, but nothing asserts the constants it computes — `Ku`, `Tu`, `bias`, `d`, the `df` divisor |
+| `temperature.cpp` 4821, 5015 | ~30 | the seconds-remaining arithmetic in the `M109`/`M190` progress reports |
+| `temperature.cpp` 2973, 2999 | ~42 | sensor-range and direction checks on the paths that end in `kill()` |
+
+So the work is three or four input/assertion classes:
+
+1. **Assert timing, not just totals** — that the step interval changes across a move, and
+   that acceleration and deceleration are symmetric.
+2. **Add a move fast enough to need multistepping.** No amount of assertion will kill the
+   2442-2444 cluster; those branches need `steps_per_isr > 1` to execute at all.
+3. **Assert what autotune computes**, not merely that `M303` completes.
+4. Accept that the `kill()` clusters stay alive until that seam exists (item 4 below).
+
 ### What remains in 4a
 
 1. **Homing and endstop triggering** — the last of the six. `endstops.update()` only
@@ -306,12 +348,9 @@ serial ring buffer, not in the test helper (register #16).
    HAL work: trip a simulated endstop pin at a chosen position. `motion.cpp` is still at
    20.8% and this is why — `prepare_line_to_destination` and `blocking_move` are homing
    paths.
-2. **Mutation-test the newly covered code.** This is now the most valuable item, and the
-   one most likely to be skipped. `stepper.cpp` went 24% → 87.8% and `temperature.cpp`
-   25.5% → 79.2%, each on a handful of tests. That ratio is exactly the shape that hides
-   passing-but-worthless tests: coverage this cheap usually means broad execution with
-   thin assertions. None of it has been mutation tested. Until it has, the headline
-   numbers above are reach, not protection.
+2. **Kill the survivors** measured above — the timing, multistepping and autotune
+   assertion classes. This is the item that converts 70% coverage into 70% protection,
+   and it is now the largest piece of remaining work in the phase.
 3. **Reconsider the heater model's tuning.** The models are tuned, not derived, and the
    bed constant is load-bearing rather than cosmetic: the bed is bang-bang and
    `manage_heated_bed()` only reconsiders every `BED_CHECK_INTERVAL` (5 s), so a faster
