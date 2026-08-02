@@ -142,6 +142,40 @@ fixtures.
 A1 should be rejected: building ImGui and OpenGL to run a headless test suite is a cost
 paid on every CI run forever, to avoid writing roughly two hundred lines of fake.
 
+### What the first experiment found
+
+Running it changed two assumptions.
+
+**The real stepper ISR works when driven by hand — no fake needed for motion.** The
+blocker was never that the ISR could not run; it was that `HAL_timer_init()` is called
+only from `main()`, which a unit test build excludes, leaving `Timer::frequency` at zero
+and every timer call dividing by it. Initialising the timers and then calling
+`stepper.isr()` in a loop drains the real planner and moves the real steppers: a 1 mm
+move at 80 steps/mm leaves the stepper at exactly 80 steps. `stepper.cpp` went from 24%
+to **87%** and `planner.cpp` from 59% to **74%** on the strength of five tests.
+
+So option A3 shrinks: the machine model does not need writing, only the *scheduling*.
+
+**Initialising the real HAL timers has lasting, process-wide side effects.** They are
+POSIX interval timers delivering SIGRTMIN. Masking the signal is not enough — a masked
+signal is still queued, so the moment anything re-enables interrupts the backlog is
+delivered and the ISR runs behind the test's back. Pushing the compare far into the
+future did not fully settle it either: tests that passed before the timers were
+initialised (`M109 S0`) hang afterwards. This is a strong argument for the plan's own
+recommendation over A1/A2, and a caution that even A3 should avoid `HAL_timer_init()` if
+a narrower way to set the timer frequency can be found.
+
+**Threading is the wrong way to run a blocking command.** Running the command on one
+thread while the test steps the machine on another works for `M400`, which only waits,
+but not for anything that writes to the planner while the stepper reads it — the real
+firmware has an interrupt that *preempts*, not a second thread that runs alongside. The
+race showed up as intermittent hangs and the approach was withdrawn.
+
+The next piece of work is therefore a **single-threaded pump**: a hook the blocking loop
+calls, so `stepper.isr()` runs from *inside* the wait rather than beside it. Marlin's
+`idle()` is the natural place, and this is the one production seam Phase 4a looks likely
+to need. `M400`, `G4` and the arcs all depend on it.
+
 ### Sequence
 
 1. Stand up the fake kernel and one test that advances time and observes `Stepper::isr`
