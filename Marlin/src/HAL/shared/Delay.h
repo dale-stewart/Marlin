@@ -168,7 +168,7 @@ void calibrate_delay_loop();
 
   #define DELAY_CYCLES_VAR DELAY_CYCLES
 
-#elif defined(ESP32) || defined(__PLAT_LINUX__) || defined(__PLAT_NATIVE_SIM__)
+#elif defined(ESP32) || defined(__PLAT_LINUX__) || defined(__PLAT_NATIVE_SIM__) || defined(__PLAT_TEST__)
 
   // DELAY_CYCLES specified inside platform
 

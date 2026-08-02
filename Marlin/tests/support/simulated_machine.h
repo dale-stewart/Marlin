@@ -45,7 +45,11 @@
 #include "src/module/motion.h"
 #include "src/module/temperature.h"
 #include "src/MarlinCore.h"
-#include "src/HAL/LINUX/timers.h"
+#ifdef __PLAT_TEST__
+  #include "src/HAL/TEST/timers.h"
+#else
+  #include "src/HAL/LINUX/timers.h"
+#endif
 
 class SimulatedMachine {
 public:
@@ -62,6 +66,13 @@ public:
       HAL_timer_init();                        // main() never runs here
       stepper.init();
       hardware_ready = true;
+      #ifdef __PLAT_TEST__
+        // Under the test HAL an interrupt fires because time crossed the timer's
+        // compare value, so the timer has to be armed and enabled. Driving the ISR
+        // directly, as the LINUX build does, needs neither.
+        HAL_timer_start(MF_TIMER_STEP, STEPPER_TIMER_RATE / 1000);
+        ENABLE_STEPPER_DRIVER_INTERRUPT();
+      #endif
     }
     // Nothing may fire on its own: the test decides when the machine moves.
     //
@@ -115,7 +126,11 @@ public:
 
   // Run the interrupt a fixed number of times, for tests that want partial progress.
   static void step(const uint32_t times) {
-    for (uint32_t i = 0; i < times; i++) stepper.isr();
+    #ifdef __PLAT_TEST__
+      for (uint32_t i = 0; i < times; i++) HAL_test_advance_micros(100);
+    #else
+      for (uint32_t i = 0; i < times; i++) stepper.isr();
+    #endif
   }
 
   // Where the steppers actually are, in millimetres.

@@ -32,7 +32,7 @@
 #include "../test/unit_tests.h"
 #include "src/libs/stopwatch.h"
 #include "src/inc/MarlinConfig.h"
-#include "src/HAL/LINUX/hardware/Clock.h"
+#include "../support/test_clock.h"
 
 MARLIN_TEST(stopwatch, starts_stopped) {
   Stopwatch sw;
@@ -210,13 +210,11 @@ MARLIN_TEST(stopwatch, resume_adds_the_controllers_uptime) {
  */
 namespace {
 
-  constexpr double TIME_ACCELERATION = 1000.0;
-
+  // Kept as a name the scenarios below read well with; the mechanism lives in
+  // support/test_clock.h and differs per HAL.
   struct AcceleratedClock {
-    AcceleratedClock() { Clock::setTimeMultiplier(TIME_ACCELERATION); }
-    ~AcceleratedClock() { Clock::setTimeMultiplier(1.0); }
-    // Advance the simulated clock by whole seconds.
-    static void advance_seconds(const uint32_t s) { Clock::delayMillis(s * 1000); }
+    TestClock scope;   // accelerates the clock for as long as the test runs
+    static void advance_seconds(const uint32_t s) { TestClock::advance_seconds(s); }
   };
 
 }

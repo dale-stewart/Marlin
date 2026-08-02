@@ -50,6 +50,12 @@
   #define HAL_PATH(PATH, NAME) XSTR(PATH/HAL/ESP32/NAME)
 #elif defined(__PLAT_LINUX__)
   #define HAL_PATH(PATH, NAME) XSTR(PATH/HAL/LINUX/NAME)
+#elif defined(__PLAT_TEST__)
+
+  // A HAL for unit tests: no real clock, no signals, interrupts fire when a test
+  // advances time. See HAL/TEST/hardware/Clock.h.
+  #define HAL_PATH(PATH, NAME) XSTR(PATH/HAL/TEST/NAME)
+
 #elif defined(__PLAT_NATIVE_SIM__)
   #define HAL_PATH(PATH, NAME) XSTR(PATH/HAL/NATIVE_SIM/NAME)
 #elif defined(__SAMD51__)
