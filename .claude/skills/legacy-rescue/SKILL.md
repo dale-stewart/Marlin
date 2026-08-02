@@ -305,6 +305,48 @@ Work in small, individually reverting commits, in this order:
 Run the acceptance suite after every commit; run mutation testing at the end to
 confirm the net still catches faults in the restructured code.
 
+## Delegating work to subagents
+
+A rescue runs long enough to exhaust a context window, and the parts that exhaust it
+fastest — chasing a hang, killing a batch of survivors — are the parts that benefit
+least from carrying the whole history. Hand those out.
+
+**Delegate when the work is bounded and verifiable by running something.** Debugging a
+hang, killing the survivors of one target, writing tests for one behaviour. Do not
+delegate the judgement calls: which target is next, whether a survivor is equivalent,
+whether a surface change is safe to make.
+
+### Write the brief so a wrong answer is cheap
+
+- **Give evidence, not conclusions.** State observations ("five `idle()` calls, the
+  planner busy, zero steps") and mark any diagnosis as *to be verified, not trusted*.
+  A confident wrong theory in a brief is worse than no theory: the agent spends its
+  budget defending yours. Twice in this repository a recorded diagnosis was wrong and
+  the agent that ignored it found the real cause.
+- **List what has been ruled out**, so the agent does not re-run your dead ends.
+- **Make the definition of done a set of values**, not "it stops hanging" — exact step
+  counts, an exact test total in each environment. "Both suites green" invites an agent
+  to weaken an assertion until they are.
+- **State the harness gotchas up front.** Buffered output hiding where a hang really is,
+  a runner that prints a summary line even when the build failed, an exit code that
+  lies. Each of these has cost hours; each is one sentence in a brief.
+- **Say what must not change** — the file the fix must not reach for, the suite that
+  must not move, and "do not commit" so you can review the diff.
+
+### Verify before you relay
+
+Read the diff, run both suites yourself, and check that no assertion was weakened and
+no forbidden file was touched. An agent's report is a claim. Relaying it unverified
+launders a claim into a fact, and a rescue's only product is trustworthy measurement.
+
+### Keep an agent definition, not just a prompt
+
+Recurring roles belong in a file (`.claude/agents/*.md`) so the working rules — reproduce
+before theorising, suspect your own scaffolding first, change one thing per build,
+timeouts short enough that a hang is cheap information — are stated once. Note that
+agent definitions load at session start, so a newly written one is not selectable until
+the session restarts; inline the rules that first time.
+
 ## Guardrails
 
 - **Never** refactor ahead of cover. If a step-8 opportunity appears during step 4,

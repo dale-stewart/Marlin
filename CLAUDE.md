@@ -76,6 +76,8 @@ Environments added by this fork, in `ini/native.ini`:
 | `linux_native_coverage` | `linux_native_test` + gcov instrumentation |
 | `acceptance_native_test` | acceptance suite only, unit tests excluded |
 | `acceptance_native_coverage` | the same, with coverage |
+| `testhal_native_test` | unit tests against `HAL/TEST` — time advances only on request |
+| `testhal_native_coverage` | the same, with coverage; the only env that measures motion and blocking commands |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
@@ -119,6 +121,15 @@ is blocked by PEP 668 on this machine).
   `Marlin/tests/gcode/simulated_sensors.h`. Note `thermalManager.init()` crashes with
   SIGFPE in this build — do not call it. The same caution applies to anything calling
   `planner.synchronize()` with queued moves.
+- **Simulated pins power up in a state no board is ever in.** Every `Gpio` pin reads LOW
+  at reset. On a board `KILL_PIN` has a pull-up and reads HIGH — released — so the
+  firmware in a test build sees the kill button held from the first instruction,
+  debounces it over 250 passes of `manage_inactivity()`, and the 250th `marlin.idle()`
+  call reaches `kill()`, which spins forever waiting for a release. Only commands that
+  wait call `idle()` that many times, so this presents as "blocking commands hang" and
+  looks convincingly like a timer bug. `Marlin::setup()` configures those pull-ups and
+  does not run in a test build, so the fixture stands in for it
+  (`SimulatedMachine::release_kill_button()`). Expect other pins with the same problem.
 - **Object link order matters.** Linking the test binary with a sorted object list
   segfaults on start, while discovery order works — a latent static-initialisation-order
   dependency. Capture the working order once and validate with a baseline run.

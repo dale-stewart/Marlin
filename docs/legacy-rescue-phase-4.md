@@ -215,34 +215,89 @@ machine model* to use and missed that the more basic question was *which HAL*.
 
 ### Where 4a actually stands
 
-Motion is done: the test HAL runs the real planner and stepper, and
-`Marlin/tests/module/test_simulated_motion.cpp` asserts exact step counts on both
-environments.
+The test HAL exists (`Marlin/src/HAL/TEST/`), and four of the six behaviours are done.
 
-Blocking commands are not, and the earlier claim that the HAL unblocked them was wrong.
-`planner.synchronize()` and `dwell()` spin on `marlin.idle()`, and nothing inside
-`idle()` advances a clock that only moves when a test asks it to — so `M400`, `G4` with
-a pause, and arcs still cannot complete. The motion tests pass because `run_until_idle()`
-advances time from outside the command.
+**Motion** runs the real planner and stepper; `test_simulated_motion.cpp` asserts exact
+step counts on both environments.
 
-The remaining step is narrow and known: make a spin on `millis()` cost time, the same way
-`Timer::getCount()` now costs a tick per read. The caution is that `millis()` is read
-throughout the firmware, so charging every read would shift every timeout in the suite —
-it needs measuring against the existing 377 tests rather than assuming.
+**Waiting, dwelling and arcs** are done — `test_blocking_commands.cpp` covers `M400`
+with and without a queued move, `G4 P`/`G4 S`, `G4` after a queued move, and an arc
+longer than the block buffer. Getting there needed `hal.idletask()` to advance the
+clock, so that waiting by spinning on `idle()` costs simulated time the way it costs
+real time on hardware.
 
-### Sequence
+Two diagnoses along the way were recorded confidently and were **wrong**, which is worth
+keeping because both cost hours:
 
-1. Stand up the fake kernel and one test that advances time and observes `Stepper::isr`
-   running. Validate it the way the mutation runner was validated — against a known
-   result, not against its own checks.
-2. Unblock the six behaviours in the order they appear above, each with the test that
-   previously could not be written.
-3. Re-measure. `stepper::isr` and `temperature::isr` are the targets that justify the
-   phase; if they do not move, stop and reconsider.
-4. Only then extend to homing, probing and thermal protection.
+- *"`Timer::getCount()` needs re-entrancy protection."* It did not. It never moved the
+  clock, so Marlin's `AWAIT_TIMED_PULSE` spin never ended, and it returned an absolute
+  count where hardware returns ticks since the last restart.
+- *"A finished block leaves `next_fire_ns` stale in the far future, so queueing a new
+  block never re-arms the timer."* Also wrong; `Timer` needed no change at all. Five
+  `idle()` calls producing zero steps was simply too short a look —
+  `Planner::get_current_block()` withholds the first block for `BLOCK_DELAY_FOR_1ST_MOVE`
+  (100) interrupts while fewer than three moves are queued. The actual hang was a **pin**:
+  `KILL_PIN` reads HIGH from reset on a board because it has a pull-up, but every
+  simulated pin reads LOW, and LOW is `KILL_PIN_STATE`. The firmware saw the kill button
+  held from the first instruction, debounced it over 250 passes, and the 250th
+  `marlin.idle()` call reached `kill()` — which spins forever waiting for a release.
+  Only commands that wait ever call `idle()` that many times, which is exactly why only
+  those commands hung.
 
-**Exit gate:** the six behaviours have tests; `stepper.cpp` and `temperature.cpp` are
-above 60%; no new external dependency in the test build.
+The general lesson, now a rule in `Marlin/src/HAL/TEST/AGENTS.md`: **a simulated pin
+powers up in a state no board is ever in.** `Marlin::setup()` configures the pull-ups and
+does not run in a test build, so the fixture has to stand in for it. Expect more of these.
+
+**Homing, endstop triggering and `M109`/`M190` with a real target are not done**, and
+the measurement says why.
+
+### What the measurement says
+
+`testhal_native_coverage` (added for this, since these behaviours only run there):
+
+| | Lines | Was |
+|---|---|---|
+| Platform-agnostic total | **62.1%** (2685/4323) | 58.4% |
+| `stepper.cpp` | **87.8%** | 24% |
+| `planner.cpp` | **78.3%** | 59% |
+| `temperature.cpp` | **25.5%** | 24% |
+| `motion.cpp` | **20.8%** | 20% |
+
+`stepper.cpp` cleared the gate by a wide margin — the phase paid for itself there.
+`temperature.cpp` did not move, and the reason is specific: the fixture parks
+`MF_TIMER_TEMP`'s compare at `HAL_TIMER_TYPE_MAX`, so `Temperature::isr` never fires,
+and `thermalManager.init()` still crashes with SIGFPE in this build. Temperature is
+covered only through its setters and getters. `motion.cpp` is low for the same reason at
+one remove: `prepare_line_to_destination` and `blocking_move` are homing paths.
+
+### Exit gate — partly met
+
+- ✅ four of six behaviours have tests
+- ✅ `stepper.cpp` above 60% (87.8%)
+- ❌ `temperature.cpp` above 60% (25.5%)
+- ✅ no new external dependency in the test build
+
+### What remains in 4a
+
+1. **Drive `Temperature::isr` from the test HAL.** Stop parking the temp timer, work out
+   why `thermalManager.init()` divides by zero, and let the ADC pipeline run on
+   simulated time. This is the one item that decides whether 4a met its gate. Note that
+   `SimulatedSensors` currently works precisely *because* the ADC pipeline is dormant and
+   nothing overwrites `temp_hotend`; making the ISR run will invalidate that helper and
+   the tests that depend on it, so the two changes have to land together.
+2. **Homing and endstop triggering.** `endstops.update()` only records a hit while the
+   axis is moving, which now happens — this should be reachable without new HAL work, by
+   tripping a simulated endstop pin at a chosen position.
+3. **`M109`/`M190` with a real target**, which follows from (1) and lets the residency
+   logic be tested instead of stubbed.
+4. **Mutation-test the newly covered code.** `stepper.cpp` went from 24% to 87.8% line
+   coverage on the strength of a handful of tests; that ratio is exactly the shape that
+   hides passing-but-worthless tests, and it has not been mutation tested at all.
+5. **Pin down one flake.** `gcode_reports_keepalive___M113_reports_the_interval` failed
+   once in nineteen runs, `SerialCapture` returning text without the expected report.
+   `SerialCapture` drains the transmit ring from a second thread; this looks like a race
+   in the helper rather than in the firmware, but "looks like" is not a diagnosis. A
+   test suite with a known flake cannot serve as a mutation baseline, so this blocks (4).
 
 ---
 

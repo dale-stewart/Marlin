@@ -175,6 +175,15 @@ compile the 736 platform-agnostic files that no test can currently reach.
 They are sequenced deliberately: 4a multiplies the value of the tests already written,
 while 4b multiplies their cost.
 
+**Status: 4a is in progress and has partly met its gate.** The test HAL exists, motion
+and every blocking command (`M400`, `G4`, arcs) now run, `stepper.cpp` went from 24% to
+87.8%, and the platform-agnostic total is 62.1%. `temperature.cpp` is still 25.5%
+because `Temperature::isr` does not yet fire, which also keeps homing and `M109` with a
+real target out of reach. The remaining 4a work — driving the temperature ISR, homing
+and endstops, mutation-testing the newly covered code, and pinning down one flake in
+`SerialCapture` — is enumerated at the end of the 4a section of the phase-4 document.
+4b has not started.
+
 ## Cross-cutting: a blocked-corrections register
 
 `CLAUDE.md` records one blocked correction today. Phases 2 and 3 will generate more
