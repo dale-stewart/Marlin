@@ -36,6 +36,9 @@
 #include "src/module/temperature.h"
 #include "src/gcode/queue.h"
 #include "simulated_sensors.h"
+#include "serial_capture.h"
+#include "src/module/stepper.h"
+#include "src/module/settings.h"
 #include <string.h>
 
 namespace {
@@ -442,4 +445,95 @@ MARLIN_TEST(gcode_commands, M105_reports_the_temperature_the_sensor_reads) {
   SimulatedSensors sensors;
   SimulatedSensors::hotend_reads(123.0f);
   TEST_ASSERT_EQUAL_FLOAT(123.0f, thermalManager.degHotend(0));
+}
+
+MARLIN_TEST(gcode_commands, M118_echoes_its_argument_to_the_host) {
+  SerialCapture capture;
+  static char buf[64];
+  strcpy(buf, "M118 hello world");
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  TEST_ASSERT_TRUE(capture.finish().find("hello world") != std::string::npos);
+}
+
+// A leading E1 means "prefix the line with echo:" rather than being part of the text.
+MARLIN_TEST(gcode_commands, M118_flags_are_not_part_of_the_message) {
+  SerialCapture capture;
+  static char buf[64];
+  strcpy(buf, "M118 E1 hello");
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  const std::string reply = capture.finish();
+  TEST_ASSERT_TRUE(reply.find("hello") != std::string::npos);
+  TEST_ASSERT_TRUE(reply.find("echo:") != std::string::npos);
+  TEST_ASSERT_TRUE(reply.find("E1") == std::string::npos);
+}
+
+#if ENABLED(PIDTEMP)
+
+  MARLIN_TEST(gcode_commands, M301_sets_the_pid_constants) {
+    const float p = thermalManager.temp_hotend[0].pid.p(),
+                i = thermalManager.temp_hotend[0].pid.i(),
+                d = thermalManager.temp_hotend[0].pid.d();
+
+    host_sends("M301 P11.5 I2.25 D63.75");
+    TEST_ASSERT_EQUAL_FLOAT(11.5f, thermalManager.temp_hotend[0].pid.p());
+    TEST_ASSERT_EQUAL_FLOAT(63.75f, thermalManager.temp_hotend[0].pid.d());
+
+    SET_HOTEND_PID(Kp, 0, p); SET_HOTEND_PID(Ki, 0, i); SET_HOTEND_PID(Kd, 0, d);
+    thermalManager.updatePID();
+  }
+
+  MARLIN_TEST(gcode_reports_pid, M301_reports_what_it_was_given) {
+    const float p = thermalManager.temp_hotend[0].pid.p();
+    host_sends("M301 P33.25");
+    SerialCapture capture;
+    static char buf[32];
+    strcpy(buf, "M301");
+    parser.parse(buf);
+    gcode.process_parsed_command(true);
+    TEST_ASSERT_TRUE(capture.finish().find("P33.25") != std::string::npos);
+    SET_HOTEND_PID(Kp, 0, p);
+    thermalManager.updatePID();
+  }
+
+#endif
+
+// Settings can be reset to the configured defaults and reported back.
+MARLIN_TEST(gcode_commands, M502_restores_the_configured_defaults) {
+  const float was = planner.settings.axis_steps_per_mm[X_AXIS];
+
+  host_sends("M92 X999");
+  TEST_ASSERT_EQUAL_FLOAT(999.0f, planner.settings.axis_steps_per_mm[X_AXIS]);
+
+  host_sends("M502");
+  TEST_ASSERT_NOT_EQUAL(999.0f, planner.settings.axis_steps_per_mm[X_AXIS]);
+
+  planner.settings.axis_steps_per_mm[X_AXIS] = was;
+}
+
+MARLIN_TEST(gcode_commands, M503_reports_the_settings) {
+  SerialCapture capture;
+  static char buf[32];
+  strcpy(buf, "M503");
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  const std::string reply = capture.finish();
+  TEST_ASSERT_TRUE(reply.find("M92") != std::string::npos);      // steps per mm
+  TEST_ASSERT_TRUE(reply.find("M203") != std::string::npos);     // feedrate limits
+}
+
+// M17 and M18/M84 turn the motors on and off, which is what lets a user push the
+// carriage by hand between prints.
+MARLIN_TEST(gcode_commands, M17_and_M84_enable_and_disable_steppers) {
+  host_sends("M17");
+  TEST_ASSERT_TRUE(stepper.axis_is_enabled(X_AXIS));
+
+  host_sends("M84");
+  TEST_ASSERT_FALSE(stepper.axis_is_enabled(X_AXIS));
+
+  // A named axis can be enabled on its own.
+  host_sends("M17 X");
+  TEST_ASSERT_TRUE(stepper.axis_is_enabled(X_AXIS));
+  host_sends("M84");
 }
