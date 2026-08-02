@@ -55,8 +55,13 @@ public:
   ~SerialCapture() { finish(); MYSERIAL1.host_connected = was_connected; }
 
   // Stop draining and return everything the firmware wrote.
+  //
+  // The final drain runs on the calling thread after the drainer has been joined:
+  // bytes can be written between the drainer's last read and its exit, and collecting
+  // them here rather than racing for them is what keeps the result deterministic.
   const std::string& finish() {
     if (running.exchange(false)) drainer.join();
+    drain();
     return text;
   }
 
