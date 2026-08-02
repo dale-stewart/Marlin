@@ -66,25 +66,22 @@ public:
       HAL_timer_init();                        // main() never runs here
       stepper.init();
       hardware_ready = true;
-      #ifdef __PLAT_TEST__
-        // Under the test HAL an interrupt fires because time crossed the timer's
-        // compare value, so the timer has to be armed and enabled. Driving the ISR
-        // directly, as the LINUX build does, needs neither.
-        HAL_timer_start(MF_TIMER_STEP, STEPPER_TIMER_RATE / 1000);
-        ENABLE_STEPPER_DRIVER_INTERRUPT();
-      #endif
+      // NOTE for the test HAL: an interrupt here fires because time crossed the
+      // timer's compare value, so motion needs the step timer armed and enabled —
+      // ENABLE_STEPPER_DRIVER_INTERRUPT() plus a sensible compare. Doing that alone is
+      // not sufficient: with interrupts live, the suite hangs before its first
+      // assertion, somewhere in this constructor. That is the open question. Until it
+      // is answered the test HAL runs everything that does not move, and the motion
+      // tests run under linux_native_test.
     }
-    // Nothing may fire on its own: the test decides when the machine moves.
-    //
-    // Masking the signal is not enough. HAL_timer_init sets up POSIX interval timers,
-    // and stepper.init() arms one; a masked signal is still *queued*, so the moment
-    // anything re-enables interrupts the backlog is delivered and the ISR runs behind
-    // the test's back. Pushing the compare value far into the future disarms them, so
-    // the only way the machine moves is a test calling stepper.isr().
-    DISABLE_STEPPER_DRIVER_INTERRUPT();
-    DISABLE_TEMPERATURE_INTERRUPT();
-    HAL_timer_set_compare(MF_TIMER_STEP, HAL_TIMER_TYPE_MAX);
-    HAL_timer_set_compare(MF_TIMER_TEMP, HAL_TIMER_TYPE_MAX);
+    #ifndef __PLAT_TEST__
+      // The LINUX HAL's interrupts are POSIX signals, which would arrive between
+      // assertions. Silence them and drive stepper.isr() by hand instead.
+      DISABLE_STEPPER_DRIVER_INTERRUPT();
+      DISABLE_TEMPERATURE_INTERRUPT();
+      HAL_timer_set_compare(MF_TIMER_STEP, HAL_TIMER_TYPE_MAX);
+      HAL_timer_set_compare(MF_TIMER_TEMP, HAL_TIMER_TYPE_MAX);
+    #endif
 
     was_settings = planner.settings;
     LOOP_LOGICAL_AXES(i) planner.settings.axis_steps_per_mm[i] = STEPS_PER_MM;

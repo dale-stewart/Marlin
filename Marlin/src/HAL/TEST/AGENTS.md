@@ -22,11 +22,29 @@ HAL unchanged.
 
 ## Status
 
-Compiles and runs the suite. Motion under this HAL is **not finished**: the stepper
-timer is not being armed as expected (`HAL_timer_interrupt_enabled` reads false after
-`stepper.init()`, and the compare value is not what `HAL_timer_start` was given), so a
-queued move does not step when time advances. Until that is resolved the motion tests
-run under `linux_native_test`, which drives `stepper.isr()` directly.
+Compiles, and runs every test that does not move the machine. Motion is **not
+finished**, and the remaining problem is now narrower than it was.
+
+The first diagnosis was wrong. `HAL_timer_interrupt_enabled` read false after
+`stepper.init()` not because the HAL failed to arm the timer, but because the test
+fixture disabled it four lines later — leftover code whose purpose under the LINUX HAL
+was suppressing POSIX signals, and which has no business running here. That is fixed:
+the suppression is now `#ifndef __PLAT_TEST__`.
+
+What is left: with the step interrupt actually enabled, the suite hangs *before its
+first assertion*, somewhere in the `SimulatedMachine` constructor — earlier than any
+test body, and with no output to narrow it. Enabling interrupts is necessary for motion
+here, so this has to be understood rather than worked around.
+
+Worth checking first: whether an ISR fires re-entrantly through `HAL_test_advance_*`,
+and whether `Stepper::isr()` setting the compare to `HAL_TIMER_TYPE_MAX` on entry
+combines with `Timer::schedule()` to produce a zero or wrapped interval — a period of
+zero would fire the handler forever inside one advance, which matches a hang with no
+output. The `budget` argument in `Timer::advance()` was meant to bound exactly that;
+it may need to bound re-entry too.
+
+Until then the motion tests run under `linux_native_test`, which drives `stepper.isr()`
+directly and stays green at 377.
 
 The two environments deliberately share fixtures: `Marlin/tests/support/` selects the
 mechanism per platform, so a test reads the same either way and the LINUX build stays

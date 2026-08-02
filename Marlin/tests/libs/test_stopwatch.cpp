@@ -220,7 +220,7 @@ namespace {
 }
 
 MARLIN_TEST(stopwatch, duration_advances_while_running) {
-  AcceleratedClock clock;
+  [[maybe_unused]] AcceleratedClock clock;   // no-op under the test HAL, where time is exact
   Stopwatch sw;
   sw.reset();
   sw.start();
@@ -229,7 +229,7 @@ MARLIN_TEST(stopwatch, duration_advances_while_running) {
 }
 
 MARLIN_TEST(stopwatch, duration_stops_advancing_when_paused) {
-  AcceleratedClock clock;
+  [[maybe_unused]] AcceleratedClock clock;   // no-op under the test HAL, where time is exact
   Stopwatch sw;
   sw.reset();
   sw.start();
@@ -242,7 +242,7 @@ MARLIN_TEST(stopwatch, duration_stops_advancing_when_paused) {
 }
 
 MARLIN_TEST(stopwatch, duration_stops_advancing_when_stopped) {
-  AcceleratedClock clock;
+  [[maybe_unused]] AcceleratedClock clock;   // no-op under the test HAL, where time is exact
   Stopwatch sw;
   sw.reset();
   sw.start();
@@ -256,7 +256,7 @@ MARLIN_TEST(stopwatch, duration_stops_advancing_when_stopped) {
 
 // Time spent paused is not counted, but time before the pause is kept.
 MARLIN_TEST(stopwatch, a_pause_does_not_count_towards_the_duration) {
-  AcceleratedClock clock;
+  [[maybe_unused]] AcceleratedClock clock;   // no-op under the test HAL, where time is exact
   Stopwatch sw;
   sw.reset();
   sw.start();
