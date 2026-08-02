@@ -394,6 +394,13 @@ reset before starting. State the commit the work builds on, and have the agent c
 its baseline numbers match yours *before* it changes anything — a baseline that disagrees
 with the brief means the tree is wrong, not that the brief is.
 
+**Quote a baseline with the command that produced it, never as a bare number.** That last
+rule turns any ambiguity in the number into a false alarm, and suites usually have more
+than one axis to vary — the environment, the configuration, the target selection. A count
+that is exact along one axis and silently different along another will read as a corrupt
+tree to an agent that reached it by a reasonable route. Write the invocation, not just the
+total, and say which axis it holds fixed.
+
 ### Verify before you relay
 
 Read the diff, run the suites yourself, and check that no assertion was weakened and no

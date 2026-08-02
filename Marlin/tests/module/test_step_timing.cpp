@@ -139,11 +139,17 @@ namespace {
   /**
    * Re-resolve the machine: a finer microstep and a stiffer ramp.
    *
-   * The fixture's 80 steps/mm is a belted axis on full steps. At that resolution no
-   * feedrate the machine will accept produces a step rate the stepper interrupt cannot
-   * serve one step at a time, so the multistepping path never runs. 3200 steps/mm is an
+   * The fixture's 80 steps/mm is a belted axis on full steps, which asks so little of the
+   * stepper interrupt that the rate-dependent arithmetic barely moves. 3200 steps/mm is an
    * ordinary 1/16-microstepped leadscrew, and at 200 mm/s it asks for 640,000 steps a
-   * second — which it cannot.
+   * second, which puts the interrupt under real pressure.
+   *
+   * Note what this does *not* do. With `OLD_ADAPTIVE_MULTISTEPPING` disabled,
+   * `steps_per_isr` is not derived from the step rate: it is a ladder, climbed one rung
+   * when an interrupt overruns its own interval and given back when one finishes early. A
+   * single move at this resolution stays at one step per interrupt from beginning to end,
+   * whatever the feedrate. Reaching the top of the ladder needs two buffered moves — see
+   * `move_x_twice` and the section at the end of this file.
    */
   void with_resolution(const float steps_per_mm, const float accel) {
     LOOP_LOGICAL_AXES(i) planner.settings.axis_steps_per_mm[i] = steps_per_mm;
@@ -467,15 +473,15 @@ MARLIN_TEST(step_timing, a_step_rate_beyond_one_step_per_interrupt_doubles_up_th
 }
 
 /**
- * Multistepping loses no steps and gains none.
+ * A high step rate loses no steps and gains none.
  *
- * The interval is divided and the pulses are batched, so an error in either the divisor
- * or the batch size shows up as a position that is wrong by a factor. `move_x` checks the
- * step count and the stepper's own position on every move, at four feedrates that span
- * the threshold: the same 5 mm arrives at 16,000 steps whether it took one interrupt per
- * step or two.
+ * The distance a move covers is fixed by its step count, not by how fast the interrupt
+ * managed to issue them, so an error in the interval arithmetic must not leak into the
+ * position. `move_x` checks the step count and the stepper's own position on every move,
+ * and this runs it at three feedrates a factor of four apart: the same 5 mm arrives at
+ * 16,000 steps at every one of them.
  */
-MARLIN_TEST(step_timing, multistepping_delivers_exactly_the_steps_asked_for) {
+MARLIN_TEST(step_timing, a_high_step_rate_delivers_exactly_the_steps_asked_for) {
   SimulatedMachine machine;
   with_resolution(3200.0f, 20000.0f);
 
@@ -486,15 +492,16 @@ MARLIN_TEST(step_timing, multistepping_delivers_exactly_the_steps_asked_for) {
 }
 
 /**
- * A multistepped move still takes about the time the feedrate implies.
+ * A move at a high step rate still takes about the time the feedrate implies.
  *
- * 5 mm at 200 mm/s and 20,000 mm/s² is 1 mm of ramp at each end and 3 mm of cruise:
- * 20 ms of ramp plus 15 ms of cruise, 35 ms in all. That is a floor, because the firmware
- * must never exceed the commanded feedrate, and the ceiling says the multistepping
- * divisor is not costing the move a factor: getting the shift wrong by one bit halves or
- * doubles the effective rate, which neither bound would allow.
+ * The bounds are computed from the ramp, not read off a previous run. 5 mm at 200 mm/s
+ * and 20,000 mm/s² is 1 mm of ramp at each end and 3 mm of cruise: 20 ms of ramp plus
+ * 15 ms of cruise, 35 ms in all. That is a floor, because the firmware must never exceed
+ * the commanded feedrate. The ceiling says the interval arithmetic is not costing the
+ * move a factor — getting a shift wrong by one bit halves or doubles the effective rate,
+ * which neither bound would allow.
  */
-MARLIN_TEST(step_timing, a_multistepped_move_keeps_to_the_commanded_feedrate) {
+MARLIN_TEST(step_timing, a_high_step_rate_keeps_to_the_commanded_feedrate) {
   SimulatedMachine machine;
   with_resolution(3200.0f, 20000.0f);
 
@@ -507,14 +514,15 @@ MARLIN_TEST(step_timing, a_multistepped_move_keeps_to_the_commanded_feedrate) {
 }
 
 /**
- * Going faster than one step per interrupt still makes the move faster.
+ * Asking for four times the feedrate buys most of four times the speed.
  *
- * Between 50 and 200 mm/s the machine crosses into multistepping, so this is the claim
- * that crossing it does not cost the speed it was supposed to buy: four times the
- * feedrate is at least twice the speed over the same 5 mm, and never more than four
- * times, which is all the feedrate asked for.
+ * Both bounds follow from the commanded rates rather than from a recorded duration. Four
+ * times the feedrate can never be more than four times the speed over the same distance —
+ * that is all the move was asked for — and it must be at least twice, because the fixed
+ * ramp at each end is the only thing the extra speed has to pay for. A rate that saturated
+ * somewhere in between would fail the lower bound.
  */
-MARLIN_TEST(step_timing, crossing_into_multistepping_still_goes_faster) {
+MARLIN_TEST(step_timing, four_times_the_feedrate_is_most_of_four_times_the_speed) {
   SimulatedMachine machine;
   with_resolution(3200.0f, 20000.0f);
 

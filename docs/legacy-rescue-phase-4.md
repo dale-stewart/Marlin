@@ -362,11 +362,18 @@ saturating. Of the original 69 survivors in that cluster, 28 remain and all are
 equivalent — `MULTISTEPPING_LIMIT` is the literal 16 and `loops` is always a power of two,
 so every mutation of either comparand evaluates identically.
 
-**A caution this produced:** three tests from the first round are named for multistepping
-and explain a mechanism they do not exercise. They still assert something true — pulses
-really do bunch up — but via the adaptive `max_loops` path, not `steps_per_isr`. A test
-whose comment explains the wrong mechanism is worse than one with no comment, because it
-is believed. They are worth renaming.
+**A caution this produced, since fixed:** three tests from the first round were named for
+multistepping and explained a mechanism they do not exercise. They still asserted
+something true — pulses really do bunch up — but via the adaptive `max_loops` path, not
+`steps_per_isr`. A test whose comment explains the wrong mechanism is worse than one with
+no comment, because it is believed.
+
+They are now named for what they actually check — that a high step rate loses no steps,
+keeps to the commanded feedrate, and converts four times the feedrate into most of four
+times the speed — and `with_resolution`'s comment now says outright that a single move
+stays at one step per interrupt whatever its feedrate, with a pointer to `move_x_twice`
+for the tests that do climb the ladder. No assertion changed; all three still pass, and
+the suite totals are unmoved at 444/377/18.
 
 The suspicion was right and the gap is wider than guessed. Two caveats make it wider
 still:

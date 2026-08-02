@@ -93,12 +93,19 @@ mysterious build failure. Both agents that hit this reset the worktree branch th
 and reported it.
 
 **Test counts as of `unit-test-coverage`:** `testhal_native_test` 444,
-`linux_native_test` 377, `acceptance_native_test` 18.
+`linux_native_test` 377, `acceptance_native_test` 18 — each measured with
+`pio run -t marlin_default -e <env>`, i.e. against the **default config only**.
+
+Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
+varies the *config* and holds the env fixed: it runs `linux_native_test` alone against all
+three configs in `test/`, reporting **377, 378, 378**. The counts above vary the *env* and
+hold the config fixed. Give an agent "377" as a baseline without saying which, and a
+correct tree reports a mismatch.
 
 ## Test, coverage, and mutation tooling
 
 ```bash
-make unit-test-all-local                    # all three suites in test/*.ini
+make unit-test-all-local                    # linux_native_test only, over all 3 configs in test/
 make unit-test-coverage                     # one suite + gcov/gcovr report
 make unit-test-mutation TARGET=<file.cpp>   # mutation-test one source file
 pio run -t marlin_default -e acceptance_native_test        # acceptance suite alone
