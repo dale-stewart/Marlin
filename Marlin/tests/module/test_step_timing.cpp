@@ -155,6 +155,101 @@ namespace {
   // Ratio of two durations, largest first, for assertions written as "x times longer".
   float ratio(const uint64_t a, const uint64_t b) { return float(a) / float(b); }
 
+  /**
+   * Two moves in a row, buffered before either runs, so the second inherits the first's
+   * speed instead of starting from rest. Both are along X and in the same direction, so
+   * the planner carries the junction speed straight through.
+   *
+   * A single move cannot reach the top of the multistepping ladder and then run somewhere
+   * useful: the stepper only climbs the ladder while it is falling behind, and by the time
+   * it is no longer falling behind the move is over. Handing it a fast move followed by a
+   * slower one puts it at the top of the ladder *and* gives it a steady rate to hold it
+   * against.
+   */
+  void move_x_twice(const StepTimeline &line,
+                    const float mm1, const float feedrate1,
+                    const float mm2, const float feedrate2) {
+    xyze_pos_t origin = { 0 };
+    planner.set_position_mm(origin);
+    xyze_pos_t first = { 0 };  first.x  = mm1;
+    xyze_pos_t second = { 0 }; second.x = mm1 + mm2;
+    TEST_ASSERT_TRUE(planner.buffer_line(first, feedrate1));
+    TEST_ASSERT_TRUE(planner.buffer_line(second, feedrate2));
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+    const float total = mm1 + mm2;
+    TEST_ASSERT_EQUAL(int32_t(planner.settings.axis_steps_per_mm[X_AXIS] * total), stepper.position(X_AXIS));
+    TEST_ASSERT_EQUAL(size_t(planner.settings.axis_steps_per_mm[X_AXIS] * total), line.steps());
+  }
+
+  /**
+   * The pulse timeline seen as interrupts rather than as steps.
+   *
+   * Pulses issued inside one interrupt arrive back to back — as close together as the
+   * pulse timing allows — while the next interrupt is a scheduled interval away. So a gap
+   * several times the shortest one in the window is an interrupt boundary, and everything
+   * between two boundaries was delivered by a single interrupt.
+   *
+   * That makes both halves of multistepping visible from the step pin alone: how many
+   * pulses an interrupt delivered, and how long the stepper then waited before the next.
+   */
+  struct Interrupt {
+    size_t group;         // pulses this interrupt delivered
+    uint64_t interval_ns; // the wait that preceded it, from the previous group's last pulse
+  };
+
+  struct Interrupts {
+    size_t group;         // pulses delivered per interrupt; 0 if the groups are not uniform
+    uint64_t interval_ns; // last pulse of one group to the first pulse of the next
+    size_t count;         // complete groups measured
+
+    // `from` and `to` are fractions of the move, so a window can be placed in the cruise
+    // without knowing the step count. Groups partly outside the window are dropped.
+    static std::vector<Interrupt> list(const StepTimeline &line, const float from, const float to) {
+      const size_t a = size_t(float(line.steps()) * from), b = size_t(float(line.steps()) * to);
+      uint64_t tightest = ~uint64_t(0);
+      for (size_t i = a; i + 1 < b; i++) tightest = _MIN(tightest, line.at[i + 1] - line.at[i]);
+
+      const uint64_t boundary = tightest * 4;
+      std::vector<Interrupt> out;
+      size_t size = 0;
+      bool started = false;
+      uint64_t pending_interval = 0;
+
+      for (size_t i = a; i + 1 < b; i++) {
+        const uint64_t g = line.at[i + 1] - line.at[i];
+        if (g <= boundary) { size++; continue; }
+        // A boundary closes the group that was being counted.
+        if (started) out.push_back({ size + 1, pending_interval });
+        started = true;
+        size = 0;
+        pending_interval = g;
+      }
+
+      // No boundary anywhere means one pulse per interrupt at a steady interval.
+      if (!started) for (size_t i = a; i + 1 < b; i++) out.push_back({ 1, line.at[i + 1] - line.at[i] });
+      return out;
+    }
+
+    static Interrupts over(const StepTimeline &line, const float from, const float to) {
+      const std::vector<Interrupt> all = list(line, from, to);
+      Interrupts r = { 0, 0, all.size() };
+      if (all.empty()) return r;
+
+      uint64_t total = 0;
+      bool uniform = true;
+      for (const Interrupt &i : all) { total += i.interval_ns; if (i.group != all[0].group) uniform = false; }
+
+      r.group = uniform ? all[0].group : 0;
+      r.interval_ns = total / all.size();
+      return r;
+    }
+  };
+
+  // The time the given number of steps takes at a commanded feedrate, in nanoseconds.
+  float steps_ns(const size_t steps, const float feedrate, const float steps_per_mm) {
+    return 1.0e9f * float(steps) / (feedrate * steps_per_mm);
+  }
+
 }
 
 //
@@ -429,6 +524,185 @@ MARLIN_TEST(step_timing, crossing_into_multistepping_still_goes_faster) {
 
   TEST_ASSERT_TRUE(ratio(span_50, span_200) >= 2.0f);
   TEST_ASSERT_TRUE(ratio(span_50, span_200) <= 4.0f);
+}
+
+//
+// ---- The top of the multistepping ladder ----
+//
+// Everything above reaches at most one pulse per interrupt: the stepper only climbs the
+// multistepping ladder while an interrupt is overrunning its own interval, and a single
+// move that overruns is over before it settles anywhere. A fast move followed by a slower
+// one leaves it at the top of the ladder with a steady rate to hold it there, which is the
+// only way the >= 16 arm of `calc_multistep_timer_interval` runs at all.
+//
+
+/**
+ * At the top of the ladder an interrupt delivers a whole batch of pulses.
+ *
+ * `MULTISTEPPING_LIMIT` is the most steps the firmware will issue from one interrupt. 5 mm
+ * at 800 mm/s asks for 2.56 million steps a second, far more than the interrupt can serve
+ * one at a time, so the stepper climbs to the limit; the 200 mm/s move that follows is
+ * slow enough to keep up with at that batch size and fast enough not to give it back.
+ *
+ * The claim is about the shape of the timeline, not about a variable: sixteen pulses
+ * arrive together, then nothing for an interval, then sixteen more — uniformly, right
+ * across the middle of the second move.
+ */
+MARLIN_TEST(step_timing, a_saturated_move_climbs_to_the_multistepping_limit) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 50000.0f);
+
+  StepTimeline line;
+  move_x_twice(line, 5.0f, 800.0f, 5.0f, 200.0f);
+
+  const Interrupts isr = Interrupts::over(line, 0.60f, 0.80f);
+  TEST_ASSERT_EQUAL(size_t(MULTISTEPPING_LIMIT), isr.group);
+  TEST_ASSERT_TRUE(isr.count > 100);   // a sustained plateau, not one lucky interrupt
+}
+
+/**
+ * An interrupt that delivers sixteen steps waits for sixteen steps' worth of time.
+ *
+ * That is the whole point of the divisor: a batch of `n` covers `n` steps of the move, so
+ * the next interrupt is due when those `n` steps would have been due at the commanded
+ * rate. Sixteen steps at 200 mm/s and 3200 steps/mm is 25 µs.
+ *
+ * 120 mm/s exercises the same law one rung down. The stepper gives a rung back while the
+ * first move is winding down and then holds at eight for the whole of the second — which
+ * is a different arm of the arithmetic, shifting by two and then by one instead of by
+ * four — so eight steps' worth of time is 20.8 µs. The expected batch size is stated
+ * rather than read back from the measurement, because a divisor that was wrong would
+ * settle the ladder somewhere else and a self-derived prediction would follow it there.
+ *
+ * Both are measured a little long by the same fixed amount, because the interrupt reads
+ * the timer a fixed number of times and each read costs the simulated CPU a tick. The 8%
+ * band covers that; getting the divisor wrong by a single bit doubles or halves the
+ * answer, which it does not cover.
+ */
+MARLIN_TEST(step_timing, a_multistepped_interrupt_waits_for_the_steps_it_delivered) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 50000.0f);
+
+  struct { float feedrate; size_t group; } expected[] = { { 200.0f, 16 }, { 120.0f, 8 } };
+
+  for (const auto &e : expected) {
+    StepTimeline line;
+    move_x_twice(line, 5.0f, 800.0f, 5.0f, e.feedrate);
+
+    const Interrupts isr = Interrupts::over(line, 0.60f, 0.80f);
+    TEST_ASSERT_EQUAL(e.group, isr.group);
+
+    const float predicted = steps_ns(e.group, e.feedrate, 3200.0f);
+    TEST_ASSERT_FLOAT_WITHIN(predicted * 0.08f, predicted, float(isr.interval_ns));
+  }
+}
+
+/**
+ * Change the commanded rate and the interval changes by exactly the difference.
+ *
+ * Both moves batch sixteen pulses, so both carry the same fixed measurement overhead and
+ * subtracting one from the other removes it. What is left is pure physics — sixteen steps
+ * at 150 mm/s takes 8.33 µs longer than sixteen steps at 200 mm/s — and it holds to within
+ * 2%, which no change to the shift could survive.
+ */
+MARLIN_TEST(step_timing, the_multistepped_interval_follows_the_commanded_rate) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 50000.0f);
+
+  Interrupts fast, slow;
+  { StepTimeline line; move_x_twice(line, 5.0f, 800.0f, 5.0f, 200.0f); fast = Interrupts::over(line, 0.60f, 0.80f); }
+  { StepTimeline line; move_x_twice(line, 5.0f, 800.0f, 5.0f, 150.0f); slow = Interrupts::over(line, 0.60f, 0.80f); }
+
+  TEST_ASSERT_EQUAL(size_t(MULTISTEPPING_LIMIT), fast.group);
+  TEST_ASSERT_EQUAL(size_t(MULTISTEPPING_LIMIT), slow.group);
+
+  const float predicted = steps_ns(MULTISTEPPING_LIMIT, 150.0f, 3200.0f)
+                        - steps_ns(MULTISTEPPING_LIMIT, 200.0f, 3200.0f);
+  const float measured = float(slow.interval_ns) - float(fast.interval_ns);
+  TEST_ASSERT_FLOAT_WITHIN(predicted * 0.02f, predicted, measured);
+}
+
+/**
+ * Multistepping is given back once it is no longer needed.
+ *
+ * The ladder is climbed when an interrupt overruns and descended when it finds itself
+ * waiting — so a move slow enough to serve one step at a time must end up doing exactly
+ * that, however fast the move before it was. Without the descent the stepper would keep
+ * batching sixteen pulses at a time forever after one fast move, which is visible as
+ * pulses arriving in clumps rather than evenly spaced.
+ *
+ * Two slow moves rather than one, so the interval can be checked the same way as the
+ * multistepped ones: the difference between them is the difference the commanded rates
+ * imply, with the per-interrupt overhead cancelling out.
+ */
+MARLIN_TEST(step_timing, multistepping_is_given_back_when_the_move_slows_down) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 50000.0f);
+
+  Interrupts at_60, at_40;
+  { StepTimeline line; move_x_twice(line, 5.0f, 800.0f, 5.0f, 60.0f); at_60 = Interrupts::over(line, 0.60f, 0.80f); }
+  { StepTimeline line; move_x_twice(line, 5.0f, 800.0f, 5.0f, 40.0f); at_40 = Interrupts::over(line, 0.60f, 0.80f); }
+
+  // Back to one pulse per interrupt, evenly spaced, however fast the move before was.
+  TEST_ASSERT_EQUAL(size_t(1), at_60.group);
+  TEST_ASSERT_EQUAL(size_t(1), at_40.group);
+
+  const float predicted = steps_ns(1, 40.0f, 3200.0f) - steps_ns(1, 60.0f, 3200.0f);
+  const float measured = float(at_40.interval_ns) - float(at_60.interval_ns);
+  TEST_ASSERT_FLOAT_WITHIN(predicted * 0.02f, predicted, measured);
+}
+
+/**
+ * Coming down the ladder, each rung waits for exactly the steps it delivers.
+ *
+ * The rungs above are each measured on their own plateau, at a rate chosen to hold the
+ * stepper there. This one catches it mid-descent instead: a stiff enough ramp finishes the
+ * first move before the ladder has finished unwinding, so the second move is already
+ * cruising at a fixed 320,000 steps a second while the stepper is still handing rungs
+ * back — sixteen steps at a time, then eight, then four, then two, then one.
+ *
+ * One rate, four batch sizes, one law: the wait before an interrupt is the time its batch
+ * covers, plus the fixed cost of running an interrupt at all. Measuring four rungs at one
+ * rate separates those two terms, which no single measurement can — the part that scales
+ * with the batch is the arithmetic under test, and what is left over must be the same
+ * however big the batch was. Any error in the shift changes one rung's share and not the
+ * next one's, so the leftovers stop agreeing.
+ *
+ * It also puts the descent inside a *cruise*, which the plateau tests do not: the cruise
+ * interval is worked out once and cached, so a rung handed back while cruising is only
+ * honoured if the cached value is thrown away with it.
+ */
+MARLIN_TEST(step_timing, every_rung_of_the_ladder_waits_for_the_steps_it_delivers) {
+  SimulatedMachine machine;
+  with_resolution(3200.0f, 200000.0f);
+
+  StepTimeline line;
+  move_x_twice(line, 5.0f, 800.0f, 5.0f, 100.0f);
+
+  // The first interrupts of the second move, which begins already at cruise speed.
+  const std::vector<Interrupt> isr = Interrupts::list(line, 0.50f, 0.52f);
+
+  const size_t rungs[] = { 8, 4, 2 };
+  size_t rung = 0;
+  float overhead[COUNT(rungs)] = { 0 };
+
+  for (const Interrupt &i : isr) {
+    if (rung < COUNT(rungs) && i.group == rungs[rung]) {
+      overhead[rung] = float(i.interval_ns) - steps_ns(rungs[rung], 100.0f, 3200.0f);
+      rung++;
+    }
+  }
+
+  // Eight, then four, then two, in that order, and one step at a time by the end.
+  TEST_ASSERT_EQUAL(COUNT(rungs), rung);
+  TEST_ASSERT_EQUAL(size_t(1), isr.back().group);
+
+  // What each interrupt cost over and above the steps it covered, the same every time.
+  for (size_t i = 0; i < COUNT(rungs); i++) {
+    TEST_ASSERT_FLOAT_WITHIN(100.0f, overhead[0], overhead[i]);
+    // ...and small enough that the batch, not the overhead, is what was measured.
+    TEST_ASSERT_TRUE(overhead[i] > 0.0f && overhead[i] < steps_ns(1, 100.0f, 3200.0f));
+  }
 }
 
 #endif // __PLAT_TEST__
