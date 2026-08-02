@@ -133,15 +133,17 @@ Phase 4 item, not a reason to skip the commands now.
 
 **Milestone:** the first blocked surface change becomes unblocked.
 
-**Also due in this phase: re-frame `parser.feature`.** It was written before the rule
-above and is scoped to one module — "the host sends `M104 S200`, the printer understands
-the command M104". That is closer to an outcome than to a `parser.parse()` call, and
-G-code is genuinely the host's vocabulary, but it is still a feature file about a single
-file. Once the G-code handlers are rescued the parser has real callers to sit behind, and
-its scenarios should be folded into system-level features — setting a target temperature,
-running a file from the host — with the parser exercised inside them rather than
-described on its own. Coverage of `parser.cpp` should then come largely through those
-features, with its edge cases staying in unit tests.
+**Re-framing `parser.feature` — done.** It has been replaced by three feature files in
+`Marlin/tests/gcode/features/`: receiving a job from a host, preparing the printer for a
+job, and telling the host what the printer is doing. Nothing in them names the parser.
+The steps put bytes on the serial port and the queue reads them, so the parser is
+exercised because a real command passed through it.
+
+Measured on its own, the acceptance suite reaches 77% of `parser.cpp` and 58% of
+`queue.cpp` without ever calling either — which is the point of the exercise. The
+remainder is edge-case parsing (malformed sequences, the checksum-position quirks, the
+M32 path) that legitimately belongs in unit tests, and is where a restructuring of the
+parser could not lean on the scenarios alone.
 
 ## Phase 3 — Core modules
 
