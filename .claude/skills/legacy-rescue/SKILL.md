@@ -112,6 +112,20 @@ Build these checks into the runner itself rather than relying on discipline:
   failed" by a signal that actually differs between them. Test runners often print a
   summary line on build errors too, so the presence of output is not proof a test ran.
 
+**A flaky test makes the whole run meaningless — hunt it before you measure.** Mutation
+scoring assumes the suite is a deterministic function of the code: a mutant is killed
+because it changed behaviour, not because a test failed today. One test failing at random
+scores mutants by coin flip, and because each mutant runs once, the noise is invisible in
+the result — no re-run disagrees with anything. A baseline gate does not catch this
+either: a 1-in-40 flake passes the gate 39 times out of 40.
+
+So treat a known intermittent failure as blocking, not as background annoyance, and note
+that scores measured before you found it were taken against a baseline you now know was
+unreliable. Say so when you report them rather than quietly reusing the numbers. If the
+flake turns out to be a genuine defect in code the tests depend on — the serial buffer,
+the clock, the harness itself — that is the one case where fixing beats recording, since
+a characterization test cannot pin behaviour that is not deterministic.
+
 **Pin the build configuration for the whole run.** If the project's test tooling rewrites
 config, checks out files, or restores a default (Marlin's `restore_configs` does all
 three), a mutation run started afterward silently measures a broken build. Re-apply the
@@ -333,11 +347,34 @@ whether a surface change is safe to make.
 - **Say what must not change** — the file the fix must not reach for, the suite that
   must not move, and "do not commit" so you can review the diff.
 
+### Isolate any agent that builds
+
+**Concurrent agents that build need their own worktree.** Dividing the files between
+them is not enough: the build directory is a shared mutable resource, and two agents
+that never touch the same source still overwrite each other's binary, interleave their
+config-restoring build hooks, and break each other's builds in ways that look like their
+own last edit.
+
+The damage is worst where it is hardest to see. An agent measuring an intermittent fault
+over hundreds of runs, while another rebuilds the binary underneath it, produces a number
+that is not about anything — and it will not know. This is the same failure as a flaky
+mutation baseline, one level up: a measurement whose denominator moved during the count.
+
+If an agent must share a tree, have it copy the built binary somewhere private and
+measure the copy. Prefer separate worktrees; only agents that purely read are safe to
+share one.
+
 ### Verify before you relay
 
 Read the diff, run both suites yourself, and check that no assertion was weakened and
 no forbidden file was touched. An agent's report is a claim. Relaying it unverified
 launders a claim into a fact, and a rescue's only product is trustworthy measurement.
+
+**Re-run the agent's evidence, control first.** When an agent claims to have fixed an
+intermittent fault, build the unfixed version too and confirm *your* harness reproduces
+it before trusting a clean run of the fixed one. A green run only means something once
+you know the test can go red. This is step 3's harness-validation rule applied to
+someone else's result, and it is where a plausible non-fix gets caught.
 
 ### Keep an agent definition, not just a prompt
 
