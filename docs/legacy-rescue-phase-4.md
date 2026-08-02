@@ -288,16 +288,36 @@ the production `setup()` that would fix it does not run in a test build.** Expec
 again for any new peripheral. `motion.cpp` is low for the same reason at
 one remove: `prepare_line_to_destination` and `blocking_move` are homing paths.
 
-### Exit gate — met
+### Exit gate — met in full
 
-- ✅ five of six behaviours have tests (homing is the exception)
-- ✅ `stepper.cpp` above 60% — **87.8%**
-- ✅ `temperature.cpp` above 60% — **79.2%**
+- ✅ **all six** behaviours have tests — homing and endstop triggering completed the set
+- ✅ `stepper.cpp` above 60% — **94.8%**
+- ✅ `temperature.cpp` above 60% — **79.8%**
 - ✅ no new external dependency in the test build
 
-The suite is 398 tests under the test HAL and 377 under LINUX, and the flake that would
-have invalidated any mutation measurement is fixed — it was a genuine defect in the
-serial ring buffer, not in the test helper (register #16).
+444 tests under the test HAL, 377 under LINUX, 18 acceptance scenarios. Final coverage:
+
+| | At 4a start | End of 4a |
+|---|---|---|
+| Platform-agnostic total | 58.4% | **74.3%** (3213/4326) |
+| `stepper.cpp` | 24% | **94.8%** |
+| `planner.cpp` | 59% | **79.8%** |
+| `temperature.cpp` | 24% | **79.8%** |
+| `motion.cpp` | 20% | **59.7%** |
+| `G28.cpp` | 0% | **85.7%** |
+| `endstops.cpp` | ~0% | **51.6%** |
+
+Two defects found in the instrument itself were fixed rather than recorded (register #16
+and #18), on the reasoning that a characterization test cannot usefully pin a race or a
+livelock, and that `HAL/TEST` exists precisely to behave like the hardware it replaces.
+
+**Homing needed no HAL work**, and the predicted pin-in-an-impossible-state hazard did
+*not* apply: a simulated pin reads LOW and `X_MIN_ENDSTOP_HIT_STATE` is HIGH, so every
+switch reads open from reset — which is the state a real board powers up in. What it
+needed was a switch that closes *because the carriage arrived*, since `G28` never returns
+to the test body. `simulated_endstops.h` attaches a peripheral to the STEP pin and counts
+pulses through DIR; it keeps its own carriage position deliberately, because
+`do_homing_move()` zeroes the stepper count before each of the three moves in one `G28`.
 
 ### The coverage is reach, not protection — measured
 
@@ -326,6 +346,27 @@ The number that matters is killed-by-assertion, which roughly doubled for `stepp
 and more than doubled for `temperature.cpp`. Timeouts still account for a large share of
 `temperature.cpp`'s detections (414 of 775), so that suite still notices stoppage more
 than wrongness.
+
+A second round on `stepper.cpp` took it further, to **396/588 = 67.3%** with
+killed-by-assertion at **53.7%** and timeouts unchanged at exactly 80 — so none of that
+gain came from hangs. It also corrected the diagnosis below: the multistepping cluster did
+need an *input* rather than an assertion, but not for the stated reason. With
+`OLD_ADAPTIVE_MULTISTEPPING` disabled, `steps_per_isr` is not derived from the step rate
+at all. It is a ladder, climbed one rung when an interrupt overruns its own interval and
+given back when one finds itself waiting, so 3200 steps/mm at 200 mm/s leaves it at 1 for
+the whole move — the exact configuration the first round's "multistepping" tests use.
+Sustained overrun does reach 16, but saturates the ISR, which is then forced to
+`min_ticks` and the computed interval becomes unobservable. What works is two buffered
+moves: a fast one to climb the ladder, a slower collinear one to hold the rung without
+saturating. Of the original 69 survivors in that cluster, 28 remain and all are
+equivalent — `MULTISTEPPING_LIMIT` is the literal 16 and `loops` is always a power of two,
+so every mutation of either comparand evaluates identically.
+
+**A caution this produced:** three tests from the first round are named for multistepping
+and explain a mechanism they do not exercise. They still assert something true — pulses
+really do bunch up — but via the adaptive `max_loops` path, not `steps_per_isr`. A test
+whose comment explains the wrong mechanism is worse than one with no comment, because it
+is believed. They are worth renaming.
 
 The suspicion was right and the gap is wider than guessed. Two caveats make it wider
 still:
@@ -377,14 +418,9 @@ survivors are likely equivalent as a result.
 
 ### What remains in 4a
 
-1. **Homing and endstop triggering** — the last of the six. `endstops.update()` only
-   records a hit while the axis is moving, which now happens, so this should need no new
-   HAL work: trip a simulated endstop pin at a chosen position. `motion.cpp` is still at
-   20.8% and this is why — `prepare_line_to_destination` and `blocking_move` are homing
-   paths.
-2. **Kill the survivors** measured above — the timing, multistepping and autotune
-   assertion classes. This is the item that converts 70% coverage into 70% protection,
-   and it is now the largest piece of remaining work in the phase.
+1. **Another survivor round on `temperature.cpp`**, which is at 54.0% against
+   `stepper.cpp`'s 67.3%, and whose detections are still mostly timeouts (414 of 775).
+   The autotune internals at 804-954 and `3608` are the reachable clusters.
 3. **Reconsider the heater model's tuning.** The models are tuned, not derived, and the
    bed constant is load-bearing rather than cosmetic: the bed is bang-bang and
    `manage_heated_bed()` only reconsiders every `BED_CHECK_INTERVAL` (5 s), so a faster

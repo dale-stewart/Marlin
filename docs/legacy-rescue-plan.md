@@ -188,10 +188,20 @@ assertions were *derived relationships* (halving acceleration stretches a move b
 applied PID gains are the Ziegler-Nichols relations of Ku and Tu), because a relationship
 that follows from the physics is hard to satisfy by accident. Recorded outputs are not.
 
-What remains in 4a: another survivor round (the largest piece — including one cluster that
-needs a faster *input* rather than any assertion, since `MULTISTEPPING_LIMIT` is 16 and no
-test yet reaches 16 steps per interrupt), and homing and endstop triggering (the last of
-the six behaviours, and why `motion.cpp` is still 20.8%).
+**4a is now complete.** All six behaviours have tests — homing and endstop triggering
+closed the set, taking `motion.cpp` from 20.8% to 59.7% and `G28.cpp` to 85.7% with no
+HAL work needed. A second survivor round took `stepper.cpp` to **67.3%** (53.7%
+killed-by-assertion, timeouts unchanged, so none of the gain was hangs). Final state:
+**74.3%** platform-agnostic line coverage, 444 tests under the test HAL, 377 under LINUX,
+18 acceptance scenarios.
+
+Two defects in the instrument were fixed rather than recorded (register #16, a serial
+ring-buffer race; #18, a test-HAL timer that re-armed on enable and livelocked homing).
+Both were fixed on the same reasoning: a characterization test cannot usefully pin a race
+or a livelock, and the test HAL exists to behave like the hardware it replaces.
+
+What remains before 4b: another survivor round on `temperature.cpp`, which is at 54.0%
+and whose detections are still mostly timeouts.
 The safety paths that end in `kill()` are a blocked correction rather than a gap: they
 need a seam that lets `kill()` return, which is a production surface change. Details at
 the end of the 4a section of the phase-4 document. 4b has not started.

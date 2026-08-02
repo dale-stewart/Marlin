@@ -85,6 +85,16 @@ worktree — all PlatformIO environments share `.pio/build/<env>`, so two agents
 concurrently overwrite each other's binary and interleave `restore_configs`, and an agent
 measuring a flake over hundreds of runs will silently measure someone else's build.
 
+Worktrees here have been created from `d58bae7e9a` (upstream, Sept 2025) rather than from
+the branch under test, which has none of `Marlin/src/HAL/TEST`, `Marlin/tests/support`,
+or the module tests. Tell the agent the commit its work builds on and give it the exact
+baseline test counts, so a mismatch shows up as "the tree is wrong" instead of as a
+mysterious build failure. Both agents that hit this reset the worktree branch themselves
+and reported it.
+
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 444,
+`linux_native_test` 377, `acceptance_native_test` 18.
+
 ## Test, coverage, and mutation tooling
 
 ```bash

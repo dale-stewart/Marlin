@@ -386,6 +386,14 @@ If an agent must share a tree, have it copy the built binary somewhere private a
 measure the copy. Prefer separate worktrees; only agents that purely read are safe to
 share one.
 
+**Check what base an isolated agent actually started from, and say so in the brief.** An
+isolation mechanism may branch from a default or upstream commit rather than the work in
+progress, which drops the agent into a tree without the harness, fixtures, or tests the
+task depends on. Two agents in one session each landed on a base months behind and had to
+reset before starting. State the commit the work builds on, and have the agent confirm
+its baseline numbers match yours *before* it changes anything — a baseline that disagrees
+with the brief means the tree is wrong, not that the brief is.
+
 ### Verify before you relay
 
 Read the diff, run the suites yourself, and check that no assertion was weakened and no
