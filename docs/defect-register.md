@@ -5,8 +5,9 @@ pinned by a test carrying a `LEGACY-BEHAVIOR:` comment, so the current behaviour
 drift unnoticed — and so that fixing one starts from a failing test rather than a
 guess.
 
-Nothing here has been fixed. Changing any of it changes what the firmware does, which is
-a decision for the maintainer, not a side effect of adding tests.
+Nothing here has been fixed, with one recorded exception (#16) where the defect was in
+the measuring instrument itself. Changing any of the rest changes what the firmware does,
+which is a decision for the maintainer, not a side effect of adding tests.
 
 **Status values:** `open` — decision needed · `by-design` — recorded as intended
 · `blocked` — fix requires work that is not yet safe.
@@ -24,6 +25,27 @@ a decision for the maintainer, not a side effect of adding tests.
 | 7 | `i8tostr3rj(-128)` returns `"-28"` — the sign takes the hundreds column and the hundreds digit is lost. | `libs/numtostr.cpp:81` | Only affects the single value `-128`. | open |
 | 8 | A stray continuation byte (a sequence starting mid-character) is skipped: the decoder consumes it, leaves the value at 0, and returns. | `lcd/utf8.cpp:157` | A corrupted or mis-sliced string silently loses a character rather than showing a replacement glyph. Slicing by byte offset rather than character can produce this. | open |
 | 9 | A lead byte claiming more than four bytes (`0xFE`, `0xFF` — never valid UTF-8) is skipped the same way, with no indication. | `lcd/utf8.cpp:160` | As above. | open |
+
+## Fixed, with reason
+
+| # | Symptom | Where | Impact | Status |
+|---|---|---|---|---|
+| 16 | `RingBuffer::write()` incremented `index_write` before storing the byte, and `read()` incremented `index_read` before loading it, so each side advertised a slot it had not finished with. A reader seeing the new index before the store landed took the previous lap's byte from that slot; the real byte then overwrote a slot the index had already passed. | `HAL/LINUX/include/serial.h:54`, `HAL/TEST/include/serial.h:54` | One substituted character, same length, on any report longer than the 128-byte buffer — where `HalSerial::write()` spins and the producer genuinely races the consumer. Affects the simulator, which drains the buffer from its UI thread, and any ISR/main-loop pairing. | fixed |
+
+**Why this one was fixed rather than recorded.** The rule exists so that adding tests
+does not quietly change behaviour. Here the defect was *in the instrument*: it corrupted
+the serial output the acceptance tests assert against, at roughly 1 run in 40. A suite
+with a random failure cannot serve as a mutation baseline — every mutant is scored partly
+by chance — so leaving it pinned by a characterization test would have meant building the
+rest of the rescue on a measurement known to be unreliable.
+
+Pinning it instead of fixing it was considered and rejected: a test asserting "output is
+occasionally corrupted" is not a test, and the fault is not deterministic enough to pin.
+
+Evidence, measured on an isolated worktree at `525d497f` with the same binary otherwise:
+**6 failures in 200 runs unfixed, 0 in 400 fixed**. The control was run first, because a
+clean run of the fixed binary proves nothing unless the harness is known to detect the
+fault.
 
 ## Recorded as intended
 
