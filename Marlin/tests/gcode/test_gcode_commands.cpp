@@ -39,6 +39,8 @@
 #include "serial_capture.h"
 #include "src/module/stepper.h"
 #include "src/module/settings.h"
+#include "src/module/endstops.h"
+#include "src/MarlinCore.h"
 #include <string.h>
 
 namespace {
@@ -537,3 +539,82 @@ MARLIN_TEST(gcode_commands, M17_and_M84_enable_and_disable_steppers) {
   TEST_ASSERT_TRUE(stepper.axis_is_enabled(X_AXIS));
   host_sends("M84");
 }
+
+// M120/M121 turn endstop checking on and off, which is how a macro moves past a limit
+// deliberately.
+MARLIN_TEST(gcode_commands, M120_and_M121_toggle_endstop_checking) {
+  host_sends("M121");
+  TEST_ASSERT_FALSE(endstops.global_enabled());
+
+  host_sends("M120");
+  TEST_ASSERT_TRUE(endstops.global_enabled());
+}
+
+MARLIN_TEST(gcode_commands, M113_sets_the_keepalive_interval) {
+  host_sends("M113 S30");
+  TEST_ASSERT_EQUAL(30, gcode.host_keepalive_interval);
+
+  // The interval is capped so a host cannot ask to be ignored indefinitely.
+  host_sends("M113 S200");
+  TEST_ASSERT_EQUAL(60, gcode.host_keepalive_interval);
+
+  host_sends("M113 S2");
+}
+
+MARLIN_TEST(gcode_reports_keepalive, M113_reports_the_interval) {
+  host_sends("M113 S7");
+  SerialCapture capture;
+  static char buf[32];
+  strcpy(buf, "M113");
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  TEST_ASSERT_TRUE(capture.finish().find("M113 S7") != std::string::npos);
+  host_sends("M113 S2");
+}
+
+MARLIN_TEST(gcode_commands, M85_sets_the_inactivity_timeout) {
+  const millis_t was = gcode.max_inactive_time;
+
+  host_sends("M85 S90");
+  TEST_ASSERT_EQUAL(90000, gcode.max_inactive_time);
+
+  host_sends("M85 S0");                    // 0 disables the timeout
+  TEST_ASSERT_EQUAL(0, gcode.max_inactive_time);
+
+  gcode.max_inactive_time = was;
+}
+
+// M999 clears an error state so the printer will accept commands again.
+MARLIN_TEST(gcode_commands, M999_returns_the_printer_to_running) {
+  const MarlinState was = marlin.state;
+
+  marlin.setState(MF_STOPPED);
+  TEST_ASSERT_FALSE(marlin.isRunning());
+
+  host_sends("M999 S1");                   // S1 skips the resend request
+  TEST_ASSERT_TRUE(marlin.isRunning());
+
+  marlin.setState(was);
+}
+
+// M108 breaks out of a wait, which is how a user abandons a heat-up that will not
+// finish.
+MARLIN_TEST(gcode_commands, M108_ends_a_wait) {
+  const MarlinState was = marlin.state;
+  marlin.setState(MF_RUNNING);
+
+  host_sends("M108");
+  TEST_ASSERT_FALSE(marlin.is_heating());
+
+  marlin.setState(was);
+}
+
+#if HAS_POWER_SWITCH
+  MARLIN_TEST(gcode_commands, M80_and_M81_switch_the_power_supply) {
+    host_sends("M80");
+    TEST_ASSERT_TRUE(powerManager.psu_on);
+
+    host_sends("M81");
+    TEST_ASSERT_FALSE(powerManager.psu_on);
+  }
+#endif
