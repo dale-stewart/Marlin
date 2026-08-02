@@ -171,10 +171,47 @@ but not for anything that writes to the planner while the stepper reads it — t
 firmware has an interrupt that *preempts*, not a second thread that runs alongside. The
 race showed up as intermittent hangs and the approach was withdrawn.
 
-The next piece of work is therefore a **single-threaded pump**: a hook the blocking loop
-calls, so `stepper.isr()` runs from *inside* the wait rather than beside it. Marlin's
-`idle()` is the natural place, and this is the one production seam Phase 4a looks likely
-to need. `M400`, `G4` and the arcs all depend on it.
+**The tests need their own HAL.**
+
+The next attempt was a single-threaded pump: a hook in `Marlin::idle()` so `stepper.isr()`
+runs from inside the wait rather than beside it. It worked — `M400` passed, driven by the
+real ISR from inside `planner.synchronize()`. But getting there took four separate
+`#ifdef UNIT_TEST` branches in production code: one in `MarlinCore::idle()`, and three in
+the LINUX HAL to stop `Timer` creating POSIX interval timers, arming them, and
+segfaulting on an uninitialised handle. And it still did not reach `G4`, because `dwell()`
+waits on wall-clock `millis()`, which nothing outside the HAL can control.
+
+Every one of those patches was working around the same thing: **the LINUX HAL is a HAL
+for running Marlin on a workstation, not for testing it.** Its timers are real POSIX
+timers because it is meant to run in real time. A unit test wants the opposite — time
+that only moves when asked.
+
+Marlin already has the seam for this. There are fifteen HALs, chosen per build
+environment; adding one for tests uses the architecture as designed rather than
+special-casing an existing HAL with conditional compilation. All four patches were
+reverted.
+
+### What a test HAL provides
+
+- **Timers that are state, not signals.** No `sigaction`, no `timer_create`, nothing
+  asynchronous — which removes the queued-signal races and the storm entirely.
+- **A clock the test owns.** `millis()` and `micros()` read a counter that advances only
+  when a test says so. `dwell()`, `M109`'s residency wait and homing timeouts then
+  complete instantly and deterministically instead of waiting on a wall clock.
+- **Interrupts that fire when time advances.** Advancing the clock past a timer's compare
+  value calls its handler — so `Stepper::isr` and `Temperature::isr` run because time
+  passed, which is the real relationship, and no hook in `idle()` is needed.
+- **Pins and ADC a test can drive**, which the LINUX HAL already offers through `Gpio`
+  and can be carried over unchanged.
+
+Most of the LINUX HAL can be reused as-is; what changes is `Clock`, `Timer` and the two
+timer entry points. The estimate is a few hundred lines, against four permanent
+`#ifdef UNIT_TEST` branches in production code and a category of failure — asynchronous
+signals arriving between two assertions — that no amount of care in the tests can rule
+out.
+
+This is what Phase 4a should have proposed. The A1/A2/A3 framing above was about *which
+machine model* to use and missed that the more basic question was *which HAL*.
 
 ### Sequence
 
