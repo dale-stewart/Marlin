@@ -136,6 +136,24 @@ before the run, and do not interleave other build targets while it is in flight.
 where equivalent mutants are known to exist, means the harness is broken — not that the
 suite is perfect.
 
+**Make the coverage run and the mutation run name the same suite, and check that the
+default is the one you want.** Mutants are normally restricted to lines a coverage build
+marked as covered, so these are two measurements that must agree about what they are
+measuring. Where a project has several ways to execute its tests — several harnesses,
+several configurations, several target selections — those two settings usually default
+independently, and the default is often the oldest and least capable option rather than
+the one the current work depends on.
+
+A mismatched pair is not loud. Both halves run, the report has the right shape, and the
+score is plausible; it just describes a suite in which the interesting code never
+executes, and there *unasserted* and *unreachable* look identical. That is the one
+distinction the whole exercise exists to make.
+
+Prefer tooling that cannot express the mismatch — derive one setting from the other, or
+have the run print the suite it measured next to the score. Wherever a headline figure
+comes from a narrower filter than the default report, have the tool emit that figure too,
+rather than leaving someone to reconstruct the filter by hand later.
+
 **Timebox tool selection, and abort on toolchain contagion.** Compile-time instrumenters
 (IR plugins, coverage-style passes) require *their* compiler across every translation
 unit. If adopting one means changing the project's production toolchain — a different

@@ -112,6 +112,27 @@ pio run -t marlin_default -e acceptance_native_test        # acceptance suite al
 pio run -t marlin_default -e acceptance_native_coverage    # ... with coverage
 ```
 
+**Coverage and mutation must name the same suite, and neither defaults to the one that
+matters.** `COVERAGE_ENV` and `MUTATION_ENV` both default to LINUX, where motion,
+blocking commands and the temperature ISR do not run. Measuring anything under `testhal`
+means saying so twice:
+
+```bash
+make unit-test-coverage COVERAGE_ENV=testhal_native_coverage
+make unit-test-mutation TARGET=<file.cpp> MUTATION_ENV=testhal_native_test
+make unit-test-mutation TARGET=<file.cpp> MUTATION_ENV=testhal_native_test \
+     RERUN=.pio/mutation/results.json      # MUTATION_ENV again, or this reverts to LINUX
+```
+
+Getting this wrong is not loud. A LINUX/LINUX pair is self-consistent and produces a
+perfectly plausible report — of a suite where most of the interesting lines never
+execute, so unasserted lines and unreachable lines become indistinguishable. The headline
+figures in `docs/` are all `testhal`.
+
+`make unit-test-coverage` prints both a whole-tree number and the **platform-agnostic**
+one (excluding `Marlin/src/HAL/`), which is the figure the plan documents quote — 74.3%
+against 73.8% for the same build, so quoting the wrong one looks like a small regression.
+
 `buildroot/share/scripts/mutation_test.py` drives the compiler and linker directly
 rather than invoking `platformio test` per mutant, and runs mutants in parallel: about
 75 seconds for a target that previously took 20 minutes. Useful options:
@@ -122,7 +143,10 @@ rather than invoking `platformio test` per mutant, and runs mutants in parallel:
 
 Run `make unit-test-coverage` first: mutants are restricted to gcov-covered lines, and
 without a coverage build every line is mutated, which is slower and reports survivors on
-lines no test can reach.
+lines no test can reach. The runner derives the coverage build from the env name
+(`_test` → `_coverage`), so `MUTATION_ENV=testhal_native_test` looks for
+`.pio/build/testhal_native_coverage`; if that build is absent it **warns and mutates
+every line anyway** rather than stopping. Read the warning.
 
 Environments added by this fork, in `ini/native.ini`:
 

@@ -126,15 +126,28 @@ unit-test-all-local:
 
 COVERAGE_DIR ?= .pio/coverage
 
+# Which suite to measure. Mutants are restricted to the lines this build marks covered,
+# so COVERAGE_ENV must name the same suite as MUTATION_ENV below or the restriction is
+# taken from the wrong measurement — silently, since both produce a plausible report.
+#   make unit-test-coverage COVERAGE_ENV=testhal_native_coverage
+COVERAGE_ENV ?= linux_native_coverage
+
 unit-test-coverage:
 	@command -v gcovr >/dev/null || (echo 'gcovr is not installed. Install it with "uv tool install gcovr" or "pipx install gcovr"' && exit 1)
-	rm -rf .pio/build/linux_native_coverage $(COVERAGE_DIR)
-	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e linux_native_coverage
+	rm -rf .pio/build/$(COVERAGE_ENV) $(COVERAGE_DIR)
+	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e $(COVERAGE_ENV)
 	@mkdir -p $(COVERAGE_DIR)/html
-	gcovr -r . .pio/build/linux_native_coverage \
+	gcovr -r . .pio/build/$(COVERAGE_ENV) \
 	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' \
 	  --txt $(COVERAGE_DIR)/summary.txt --print-summary \
 	  --html-details $(COVERAGE_DIR)/html/index.html
+	@echo ""
+	@echo "--- Platform-agnostic (excludes Marlin/src/HAL/) — the figure quoted in docs/ ---"
+	@gcovr -r . .pio/build/$(COVERAGE_ENV) \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' \
+	  --txt $(COVERAGE_DIR)/summary-platform-agnostic.txt --print-summary
+	@echo ""
+	@echo "Measured: $(COVERAGE_ENV) / config $(UNIT_TEST_CONFIG)"
 	@echo "HTML report: $(COVERAGE_DIR)/html/index.html"
 
 # Mutation testing. Coverage says a line ran; mutation says a test noticed.
