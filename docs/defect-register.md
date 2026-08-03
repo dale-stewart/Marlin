@@ -93,7 +93,41 @@ Not defects; structural problems whose fix is gated on the test frontier
 |---|---|---|
 | 14 | `GCodeParser` is static-only with global mutable state (`codenum`, `codebits`, `string_arg`), read directly across the codebase. | its consumers are rescued — Phase 2 |
 | 15 | Every `numtostr` conversion writes into one shared `char conv[9]` and returns a pointer into it, so two calls in one expression clobber each other. Fan-in of 23 files. | its consumers are rescued |
+| 21 | **The HAL is selected by build-time file substitution, not by dependency inversion.** A platform is chosen with `-D__PLAT_*` and a `build_src_filter` that compiles one `src/HAL/<PLATFORM>` directory, and the firmware reaches hardware through macros (`WRITE`, `READ`, `HAL_timer_*`) that are textual substitution. So the HAL is not a dependency that can be injected — it is a directory swapped at build time, which is why exactly one can exist per binary, why each new platform is a wholesale rewrite of ~30-50 files, and why the real HALs (AVR, STM32, …) have no tests at all: nothing can stand in for them. Wanted instead: compile-time dependency inversion — the modules take their hardware access as a template parameter, so a real and a fake can be instantiated side by side in one binary at no runtime cost. | its consumers are rescued — this is every module that touches hardware, so it is the largest entry here. See the sequencing note below. |
 | 19 | The thermal limit checks have no observable outcome other than shutting the machine down. `Temperature::_temp_error()` ends in `marlin.kill()`, whose last act (`minkill()`) is `while (!kill_state()) hal.watchdog_refresh();` — a spin waiting for an operator to press the kill button, with `watchdog_refresh()` a no-op and nothing able to change the pin from inside the loop. So no test can drive a sensor out of range and then *assert* anything: the call does not return. Measured rather than assumed — a probe driving `TEMP_0_PIN` to raw 1023 with a target set hangs the binary. The consequence is that `updateTemperaturesFromRawValues()`'s MINTEMP/MAXTEMP checks (`temperature.cpp:2973-2999`) can only be detected by a mutant *hanging*, never by a value. What is wanted is a seam that lets the shutdown be observed and returned from under test — the same shape as the `killed` flag the function already keeps, but reachable. That is a change to a production surface `kill()`'s many callers depend on. | `MarlinCore.cpp` and `temperature.cpp` are rescued — Phase 4a item 4 |
+
+### Sequencing note for #21 — inverting the HAL
+
+Two constraints shape any design, both measured rather than assumed.
+
+**The language level is set by the oldest target, not the newest.** AVR builds with
+`-std=gnu++1z` (C++17) on the avr-gcc that PlatformIO ships, and several platforms
+`build_unflags` down to `gnu++11`/`gnu++14`. **C++20 concepts are therefore not available
+on the targets that most need the abstraction.** That is not fatal: compile-time
+dependency inversion at zero runtime cost is fully expressible in C++17 with class
+templates, policy parameters, CRTP where static dispatch must go the other way, and
+`static_assert` to check a policy's shape. Concepts are the ergonomic layer — better
+error messages and named requirements — and can be added later, behind a feature test
+macro, on platforms whose toolchain allows them. Designing *around* concepts today would
+either exclude AVR or force a toolchain decision that has nothing to do with testability.
+
+**It cannot be one change.** #21's consumers are every module that touches hardware, and
+the ordering rule in `CLAUDE.md` forbids editing untested call sites. The migration that
+respects it:
+
+1. Add the templated seam **alongside** the existing macros. Purely additive — no call
+   site moves, nothing is blocked by anything.
+2. Redefine the macros as thin forwards to a default instantiation, so the existing call
+   sites keep working unchanged and the two paths cannot diverge.
+3. Migrate one module at a time, and only once *that module* is covered and mutation
+   tested. The gate is per-module, not global: the whole firmware does not have to be
+   rescued before any of it can move.
+4. A platform HAL becomes a policy type rather than a directory, at which point a real
+   and a fake can be instantiated in the same binary.
+
+Step 4 is what makes the real HALs testable, and it would also retire the
+`testhal`/`linux` split recorded in the plan document: a fake would no longer need its
+own build environment, because it would no longer need to be the *only* HAL in the binary.
 
 ## Working on one of these
 
