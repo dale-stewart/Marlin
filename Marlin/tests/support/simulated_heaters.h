@@ -97,10 +97,20 @@ public:
   // Where an unpowered heater settles, and where a fully powered one would end up.
   static constexpr float AMBIENT_C = SimulatedHardware::AMBIENT_C;
 
+  /**
+   * A heater that loses heat as fast as it gains it is the ordinary case, and the
+   * default. It is not the only case worth modelling: a well insulated block with a
+   * powerful element rises in seconds and falls over minutes, and that asymmetry is
+   * what decides which half of a relay cycle is the long one. Anything about the
+   * control loop's *balance* — which way a bias moves, and how far — needs a heater
+   * whose two directions can differ, so cooling has a time constant of its own.
+   */
   SimulatedHeater(const pin_t heater_pin, const int8_t adc_channel,
-                  const float full_power_c, const float time_constant_s)
+                  const float full_power_c, const float time_constant_s,
+                  const float cooling_time_constant_s = 0.0f)
     : heater_pin(heater_pin), adc_channel(adc_channel),
-      full_power_c(full_power_c), tau_s(time_constant_s) {
+      full_power_c(full_power_c), tau_s(time_constant_s),
+      cool_tau_s(cooling_time_constant_s > 0.0f ? cooling_time_constant_s : time_constant_s) {
     SimulatedHardware::ensure_ready();
     was_code = SimulatedHardware::adc_code(adc_channel);
     temp_c = AMBIENT_C;
@@ -154,9 +164,10 @@ private:
     const float dt = float(now - last_us) * 1e-6f;
     last_us = now;
 
-    // First order towards full power or towards ambient, whichever is switched on.
+    // First order towards full power or towards ambient, whichever is switched on,
+    // each at its own rate.
     const float towards = powered ? full_power_c : AMBIENT_C;
-    const float step = dt / tau_s;
+    const float step = dt / (powered ? tau_s : cool_tau_s);
     temp_c += (towards - temp_c) * (step < 1.0f ? step : 1.0f);
 
     // The state that will apply over the interval starting now.
@@ -186,7 +197,7 @@ private:
 
   pin_t heater_pin;
   int8_t adc_channel;
-  float full_power_c, tau_s;
+  float full_power_c, tau_s, cool_tau_s;
   float temp_c = AMBIENT_C;
   uint64_t last_us = 0;
   bool powered = false;

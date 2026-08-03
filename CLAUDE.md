@@ -92,7 +92,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 453,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 464,
 `linux_native_test` 377, `acceptance_native_test` 18 — each measured with
 `pio run -t marlin_default -e <env>`, i.e. against the **default config only**.
 
@@ -219,6 +219,21 @@ is blocked by PEP 668 on this machine).
 - **Mutation runs used to take ~20 minutes per target** when each mutant went through
   `platformio test`. With `mutation_test.py` a full target is ~75 seconds and a survivor
   re-run ~10 seconds, so authoring tests is now the slower half again.
+- **A mutation run writes one full copy of the target per mutant.** `temperature.cpp` is
+  ~31k mutants and about 6 GB, kept after the run because `RERUN=` reads them back — and
+  it is per worktree, so three concurrent runs filled this machine's root volume. Set
+  `MUTATION_MUTANT_DIR=/mnt/md0/marlin-mutants/<target>` to put them on the array
+  instead; a `RERUN` must name the same directory as the run that produced its results.
+- **Do not take a mutation measurement while another agent is running one.** Timeouts
+  count as detected and the threshold is wall-clock, so a loaded machine turns surviving
+  mutants into false kills. Proven here by building a suspect mutant in directly: it
+  completes in seconds and survives, but scored TIMEOUT under a parallel run. The runner
+  now derives the timeout from the baseline it measures at startup and records both in
+  the results JSON — but the fix does not make concurrent runs comparable, it only makes
+  the threshold visible. Publish the number from a run taken alone.
+- **`/tmp/mut_*` is `mutation_test.py`'s per-worker scratch.** An agent clearing it to
+  recover disk space will delete another run's in-flight compiles, which surface as
+  BUILD_FAIL in code that is fine. One agent did exactly this here.
 - **`preflight-checks.py` gates env/board compatibility.** Envs whose names end in
   `_native_test` or `_native_coverage` are exempt, because the test targets rewrite the
   board per suite. New measurement envs should follow that naming.

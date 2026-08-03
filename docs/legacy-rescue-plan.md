@@ -200,10 +200,12 @@ ring-buffer race; #18, a test-HAL timer that re-armed on enable and livelocked h
 Both were fixed on the same reasoning: a characterization test cannot usefully pin a race
 or a livelock, and the test HAL exists to behave like the hardware it replaces.
 
-What remains before 4b: the PID autotune half of the `temperature.cpp` survivor round.
-The limit-and-shutdown half is done — `test_thermal_limits.cpp` took the file from 54.0%
-to **58.3%**, and every point of that came from assertions (killed-by-assertion 361 → 419,
-timeouts flat).
+**The `temperature.cpp` survivor round is complete.** Both halves landed — the limit and
+shutdown paths (`test_thermal_limits.cpp`) and the PID autotune internals
+(`test_pid_autotune.cpp`) — taking the file from 54.0% to **62.7%** detection and 79.8%
+to 81% line coverage, with killed-by-assertion 361 → **479**. Measured in one clean run
+on an unloaded machine after both landed; the covered set grew 400 → 407 lines in the
+process, so the endpoints are close rather than strictly comparable.
 
 The safety paths that end in `kill()` are a blocked correction rather than a gap, and now
 a measured one: those lines have no observable outcome other than shutting the machine

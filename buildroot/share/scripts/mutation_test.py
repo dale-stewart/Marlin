@@ -21,7 +21,7 @@ See docs/legacy-rescue-plan.md and .claude/skills/legacy-rescue/ for how this fi
 wider workflow.
 """
 
-import argparse, concurrent.futures, glob, json, os, re, shutil, subprocess, sys, tempfile
+import argparse, concurrent.futures, glob, json, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -114,18 +114,72 @@ def suite_failed(rc, output):
     return int(m.group(2)) > 0
 
 
-def link_and_run(objs, libs, target_obj, mutant_obj, out_binary, timeout):
-    """Link the suite with one object substituted, run it, and report (rc, output)."""
+def link_and_run(objs, libs, target_obj, mutant_obj, out_binary, timeout, diag=None):
+    """
+    Link the suite with one object substituted, run it, and report (rc, output).
+
+    `diag` is an optional dict filled in with what happened, for callers that must
+    explain a failure rather than just classify it. A mutant only needs the verdict; the
+    baseline gate needs the reason, and stdout alone is empty in the two cases that
+    matter most — a link error and a binary that dies before Unity prints anything.
+    """
     linked = [mutant_obj if os.path.realpath(o) == os.path.realpath(target_obj) else o for o in objs]
     r = subprocess.run(['g++', '-o', out_binary] + linked + libs + ['-lrt', '-lpthread'],
                        cwd=REPO, capture_output=True, text=True)
     if r.returncode != 0:
+        if diag is not None:
+            diag.update(phase='link', returncode=r.returncode, stderr=r.stderr)
         return None, r.stderr
     try:
         p = subprocess.run([out_binary], cwd=REPO, capture_output=True, text=True, timeout=timeout)
+        if diag is not None:
+            diag.update(phase='run', returncode=p.returncode, stdout=p.stdout, stderr=p.stderr)
         return p.returncode, p.stdout
     except subprocess.TimeoutExpired:
+        if diag is not None:
+            diag.update(phase='run', returncode='timeout', stdout='', stderr='')
         return 'timeout', ''
+
+
+def explain_baseline_failure(diag):
+    """
+    Say why the baseline is not green, and name the likely cause.
+
+    "Not green" covers several very different faults, and the two most common ones both
+    leave stdout empty, so printing stdout alone explains nothing. Each branch below is a
+    failure that has actually happened here.
+    """
+    phase, rc = diag.get('phase'), diag.get('returncode')
+    err, outp = (diag.get('stderr') or '').strip(), (diag.get('stdout') or '').strip()
+
+    if phase == 'link':
+        hint = ("Undefined references to symbols the suite does define usually mean object\n"
+                "  files were deleted by a build hook after the object list was captured —\n"
+                "  rebuild the test env, then re-run.")
+        return f"The link failed (g++ exit {rc}).\n  {hint}\n\n{err[-2000:]}"
+
+    if rc == 'timeout':
+        return ("The baseline binary hung. Something in the suite waits forever without a\n"
+                "  test failing — a busy-wait on I/O, or a loop no simulated clock advances.\n"
+                "  Find it before measuring: every mutant would be scored against a hang.")
+
+    if isinstance(rc, int) and rc < 0:
+        return (f"The baseline binary died on signal {-rc} before finishing"
+                f"{' and printed nothing' if not outp else ''}.\n"
+                "  A crash at startup with no output is usually static-initialisation order:\n"
+                "  the link order here is load-bearing, and reordering the object list can\n"
+                "  segfault a binary that is otherwise correct.\n"
+                f"\n{(outp or err)[-2000:]}")
+
+    if isinstance(rc, int) and rc != 0:
+        return f"The baseline binary exited {rc}.\n\n{(outp or err)[-2000:]}"
+
+    if not UNITY_SUMMARY.search(outp):
+        return ("The baseline binary exited 0 but printed no test summary, so there is no\n"
+                "  evidence any test ran. Treating that as failure rather than success.\n"
+                f"\n{outp[-2000:] or '(no output at all)'}")
+
+    return f"The baseline suite reported failures.\n\n{outp[-2000:]}"
 
 
 def evaluate(mutant_path, line, ctx):
@@ -196,7 +250,8 @@ def check_disk_space(target, mutants_dir):
             f"  free: {free / (1<<30):.1f} GiB, want at least {needed / (1<<30):.1f} GiB\n"
             f"  {mutants_dir} holds one full copy of the target per mutant and is kept\n"
             f"  after the run so --rerun-survivors can read it back. Delete it to reclaim\n"
-            f"  the space; the next full run regenerates it."
+            f"  the space; the next full run regenerates it.\n"
+            f"  Or set MUTATION_MUTANT_DIR to a path on a filesystem with room."
         )
 
 
@@ -261,7 +316,8 @@ def main():
                     help='gcov build dir used to restrict mutants to covered lines '
                          '(default: the matching *_coverage env; "" to disable)')
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    ap.add_argument('--timeout', type=int, default=30, help='seconds per mutant run (default: %(default)s)')
+    ap.add_argument('--timeout', type=int, default=0,
+                    help='seconds per mutant run (default: 20x the measured baseline, min 30)')
     ap.add_argument('--results', default='.pio/mutation/results.json')
     ap.add_argument('--rerun-survivors', metavar='RESULTS',
                     help='re-run only the survivors from a previous results file')
@@ -282,20 +338,38 @@ def main():
     target_obj = re.search(r'-o\s+(\S+\.o)', compile_cmd).group(1)
     objs, libs = link_inputs(args.env)
     ctx = {'compile_cmd': compile_cmd, 'target': target, 'target_obj': str(REPO / target_obj),
-           'objs': objs, 'libs': libs, 'timeout': args.timeout, 'covered_count': 0}
+           'objs': objs, 'libs': libs, 'timeout': args.timeout or 600, 'covered_count': 0}
 
     # Baseline gate: link and run the unmutated objects exactly the way every mutant
     # will be linked and run. Without this, anything that breaks the pipeline scores
     # every mutant as killed.
     with tempfile.TemporaryDirectory() as td:
+        diag = {}
+        t0 = time.monotonic()
         rc, out = link_and_run(objs, libs, ctx['target_obj'], ctx['target_obj'],
-                               os.path.join(td, 'baseline'), args.timeout)
+                               os.path.join(td, 'baseline'), ctx['timeout'], diag)
+        baseline_s = time.monotonic() - t0
         if rc is None or rc == 'timeout' or suite_failed(rc, out):
+            why = explain_baseline_failure(diag)
             sys.exit(f"Baseline binary is not green — refusing to run. Every mutant would "
-                     f"look killed.\n{out[-2000:] if isinstance(out, str) else ''}")
-    print("baseline green", flush=True)
+                     f"look killed.\n\n{why}")
 
-    mutants_dir = REPO / '.pio' / 'mutation' / 'mutants'
+    # A timeout counts as *detected*, so one that is too tight turns a survivor into a
+    # false kill and silently flatters the score — and how tight it is depends on machine
+    # load, which makes the metric depend on what else was running. Scale it from the
+    # suite's own measured runtime instead of guessing a constant. Measured here: mutants
+    # that survive at a generous timeout were being recorded as TIMEOUT under load at 30s.
+    if not args.timeout:
+        ctx['timeout'] = max(30, int(baseline_s * 20) + 1)
+    print(f"baseline green in {baseline_s:.1f}s — {ctx['timeout']}s per mutant"
+          f"{' (from --timeout)' if args.timeout else ''}", flush=True)
+
+    # One full copy of the target per mutant, several GB for a large source file, kept
+    # after the run so --rerun-survivors can read it back. MUTATION_MUTANT_DIR moves that
+    # off the repo's filesystem when it is short of space — a run per worktree multiplies
+    # it. The results JSON stores bare filenames, so a re-run must point at the same dir.
+    mutants_dir = Path(os.environ.get('MUTATION_MUTANT_DIR') or (REPO / '.pio' / 'mutation' / 'mutants'))
+    os.makedirs(mutants_dir.parent, exist_ok=True)
     if args.rerun_survivors:
         previous = json.loads(Path(args.rerun_survivors).read_text())
         if isinstance(previous, dict):
@@ -347,11 +421,16 @@ def main():
     out.write_text(json.dumps({
         'target': target, 'env': args.env, 'suite': args.suite,
         'covered_lines': ctx['covered_count'], 'generated': total_generated,
+        # A timeout counts as detected, so two runs at different thresholds are not
+        # comparable either — record it next to the covered-line set for the same reason.
+        'timeout_s': ctx['timeout'], 'baseline_s': round(baseline_s, 2),
         'run': len(mutants), 'results': results,
     }, indent=1))
     counts = report(results, total_generated)
     print(f"\n  covered lines    {ctx['covered_count']}  (results are only comparable "
           f"between runs with the same covered-line set)")
+    print(f"  mutant timeout   {ctx['timeout']}s, from a {baseline_s:.1f}s baseline "
+          f"(a timeout scores as detected, so this must match too)")
     print(f"  results: {args.results}")
     return 1 if (args.fail_on_survivors and counts[SURVIVED]) else 0
 

@@ -73,6 +73,20 @@ namespace {
   // switched, so no measured period can be shorter than two of them.
   constexpr float HOTEND_RELAY_DELAY_S = 3.0f;
 
+  // How far over the target autotune tolerates before giving up on the tune. The firmware
+  // names this only where it uses it, so it is restated here rather than included.
+  #ifndef MAX_OVERSHOOT_PID_AUTOTUNE
+    #define MAX_OVERSHOOT_PID_AUTOTUNE 30
+  #endif
+  constexpr celsius_t MAX_OVERSHOOT_C = MAX_OVERSHOOT_PID_AUTOTUNE;
+
+  // What a host driving the tune is told, as opposed to what the temperature log says.
+  // The two carry the same news in different words, so a test that means one has to name
+  // it exactly.
+  #define HOST_NOTIFY_TOO_HIGH "Autotune failed! Temperature too high."
+  #define HOST_NOTIFY_DONE     "PID tuning done"
+  #define HOST_NOTIFY_HEATING  "Heating..."
+
   // Restores whatever the hotend PID was before a test that lets autotune apply its own.
   struct SavedPID {
     raw_pid_t was;
@@ -132,6 +146,94 @@ namespace {
     host_sends(command);
     out.read(capture.finish(), millis() - started);
   }
+
+  /**
+   * The relay, watched from the heater rather than from the report.
+   *
+   * Everything above reads what autotune *said*. What it *did* is a square wave on the
+   * heater: two power levels, alternating, held for a minimum time each. That wave is
+   * where the period being measured actually comes from, so a test that never looks at
+   * it can only check the report against itself — and mutants that break the switching
+   * while still printing plausible numbers walk straight through.
+   *
+   * The heater model is already called by the ISR that drives the pin, so it is the
+   * natural place to watch from: on every call it notes the power level now applied and
+   * the temperature the model has reached, and keeps one entry per change of level. The
+   * ISR only revisits the level once per soft-PWM period, so a timestamp here lags the
+   * firmware's decision by up to that period — small against a relay hold measured in
+   * seconds, and the same lag at both ends of an interval.
+   */
+  struct RelayChange { millis_t at; int level; float model_c; };
+
+  class TracedHeater : public SimulatedHeater {
+  public:
+    using SimulatedHeater::SimulatedHeater;
+
+    void interrupt(GpioEvent e) override { SimulatedHeater::interrupt(e); note(); }
+    void update() override { SimulatedHeater::update(); note(); }
+
+    // Start recording from whatever is applied now; the first entry is the level in
+    // force when the tune began.
+    void watch() { changes.clear(); watching = true; note(); }
+    void stop() { watching = false; }
+
+    std::vector<RelayChange> changes;
+
+  private:
+    void note() {
+      if (!watching) return;
+      const int level = int(thermalManager.temp_hotend[0].soft_pwm_amount);
+      if (changes.empty() || changes.back().level != level)
+        changes.push_back({ millis_t(millis()), level, temperature() });
+    }
+    bool watching = false;
+  };
+
+  // A traced hotend with the same model as SimulatedHotend, for tests that watch the relay.
+  class TracedHotend : public TracedHeater {
+  public:
+    TracedHotend(const float full_power_c = 400.0f, const float tau_s = 20.0f)
+      : TracedHeater(HEATER_0_PIN, TEMP_0_PIN, full_power_c, tau_s) {}
+  };
+
+  // The power level autotune applies before the first relay switch: half of full power,
+  // in the units the soft-PWM comparator counts in.
+  constexpr int START_LEVEL = int(PID_MAX >> 1);
+
+  /**
+   * Run a tune with the relay under observation.
+   *
+   * The last switch of a completed tune happens immediately before the loop's exit test,
+   * so the ISR has not yet written the pin when the call returns and the trace would be
+   * one entry short. The soft-PWM level is only revisited at a period boundary, so how
+   * long that takes depends on where in the period the tune ended: advance the clock
+   * until it has been seen, without running `Temperature::task()`, which would hand the
+   * heater back to the PID and switch it off.
+   */
+  void observe_last_switch(TracedHeater &heater) {
+    const size_t was = heater.changes.size();
+    for (int i = 0; i < 200 && heater.changes.size() == was; i++) HAL_test_advance_millis(5);
+    heater.stop();
+  }
+
+  void autotune_watched(AutotuneReport &out, TracedHeater &heater, const char * const command) {
+    heater.watch();
+    autotune_run(out, command);
+    observe_last_switch(heater);
+  }
+
+  /**
+   * Where each reported cycle appears in the trace.
+   *
+   * The relay's levels are, in order: nothing (the tune has not started), half power
+   * while the first heat-up runs, and then one pair per relay cycle. Cycles are reported
+   * from the second onwards, so the report for cycle `k` is printed at the switch that
+   * begins trace interval `5 + 2k` — and the levels either side of it, and the two
+   * switches before it, are that cycle's own history.
+   */
+  size_t heats_on_for_cycle(const size_t k) { return 5 + 2 * k; }   // the switch that reports cycle k
+  size_t cools_off_for_cycle(const size_t k) { return 4 + 2 * k; }  // ...the one before it
+  size_t heated_on_before_cycle(const size_t k) { return 3 + 2 * k; }
 
 }
 
@@ -202,9 +304,16 @@ MARLIN_TEST(pid_autotune, a_target_above_the_hotend_maximum_is_refused) {
     text = capture.finish();
   }
 
-  TEST_ASSERT_TRUE(reported::saw(text, STR_PID_TEMP_TOO_HIGH));
+  // The whole line, not just the reason: the same words reach the host a second time as
+  // a notification, so matching the reason alone would pass with the refusal itself
+  // never reported.
+  TEST_ASSERT_TRUE(reported::saw(text, STR_PID_AUTOTUNE STR_PID_TEMP_TOO_HIGH));
   TEST_ASSERT_FALSE(reported::saw(text, STR_PID_AUTOTUNE STR_PID_AUTOTUNE_START));
   TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
+
+  // ...and the host is told separately, because a host driving a tune is not reading the
+  // temperature log.
+  TEST_ASSERT_TRUE(reported::saw(text, "//action:notification " HOST_NOTIFY_TOO_HIGH));
 }
 
 //
@@ -440,7 +549,7 @@ MARLIN_TEST(pid_autotune, the_measured_gains_are_not_applied_unless_asked_for) {
  */
 MARLIN_TEST(pid_autotune, a_barely_adequate_heater_pushes_the_bias_to_its_upper_limit) {
   SimulatedMachine machine;
-  SimulatedHeater barely(HEATER_0_PIN, TEMP_0_PIN, 200.0f, 20.0f);
+  TracedHeater barely(HEATER_0_PIN, TEMP_0_PIN, 200.0f, 20.0f);
   SavedPID saved;
 
   barely.starts_at(SimulatedHeater::AMBIENT_C);
@@ -450,7 +559,9 @@ MARLIN_TEST(pid_autotune, a_barely_adequate_heater_pushes_the_bias_to_its_upper_
   {
     const millis_t started = millis();
     SerialCapture capture;
+    barely.watch();
     thermalManager.PID_autotune(TUNE_TARGET, 0, 6, false);
+    observe_last_switch(barely);
     report.read(capture.finish(), millis() - started);
   }
 
@@ -477,6 +588,458 @@ MARLIN_TEST(pid_autotune, a_barely_adequate_heater_pushes_the_bias_to_its_upper_
                  expected = (4.0 * report.d[c]) / (M_PI * swing * 0.5);
     TEST_ASSERT_FLOAT_WITHIN(float(expected * 0.01 / swing + 0.01), float(expected), float(report.Ku[k]));
   }
+
+  /**
+   * And the relay levels are still the pair the report describes.
+   *
+   * This is the only fixture where the two levels are genuinely different numbers: while
+   * the bias sits below half power `d` equals it and the lower level is simply zero, so
+   * a cycle down there cannot tell "bias - d" apart from "bias / d" or from a shift by
+   * the wrong amount. Above half power the mirroring makes the lower level `bias - 127`
+   * and the upper a constant 127, and every way of combining them is a different number.
+   */
+  for (size_t k = 0; k < report.bias.size(); k++) {
+    const long bias = long(report.bias[k]), d = long(report.d[k]);
+    TEST_ASSERT_EQUAL((bias + d) >> 1, barely.changes[heats_on_for_cycle(k)].level);
+    const size_t off = heats_on_for_cycle(k) + 1;
+    if (off < barely.changes.size())
+      TEST_ASSERT_EQUAL((bias - d) >> 1, barely.changes[off].level);
+  }
+}
+
+//
+// ---- What the relay actually did, watched from the heater ----
+//
+
+/**
+ * The relay applies exactly the two power levels the report describes.
+ *
+ * `bias` and `d` are only meaningful as the levels they produce: the heater is driven at
+ * `(bias + d) / 2` for the heating half and `(bias - d) / 2` for the cooling half, so the
+ * report's mid-point and half-swing are a claim about the square wave on the pin. Reading
+ * that wave back and checking it against the report is what makes those two numbers mean
+ * anything — a report is otherwise free to describe a relay that was never applied.
+ *
+ * The structure of the wave is a claim too. Autotune runs one settling cycle before the
+ * first cycle it reports, so `ncycles` reported cycles take `ncycles + 1` relay cycles,
+ * with half power applied throughout the initial heat-up.
+ */
+MARLIN_TEST(pid_autotune, the_relay_applies_the_two_power_levels_the_report_describes) {
+  SimulatedMachine machine;
+  TracedHotend hotend;
+  SavedPID saved;
+
+  hotend.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  constexpr int8_t CYCLES = 3;
+  AutotuneReport report;
+  autotune_watched(report, hotend, "M303 E0 S180 C3");
+
+  // Nothing was being applied, then half power for the heat-up, then two switches per
+  // relay cycle — one settling cycle plus one per reported cycle.
+  TEST_ASSERT_EQUAL(size_t(2 + 2 * (CYCLES + 1)), hotend.changes.size());
+  TEST_ASSERT_EQUAL(0, hotend.changes[0].level);
+  TEST_ASSERT_EQUAL(START_LEVEL, hotend.changes[1].level);
+
+  // From the heat-up onwards the level alternates down, up, down, up: no two consecutive
+  // switches in the same direction, which is what "relay" means.
+  for (size_t i = 2; i < hotend.changes.size(); i++) {
+    const bool falling = (i % 2) == 0;
+    if (falling) TEST_ASSERT_TRUE(hotend.changes[i].level < hotend.changes[i-1].level);
+    else         TEST_ASSERT_TRUE(hotend.changes[i].level > hotend.changes[i-1].level);
+  }
+
+  TEST_ASSERT_EQUAL(size_t(CYCLES), report.bias.size());
+  for (size_t k = 0; k < report.bias.size(); k++) {
+    const long bias = long(report.bias[k]), d = long(report.d[k]);
+
+    // The level applied at the moment this cycle was reported is the upper relay level.
+    TEST_ASSERT_EQUAL((bias + d) >> 1, hotend.changes[heats_on_for_cycle(k)].level);
+
+    // ...and the next switch, still on this cycle's bias, is the lower one.
+    const size_t off = heats_on_for_cycle(k) + 1;
+    if (off < hotend.changes.size())
+      TEST_ASSERT_EQUAL((bias - d) >> 1, hotend.changes[off].level);
+  }
+}
+
+/**
+ * The period reported is the time the relay actually took, and neither half is shorter
+ * than the relay's minimum hold.
+ *
+ * `Tu` is the sum of the two half-periods the firmware timed for itself. Timing the same
+ * two halves from the heater gives an independent measurement of the same quantity, so
+ * the two must agree — which pins the units, the arithmetic, and the choice of which
+ * instants are being subtracted. Each half is separately bounded below by the 3 s hold
+ * for a hotend, and here the hold is the binding constraint rather than the temperature,
+ * so each half is that hold plus at most the interval between temperature samples.
+ */
+MARLIN_TEST(pid_autotune, the_reported_period_is_the_time_the_relay_actually_took) {
+  SimulatedMachine machine;
+  TracedHotend hotend;
+  SavedPID saved;
+
+  hotend.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_watched(report, hotend, "M303 E0 S180 C4");
+
+  // No half after the initial heat-up is shorter than the hold. The hold is the binding
+  // constraint here rather than the temperature — the heater crosses the target well
+  // inside 3 s — so each half is that hold plus at most the wait for the next
+  // temperature sample, less the moment the ISR takes to notice the switch.
+  for (size_t i = 3; i < hotend.changes.size(); i++) {
+    const millis_t held = hotend.changes[i].at - hotend.changes[i-1].at;
+    TEST_ASSERT_TRUE(held >= millis_t(HOTEND_RELAY_DELAY_S * 1000.0f) - 200);
+    TEST_ASSERT_TRUE(held <= 2 * millis_t(HOTEND_RELAY_DELAY_S * 1000.0f));
+  }
+
+  // ...and the period reported for a cycle is the two halves that made it up.
+  TEST_ASSERT_TRUE(report.Tu.size() > 0);
+  for (size_t k = 0; k < report.Tu.size(); k++) {
+    const size_t c = report.cycle_of_gains(k);
+    const millis_t measured = hotend.changes[heats_on_for_cycle(c)].at
+                            - hotend.changes[heated_on_before_cycle(c)].at;
+    TEST_ASSERT_FLOAT_WITHIN(0.4f, float(measured) / 1000.0f, float(report.Tu[k]));
+  }
+}
+
+/**
+ * The extremes reported are the temperatures the heater actually reached.
+ *
+ * The ultimate gain is inversely proportional to the swing between them, so a `maxT` or
+ * `minT` carried over from an earlier cycle — or never reset — widens the swing and
+ * understates Ku, while every relation between the *reported* numbers still holds. Only a temperature measured
+ * outside the firmware can catch that, and the model has one: it is driven by the same
+ * pin and knows nothing of what the firmware read.
+ *
+ * Each extreme belongs to a known instant. `maxT` is reset when the relay switches off,
+ * with the heater at its peak, so the peak recorded is the temperature at that switch;
+ * `minT` is reset when it switches on, at the bottom of the cooling half, so the trough
+ * recorded is the temperature at the *previous* switch-on. Both are read one sample
+ * before the model's own record of the same instant, which at this heater's rate of a few
+ * degrees a second is worth a degree or so.
+ */
+MARLIN_TEST(pid_autotune, the_reported_extremes_are_the_temperatures_the_heater_reached) {
+  SimulatedMachine machine;
+  TracedHotend hotend;
+  SavedPID saved;
+
+  hotend.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_watched(report, hotend, "M303 E0 S180 C3");
+
+  TEST_ASSERT_TRUE(report.maxT.size() > 0);
+  for (size_t k = 0; k < report.maxT.size(); k++) {
+    TEST_ASSERT_FLOAT_WITHIN(2.5f, hotend.changes[cools_off_for_cycle(k)].model_c, float(report.maxT[k]));
+    TEST_ASSERT_FLOAT_WITHIN(2.5f, hotend.changes[heated_on_before_cycle(k)].model_c, float(report.minT[k]));
+  }
+}
+
+/**
+ * A heater that cools far more slowly than it heats pins the bias to its lower limit.
+ *
+ * The bias moves towards whichever half of the cycle is longer, so a block that sheds
+ * heat slowly spends far longer falling back to the target than climbing above it and the
+ * bias is driven down. It cannot go below 20 of 255: below half power the swing equals the
+ * bias, so the upper relay level is the bias itself, and a bias of a few counts would
+ * barely drive the heater at all — there would be nothing left to oscillate. This is the
+ * mirror of the barely-adequate heater above, and reaches the other end of the same
+ * clamp — the two together are what say the limits are 20 and MAX-20 rather than
+ * anything else.
+ */
+MARLIN_TEST(pid_autotune, a_slow_cooling_heater_pins_the_bias_to_its_lower_limit) {
+  SimulatedMachine machine;
+  // Reaches 320 C at full power with a 20 s time constant, but takes 400 s to cool: a
+  // well insulated block. Full power is kept low enough that the first cycle's overshoot
+  // stays inside both the autotune limit and MAXTEMP.
+  TracedHeater insulated(HEATER_0_PIN, TEMP_0_PIN, 320.0f, 20.0f, 400.0f);
+  SavedPID saved;
+
+  insulated.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_watched(report, insulated, "M303 E0 S180 C4");
+
+  TEST_ASSERT_TRUE(report.bias.size() > 0);
+  bool saw_the_limit = false;
+  for (size_t i = 0; i < report.bias.size(); i++) {
+    const long bias = long(report.bias[i]), d = long(report.d[i]);
+    TEST_ASSERT_TRUE(bias >= BIAS_MIN);
+    TEST_ASSERT_EQUAL(bias, d);                   // below half power the swing equals the bias
+    if (bias == BIAS_MIN) saw_the_limit = true;
+  }
+  TEST_ASSERT_TRUE(saw_the_limit);
+
+  /**
+   * The peaks belong to their own cycle, and here that can be seen.
+   *
+   * Once the bias settles at its limit the relay barely disturbs the temperature, so each
+   * cycle peaks *lower* than the one before — the opposite of a heater still warming up.
+   * A `maxT` that was never reset would therefore keep reporting the first, highest peak,
+   * which a rising sequence of peaks hides completely.
+   */
+  for (size_t k = 0; k < report.maxT.size(); k++) {
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, insulated.changes[cools_off_for_cycle(k)].model_c, float(report.maxT[k]));
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, insulated.changes[heated_on_before_cycle(k)].model_c, float(report.minT[k]));
+  }
+  TEST_ASSERT_TRUE(report.maxT.back() < report.maxT.front());   // the peaks really do fall
+}
+
+/**
+ * A heater too fast to control stops the tune rather than measuring it.
+ *
+ * The relay holds each half for at least 3 s, so a heater that can add 30 C in that time
+ * is one autotune cannot bring back to the target — its overshoot would keep growing.
+ * Rather than report a measurement taken from a runaway, the tune stops as soon as it
+ * sees the target exceeded by more than the overshoot allowance, and produces no gains at
+ * all. The heater here reaches its first switch-off point before it can switch, which is
+ * the only way to overshoot that far.
+ */
+MARLIN_TEST(pid_autotune, a_heater_too_fast_to_control_stops_the_tune_on_overshoot) {
+  SimulatedMachine machine;
+  TracedHotend runaway(400.0f, 4.0f);         // ~50 C/s at the target: five times a hotend
+  SavedPID saved;
+
+  runaway.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  // No settling advance here: giving up switches the heater off inside the call, so the
+  // last trace entry is the moment it stopped — and a heater this fast sheds 50 C a
+  // second afterwards, which would lose the very temperature under test.
+  AutotuneReport report;
+  runaway.watch();
+  autotune_run(report, "M303 E0 S180 C3");
+  runaway.stop();
+
+  TEST_ASSERT_TRUE(reported::saw(report.text, STR_PID_AUTOTUNE STR_PID_TEMP_TOO_HIGH));
+  TEST_ASSERT_TRUE(reported::saw(report.text, "//action:notification " HOST_NOTIFY_TOO_HIGH));
+  TEST_ASSERT_FALSE(reported::saw(report.text, STR_PID_AUTOTUNE_FINISHED));
+  TEST_ASSERT_EQUAL(0u, report.Ku.size());      // nothing was measured
+  TEST_ASSERT_EQUAL(0u, report.bias.size());
+
+  // It stopped past the allowance and not far past it — the heater is still climbing, so
+  // the reading it stopped on is a sample or so behind the model.
+  const float stopped_at = runaway.changes.back().model_c;
+  TEST_ASSERT_TRUE(stopped_at > float(TUNE_TARGET + MAX_OVERSHOOT_C));
+  TEST_ASSERT_TRUE(stopped_at < float(TUNE_TARGET + 2 * MAX_OVERSHOOT_C));
+
+  // The heater is switched off on the way out, not left where the runaway found it.
+  TEST_ASSERT_EQUAL(0, runaway.changes.back().level);
+}
+
+//
+// ---- What the host was told while it ran ----
+//
+
+/**
+ * Heater states are reported every two seconds for as long as the tune runs.
+ *
+ * A tune takes minutes on a real machine and the host has to be able to watch it, so the
+ * same periodic report as `M105` is emitted throughout — once at the start and then every
+ * two seconds. The count is therefore fixed by the duration rather than by the number of
+ * cycles, and each report is a line of its own.
+ */
+MARLIN_TEST(pid_autotune, heater_states_are_reported_every_two_seconds_throughout) {
+  SimulatedMachine machine;
+  SimulatedHotend hotend;
+  SavedPID saved;
+
+  hotend.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E0 S180 C3");
+
+  const size_t reports = reported::occurrences(report.text, " T:"),
+               expected = size_t(report.took / 2000) + 1;
+  TEST_ASSERT_TRUE(report.took > 10000);        // the tune ran long enough for this to mean something
+  TEST_ASSERT_TRUE(reports + 1 >= expected && reports <= expected + 1);
+
+  // Each of them ends its line.
+  TEST_ASSERT_TRUE(reported::occurrences(report.text, "\n") >= reports);
+}
+
+/**
+ * The configuration lines printed at the end carry the gains that were measured.
+ *
+ * The tune's product is three lines an operator pastes into Configuration.h, so they have
+ * to name the right constant and carry the right value: a KP line holding Ki is a working
+ * printer tuned wrongly, and nothing else in the report would show it. Each line is
+ * checked against the gain the cycle report gave for the same tune, and — because `U1`
+ * applies the result — against what the live PID ended up with.
+ */
+MARLIN_TEST(pid_autotune, the_configuration_lines_printed_carry_the_measured_gains) {
+  SimulatedMachine machine;
+  SimulatedHotend hotend;
+  SavedPID saved;
+
+  hotend.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E0 S180 C3 U1");
+
+  const std::vector<double> kp = reported::all_numbers(report.text, "#define DEFAULT_KP "),
+                            ki = reported::all_numbers(report.text, "#define DEFAULT_KI "),
+                            kd = reported::all_numbers(report.text, "#define DEFAULT_KD ");
+  TEST_ASSERT_EQUAL(1u, kp.size());
+  TEST_ASSERT_EQUAL(1u, ki.size());
+  TEST_ASSERT_EQUAL(1u, kd.size());
+
+  TEST_ASSERT_TRUE(report.Kp.size() > 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, float(report.Kp.back()), float(kp[0]));
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, float(report.Ki.back()), float(ki[0]));
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, float(report.Kd.back()), float(kd[0]));
+
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, thermalManager.temp_hotend[0].pid.p(), float(kp[0]));
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, thermalManager.temp_hotend[0].pid.i(), float(ki[0]));
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, thermalManager.temp_hotend[0].pid.d(), float(kd[0]));
+
+  // A hotend is tuned by the classic relations, and the report says so.
+  TEST_ASSERT_TRUE(reported::saw(report.text, STR_CLASSIC_PID));
+
+  // A host is told when the tune starts heating and when it is over, rather than being
+  // left to infer either from the temperature log.
+  TEST_ASSERT_TRUE(reported::saw(report.text, "//action:notification " HOST_NOTIFY_HEATING));
+  TEST_ASSERT_TRUE(reported::saw(report.text, "//action:notification " HOST_NOTIFY_DONE));
+}
+
+//
+// ---- The edges of what will be tuned ----
+//
+
+/**
+ * The highest target the hotend allows is tuned, not refused.
+ *
+ * The limit is MAXTEMP less the overshoot allowance, and the test above shows one degree
+ * past it is refused. The boundary itself is the interesting half of that rule: a target
+ * exactly at the limit is still allowed, so the check is "above the limit" and not "at
+ * it". The heater here is weak enough that tuning near MAXTEMP does not trip the
+ * hardware's own limit, and slow enough to cool that it never falls the 30 C below the
+ * target that thermal protection reads as a runaway: a heater with little power left at
+ * 260 C could not climb back from a fast fall inside the time that check allows.
+ */
+MARLIN_TEST(pid_autotune, the_highest_allowed_target_is_tuned_rather_than_refused) {
+  SimulatedMachine machine;
+  SimulatedHeater gentle(HEATER_0_PIN, TEMP_0_PIN, 285.0f, 20.0f, 400.0f);
+  SavedPID saved;
+
+  gentle.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "M303 E0 C3 S%d", int(Temperature::hotend_max_target(0)));
+
+  AutotuneReport report;
+  autotune_run(report, cmd);
+
+  TEST_ASSERT_FALSE(reported::saw(report.text, STR_PID_TEMP_TOO_HIGH));
+  TEST_ASSERT_TRUE(reported::saw(report.text, STR_PID_AUTOTUNE STR_PID_AUTOTUNE_START));
+  TEST_ASSERT_TRUE(report.Ku.size() > 0);
+}
+
+/**
+ * A swing of less than a degree is still measured.
+ *
+ * The check the gains are guarded by exists to keep a zero swing out of a division, not
+ * to reject a small one: a heavy, well insulated block barely moves inside one relay
+ * hold, and the ultimate gain that comes out of that — a large one, since Ku rises as the
+ * swing falls — is exactly what the tune is for. The narrowest swing this can be asked
+ * about is one ADC count, about half a degree at this temperature, so a swing under a
+ * degree is close to the floor of what the sensor can express.
+ */
+MARLIN_TEST(pid_autotune, a_swing_of_less_than_a_degree_still_produces_gains) {
+  SimulatedMachine machine;
+  // Heats slowly enough that a 3 s hold moves it well under a degree once the bias has
+  // settled, and cools slower still.
+  SimulatedHeater heavy(HEATER_0_PIN, TEMP_0_PIN, 320.0f, 80.0f, 1500.0f);
+  SavedPID saved;
+
+  heavy.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E0 S180 C4");
+
+  TEST_ASSERT_TRUE(report.Ku.size() > 0);
+  for (size_t k = 0; k < report.Ku.size(); k++) {
+    const size_t c = report.cycle_of_gains(k);
+    const double swing = report.maxT[c] - report.minT[c];
+    TEST_ASSERT_TRUE(swing > 0.0);
+    TEST_ASSERT_TRUE(swing < 1.0);
+    // ...and it is the same relay-gain relation as any other swing, just a larger gain.
+    const double expected = (4.0 * report.d[c]) / (M_PI * swing * 0.5);
+    TEST_ASSERT_FLOAT_WITHIN(float(expected * 0.01 / swing + 0.01), float(expected), float(report.Ku[k]));
+  }
+}
+
+/**
+ * A cycle that never completes ends the tune rather than waiting for ever.
+ *
+ * The relay only advances when the temperature crosses the target in each direction. A
+ * heater that overshoots and then holds — a block with nowhere to lose its heat to —
+ * never comes back down, so the cycle it is in the middle of would never finish and the
+ * printer would sit hot indefinitely. Twenty minutes without a completed crossing ends
+ * the tune with nothing measured.
+ *
+ * The timeout is counted from the earlier of the two switch instants, both of which start
+ * at the beginning of the tune, so it is twenty minutes from the start here rather than
+ * from the one switch that did happen.
+ */
+MARLIN_TEST(pid_autotune, a_cycle_that_never_completes_times_the_tune_out) {
+  SimulatedMachine machine;
+  // Reaches 220 C at full power, and effectively never cools: once it is over the target
+  // it stays there.
+  SimulatedHeater stuck(HEATER_0_PIN, TEMP_0_PIN, 220.0f, 20.0f, 1.0e6f);
+  SavedPID saved;
+
+  stuck.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E0 S180 C3");
+
+  TEST_ASSERT_TRUE(reported::saw(report.text, STR_PID_AUTOTUNE STR_PID_TIMEOUT));
+  TEST_ASSERT_FALSE(reported::saw(report.text, STR_PID_AUTOTUNE_FINISHED));
+  TEST_ASSERT_EQUAL(0u, report.Ku.size());
+
+  // Twenty minutes from the start of the tune, not from the single switch it managed
+  // some thirty seconds in.
+  constexpr millis_t TIMEOUT_MS = 20UL * 60UL * 1000UL;
+  TEST_ASSERT_TRUE(report.took > TIMEOUT_MS);
+  TEST_ASSERT_TRUE(report.took < TIMEOUT_MS + 10000UL);
+}
+
+/**
+ * A tune abandons whatever the print had been heating to.
+ *
+ * Autotune drives the heater as a relay, which it cannot do while a target is still
+ * being regulated, so every heater is switched off and un-targeted before the first
+ * cycle. The target does not come back when the tune ends: the machine is left cold and
+ * the caller has to ask for a temperature again.
+ */
+MARLIN_TEST(pid_autotune, a_tune_abandons_the_target_the_print_had_set) {
+  SimulatedMachine machine;
+  SimulatedHotend hotend;
+  SavedPID saved;
+
+  hotend.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  thermalManager.setTargetHotend(150, 0);
+  TEST_ASSERT_EQUAL(150, thermalManager.degTargetHotend(0));
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E0 S180 C3");
+
+  TEST_ASSERT_TRUE(reported::saw(report.text, STR_PID_AUTOTUNE_FINISHED));
+  TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
 }
 
 #endif // PIDTEMP

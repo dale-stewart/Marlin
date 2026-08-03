@@ -164,6 +164,16 @@ toolchain. Slower per mutant, but it measures the code that actually ships.
 **Scoring conventions**, stated up front so the number means something:
 
 - Timeout = **killed**. A mutant that hangs is a mutant the suite detected.
+- **Derive the timeout from the measured suite runtime, and record it beside the score.**
+  Because a timeout counts as detected, one that is too tight converts survivors into
+  false kills — and how tight it is depends on machine load, so a fixed constant makes
+  the score depend on what else was running. Measure the unmutated suite at the start of
+  every run and scale from that. Verify a suspected false timeout by building the mutant
+  in directly and running it once: a mutant that completes in seconds and survives, but
+  scores TIMEOUT under a parallel run, proves the threshold rather than the code.
+
+  Two runs at different timeouts are no more comparable than two runs over different
+  covered-line sets. Store both in the results, and print both next to the score.
 - Build failure = **not a mutant**. Exclude it; it never produced a testable program.
 - **Equivalent mutants belong outside the denominator.** Watch for the systematic
   source: code disabled at build time — `#if`/`#ifdef`, ternaries on compile-time
@@ -423,6 +433,25 @@ mutation baseline, one level up: a measurement whose denominator moved during th
 If an agent must share a tree, have it copy the built binary somewhere private and
 measure the copy. Prefer separate worktrees; only agents that purely read are safe to
 share one.
+
+**A private worktree is not isolation.** Concurrent agents still share the CPU, the disk
+and the system temp directory, and each of those has produced a wrong answer here:
+
+- *The CPU.* Any measurement with a wall-clock threshold in it — a timeout, a
+  benchmark, a flake count — changes value under load. Two agents each running a correct
+  measurement will each get a different number, and neither will know why. Take timing
+  measurements on a quiet machine, or derive the threshold from a baseline measured in
+  the same conditions.
+- *The disk.* Tooling that generates a file per case can be several GB per run, and per
+  worktree. Filling the volume fails whatever is running, not whoever caused it.
+- *The temp directory.* An agent tidying up `/tmp/<tool-prefix>*` will delete another
+  agent's in-flight scratch space. The victim sees inexplicable build failures in
+  unrelated code.
+
+So tell agents that others are running, that shared scratch space is not theirs to clean,
+and to report — not silently absorb — a result that moved for no reason they can name.
+Where a measurement must be trustworthy, re-take it once alone at the end; that final run
+is the number to publish.
 
 **Check what base an isolated agent actually started from, and say so in the brief.** An
 isolation mechanism may branch from a default or upstream commit rather than the work in

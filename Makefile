@@ -155,13 +155,22 @@ unit-test-coverage:
 #   make unit-test-mutation TARGET=... MUTATION_ENV=acceptance_native_test
 #   make unit-test-mutation TARGET=... RERUN=.pio/mutation/results.json   # survivors only
 # Restricting mutants to covered lines needs a coverage build of the same suite; run
-# "make unit-test-coverage" first, or pass MUTATION_COVERAGE= to mutate every line.
+# "make unit-test-coverage" first with a matching COVERAGE_ENV, or pass
+# MUTATION_COVERAGE= to mutate every line.
 MUTATION_ENV ?= linux_native_test
 MUTATION_RESULTS ?= .pio/mutation/results.json
+
+# Where the generated mutants live. One full copy of the target per mutant — a few GB for
+# a large source file — kept after the run so RERUN= can read them back. Point this at a
+# roomier filesystem when the repo's own is tight; a run per worktree multiplies it.
+#   make unit-test-mutation TARGET=... MUTATION_MUTANT_DIR=/mnt/big/marlin-mutants
+# A RERUN must name the same directory as the full run that produced its results file.
+MUTATION_MUTANT_DIR ?=
 
 unit-test-mutation:
 	@if ! test -n "$(TARGET)" ; then echo "***ERROR*** Set TARGET=<source-file>" ; exit 1 ; fi
 	@command -v mutate >/dev/null || (echo 'universalmutator is not installed. Install it with "uv tool install universalmutator"' && exit 1)
+	MUTATION_MUTANT_DIR=$(MUTATION_MUTANT_DIR) \
 	$(PYTHON) buildroot/share/scripts/mutation_test.py $(TARGET) \
 	  --env $(MUTATION_ENV) --suite $(UNIT_TEST_CONFIG) --results $(MUTATION_RESULTS) \
 	  $(if $(RERUN),--rerun-survivors $(RERUN),) \

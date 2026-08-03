@@ -425,16 +425,46 @@ survivors are likely equivalent as a result.
 
 ### What remains in 4a
 
-1. **Another survivor round on `temperature.cpp`.** The survivor set was clustered from
-   `.pio/mutation/temperature2.json` (2808 run: 361 KILLED, 414 TIMEOUT, 661 SURVIVED,
-   1372 BUILD_FAIL — 54.0%) and split into two independent bodies of work, taken by two
-   agents on two files without contention.
+1. **Another survivor round on `temperature.cpp` — done.** The survivor set was clustered
+   from `.pio/mutation/temperature2.json` (2808 run: 361 KILLED, 414 TIMEOUT, 661
+   SURVIVED, 1372 BUILD_FAIL — 54.0%) and split into two independent bodies of work,
+   taken by two agents on two files without contention.
 
-   - **`PID_autotune()`, lines 780-1010 — roughly 200 survivors**, the largest single
-     cluster in the file. Densest at `797-808` (47), `889-918` (59) and `952-973` (40).
-     Extends `test_pid_autotune.cpp`. The lesson from the first round applies hardest
-     here: the assertions that pay are the Ziegler-Nichols algebra and the relay
-     symmetry, not the resulting gains.
+   Settled by one clean run on an unloaded machine after both landed
+   (`.pio/mutation/temperature4.json`):
+
+   | | Before | After |
+   |---|---|---|
+   | Killed by assertion | 361 (25.1%) | **479 (33.2%)** |
+   | Timed out | 414 | 426 |
+   | Survived | 661 | 538 |
+   | Detection | 54.0% | **62.7%** |
+   | Line coverage | 79.8% | **81%** |
+
+   **The two ends are not strictly comparable**, and the run says so itself: the new tests
+   reach seven lines nothing reached before, so the covered set grew 400 → 407 and the
+   testable population 1436 → 1443. The direction and magnitude are unambiguous; the
+   decimal is not. Compare like with like by re-running the baseline, not by subtracting.
+
+   - **`PID_autotune()`, lines 780-1010 — 199 survivors → 142. Done.** Eleven tests plus
+     one instrument, in `test_pid_autotune.cpp`.
+
+     What moved it was not eleven assertions but **`TracedHeater`**, which overrides the
+     heater model's ISR callback to record every change of applied PWM with its timestamp
+     and the model's own temperature. Every previous test read what autotune *said*;
+     nothing checked what it *did*. That gives three measurements independent of the
+     report — applied relay levels, the wall-clock length of each half-cycle, and the
+     temperature at each switch — and it killed most of the switching and arithmetic
+     cluster by itself. The rest came from input classes the fixtures could not produce
+     until `SimulatedHeater` gained an optional *cooling* time constant: a heater that
+     overshoots before it can switch, one that cools far slower than it heats so the bias
+     is driven to its lower clamp, one that never falls back below target so the
+     twenty-minute timeout fires.
+
+     Of the 142 remaining: **99 equivalent** (mostly `PIDTEMPBED`/`PIDTEMPCHAMBER`
+     compile-time `false`, plus values dead before they are read), **30 blocked behind
+     `kill()`** — the whole `WATCH_PID` block, same cause as the range checks below —
+     and **12 needing inputs that cannot be constructed** in this configuration.
    - **The limit and shutdown paths — 133 survivors** — **done.** `test_thermal_limits.cpp`,
      nine tests, on the same 400-line covered set so the two ends are comparable:
 
