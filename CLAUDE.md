@@ -212,6 +212,13 @@ is blocked by PEP 668 on this machine).
   makes `write()` return immediately. See the `NoHostAttached` helper in
   `Marlin/tests/gcode/test_gcode_commands.cpp`. Draining afterwards does not work: the
   spin happens part-way through a single report.
+- **Media is faked at the block device, not at the wire.** Neither native HAL defined the
+  `spi*` functions, so a configuration with media would not link — `Marlin/src/HAL/TEST/spi.cpp`
+  now provides them as an idle bus (reads return `0xFF`, writes discard), which is what a
+  controller sees with an empty slot. Tests do not use that path: `DiskIODriver` is a pure
+  virtual interface and `CardReader::changeMedia()` is public, so a fake block device goes
+  in at the level the firmware already abstracts. Simulating a card over SPI would mean
+  implementing SD's command protocol to test code sitting well above it.
 - **Commands that wait for hardware need a stand-in sensor.** `M109`/`M190` loop until a
   temperature is reached and nothing advances a heater here, so a non-zero target would
   never return. No production seam was needed: `thermalManager.temp_hotend`/`temp_bed`
