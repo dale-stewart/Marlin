@@ -147,7 +147,32 @@ The failure is at least loud if a baseline gate stands in front of it: it refuse
 of scoring a binary that no longer works. Without one, the same change quietly converts
 every mutant into a kill. Either way, the fix is to remove the ordering dependency from
 the suite, not to keep searching for an arrangement that happens to run — a lucky order
-is a result you cannot reproduce, and reproducing results is the whole job.
+is a result you cannot reproduce, and reproducing results is the whole job. Then fix the
+order in place, and **prove the independence** by running the suite under sorted,
+reversed and several shuffled orders; "it passes now" is the claim that decays.
+
+Expect more than one cause, and expect the loudest not to be the real one. Two classic
+kinds turn up together:
+
+- *Initialisation order.* Anything registering itself into a container defined in another
+  compilation unit, at initialisation time, is a coin toss — the container may not exist
+  yet. Constructing shared state on first use instead removes the question entirely.
+  Baselines captured at startup (a clock's zero point, a seed) have the same flaw and the
+  same remedy.
+- *State a test leaves running.* A whole suite usually shares one process, so anything a
+  test starts and does not stop is still running during every later test. Where the
+  simulated peripheral is backed by a real operating-system facility — a timer, a thread,
+  a signal — this stops being untidiness and becomes interference: a periodic signal
+  interrupts blocking calls elsewhere, and a delay that is retried on interruption may
+  never complete. Have the framework quiesce shared facilities after every test rather
+  than trusting each test to tidy up.
+
+Two traps in fixing the second kind. *Disabling is not stopping* — masking a signal or
+clearing an enable flag often leaves the underlying facility running. And **quiesce in
+the safe order**: silence delivery first, then tear down, because an event already queued
+is still delivered afterwards, and a handler whose last act is to reschedule itself will
+restart the very thing you just stopped. That one presents as a teardown that provably
+runs and provably does nothing.
 
 **Make the coverage run and the mutation run name the same suite, and check that the
 default is the one you want.** Mutants are normally restricted to lines a coverage build

@@ -29,20 +29,60 @@
 
 #include "unit_tests.h"
 
-static std::list<MarlinTest*> all_marlin_tests;
+/**
+ * The registry, constructed on first use rather than at static-initialisation time.
+ *
+ * Every MARLIN_TEST expands to a namespace-scope object in some other translation unit,
+ * and each of those registers itself from its own constructor — during static
+ * initialisation, in an order the standard leaves to the linker. A plain
+ * `static std::list` here is initialised in *this* file's turn, so any test whose
+ * translation unit is initialised first would push into a list that has not been
+ * constructed yet. That is undefined behaviour, and it does not fail cleanly: it either
+ * corrupts the heap outright or survives until the real construction resets the list's
+ * head and silently discards every registration made before it.
+ *
+ * A function-local static is constructed on the first call instead — which is necessarily
+ * the first registration — so the order the linker chooses stops mattering.
+ */
+static std::list<MarlinTest*>& all_marlin_tests() {
+  static std::list<MarlinTest*> tests;
+  return tests;
+}
 
 MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const char *_file, const int _line)
 : name(_name), test(_test), file(_file), line(_line) {
-  all_marlin_tests.push_back(this);
+  all_marlin_tests().push_back(this);
+}
+
+/**
+ * Put the simulated peripherals back to rest between tests.
+ *
+ * Tests share one process, so a peripheral left running by one test is still running
+ * during the next. Under the native HAL that is not merely untidy: its timers are POSIX
+ * timers delivering real signals, and one left armed at a stepper-interrupt rate
+ * interrupts every blocking call in the process from then on. `sleep_for()` restarts on
+ * EINTR, so a two-millisecond delay in a later test stops finishing at all — which
+ * presents as an unrelated test hanging, and only in the orders that happen to run the
+ * offending test first.
+ *
+ * Disarming after every test makes the suite's result independent of the order it runs
+ * in, which is the property that lets a mutation harness link the objects in whatever
+ * order it finds them.
+ */
+static void quiesce_simulated_peripherals() {
+  #ifdef __PLAT_LINUX__
+    HAL_timer_stop_all();
+  #endif
 }
 
 void MarlinTest::run() {
   Unity.TestFile = file.c_str();
   UnityDefaultTestRun((UnityTestFunction)test, name.c_str(), line);
+  quiesce_simulated_peripherals();
 }
 
 void run_all_marlin_tests() {
-  for (const auto registration : all_marlin_tests) {
+  for (const auto registration : all_marlin_tests()) {
     registration->run();
   }
 }

@@ -35,6 +35,17 @@ HAL_TEMP_TIMER_ISR();
 
 Timer timers[2];
 
+/**
+ * Disarm every simulated timer.
+ *
+ * Only for test harnesses between tests: a timer left armed by one test keeps
+ * delivering signals for the rest of the process, and any later blocking delay is
+ * restarted on EINTR often enough that it can stop completing. See Timer::stop().
+ */
+void HAL_timer_stop_all() {
+  for (auto &t : timers) t.stop();
+}
+
 void HAL_timer_init() {
   timers[0].init(0, STEPPER_TIMER_RATE, TIMER0_IRQHandler);
   timers[1].init(1, TEMP_TIMER_RATE, TIMER1_IRQHandler);

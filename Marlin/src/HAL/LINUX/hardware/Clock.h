@@ -27,7 +27,7 @@
 class Clock {
 public:
   static uint64_t ticks(uint32_t frequency = Clock::frequency) {
-    return (Clock::nanos() - Clock::startup.count()) / (1000000000ULL / frequency);
+    return (Clock::nanos() - Clock::startup_ref().count()) / (1000000000ULL / frequency);
   }
 
   static uint64_t nanosToTicks(uint64_t ns, uint32_t frequency = Clock::frequency) {
@@ -46,7 +46,7 @@ public:
   // Time Acceleration compensated
   static uint64_t nanos() {
     auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
-    return (now.count() - Clock::startup.count()) * Clock::time_multiplier;
+    return (now.count() - Clock::startup_ref().count()) * Clock::time_multiplier;
   }
 
   static uint64_t micros() {
@@ -83,7 +83,21 @@ public:
   }
 
 private:
-  static std::chrono::nanoseconds startup;
+  /**
+   * The moment the clock was first asked the time, not the moment this file's statics
+   * were initialised.
+   *
+   * `startup` used to be a class static with a dynamic initialiser, which made every
+   * reading depend on whether this translation unit had been initialised before the
+   * caller's. A caller that ran first subtracted a zero baseline and got the time since
+   * the epoch — about 1.7e18 ns, which then overflows as soon as it is scaled by a time
+   * multiplier. Constructing it on first use makes the baseline the first call by
+   * definition, so no order can be wrong.
+   */
+  static std::chrono::nanoseconds& startup_ref() {
+    static std::chrono::nanoseconds t = std::chrono::high_resolution_clock::now().time_since_epoch();
+    return t;
+  }
   static uint32_t frequency;
   static double time_multiplier;
 };

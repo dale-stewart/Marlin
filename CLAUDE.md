@@ -209,16 +209,19 @@ is blocked by PEP 668 on this machine).
   looks convincingly like a timer bug. `Marlin::setup()` configures those pull-ups and
   does not run in a test build, so the fixture stands in for it
   (`SimulatedMachine::release_kill_button()`). Expect other pins with the same problem.
-- **Object link order matters, and the mutation runner's order is not reproducible.**
-  The test binary carries a latent static-initialisation-order dependency, and
-  `mutation_test.py` collects objects with `rglob('*.o')` — filesystem order, which
-  changes when test files are added. Measured on `linux_native_test`: sorted order
-  **segfaults before the first test**, current filesystem order **hangs after 355 of
-  377**, and only PlatformIO's own order completes. So **mutation testing under
-  `linux_native_test` does not currently run** — the baseline gate refuses rather than
-  scoring a broken binary, which is it working as intended. `testhal_native_test` is
-  unaffected and is where every current figure comes from. Register entry #20; the fix
-  is to remove the dependency, not to chase a lucky order.
+- **Object link order used to matter — fixed, and the suite is now checked against it.**
+  Three independent order dependencies made the binary segfault or hang depending on how
+  its objects were linked (register #20): a test registry and a clock baseline that were
+  both statics with dynamic initialisers, and — the one that caused the hangs — a
+  simulated timer left armed by whichever test woke the stepper, whose signal then
+  starved every later `sleep_for()`. All three are fixed, `link_inputs()` sorts so runs
+  are reproducible, and the suite is verified under sorted, reversed, filesystem and four
+  shuffled orders.
+- **A test must leave the simulated peripherals quiet.** Under the LINUX HAL the timers
+  are POSIX timers delivering real signals, so one left running is not merely untidy — it
+  interrupts every blocking call in the process from then on. The framework now calls
+  `HAL_timer_stop_all()` after each test; `HAL_timer_disable_interrupt()` is *not*
+  sufficient, because it only masks the signal and leaves the timer armed.
 - **Mull is not viable here.** Its IR plugin forces clang across the whole build, which
   needs `-stdlib=libc++`, which then rejects Marlin's own `types.h` and `temperature.h`.
   Use a source-level mutator (`universalmutator`) that builds with the project's own

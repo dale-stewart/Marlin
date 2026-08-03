@@ -24,7 +24,10 @@
 #include "../../../inc/MarlinConfig.h"
 #include "Clock.h"
 
-std::chrono::nanoseconds Clock::startup = std::chrono::high_resolution_clock::now().time_since_epoch();
+// `startup` is deliberately absent: it is a function-local static in Clock.h, constructed
+// on first use, so that a caller reading the clock during static initialisation cannot
+// see a zero baseline. The two below are constant-initialised, which happens before any
+// dynamic initialisation, so they carry no ordering hazard.
 uint32_t Clock::frequency = F_CPU;
 double Clock::time_multiplier = 1.0;
 

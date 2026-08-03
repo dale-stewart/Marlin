@@ -42,6 +42,7 @@ public:
   void enable();
   bool enabled() {return active;}
   void disable();
+  void stop();            // disarm entirely, not just mask the signal — see Timer.cpp
   void setCompare(uint32_t compare);
   uint32_t getCount();
   uint32_t getCompare() {return compare;}

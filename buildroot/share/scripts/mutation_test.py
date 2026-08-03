@@ -87,14 +87,21 @@ def build_dir(env):
 
 
 def link_inputs(env):
-    """Object files and archives for the test binary.
+    """Object files and archives for the test binary, in a reproducible order.
 
-    NOTE: link order matters here — sorting the object list produces a binary that
-    segfaults on start, so the discovery order is captured once and reused for every
-    mutant. The baseline gate below is what proves the captured order is good.
+    Sorted deliberately. `rglob` yields whatever order the filesystem holds, which is
+    neither stable across machines nor stable across adding a file — so a run could not
+    be reproduced, and the suite used to depend on the order it got: some orders
+    segfaulted at startup and others hung part-way through. Those dependencies have been
+    removed (a construct-on-first-use test registry, a construct-on-first-use clock
+    baseline, and disarming the simulated timers between tests), and the suite is now
+    checked to pass under sorted, reversed, filesystem and several shuffled orders.
+
+    Sorting is what makes a mutation score reproducible; the baseline gate still runs
+    first and will refuse if any of that ever regresses.
     """
-    objs = [str(p) for p in build_dir(env).rglob('*.o')]
-    libs = [str(p) for p in build_dir(env).rglob('*.a')]
+    objs = sorted(str(p) for p in build_dir(env).rglob('*.o'))
+    libs = sorted(str(p) for p in build_dir(env).rglob('*.a'))
     return objs, libs
 
 

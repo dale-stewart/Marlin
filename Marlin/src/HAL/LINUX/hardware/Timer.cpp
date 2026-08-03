@@ -90,6 +90,32 @@ void Timer::disable() {
   active = false;
 }
 
+/**
+ * Disarm the timer outright, rather than only masking its signal.
+ *
+ * `disable()` blocks delivery but leaves the POSIX timer armed and repeating, which is
+ * the right model for an interrupt-enable bit. It is not enough to put the process back
+ * to a quiet state: an armed timer at a high rate keeps interrupting every blocking call
+ * in the process, and `sleep_for()` restarts on EINTR, so a delay of a few milliseconds
+ * can stop finishing altogether. Used between unit tests, so that one test cannot leave
+ * a timer running that starves the next.
+ *
+ * Order matters. Blocking the signal has to come before disarming, because a signal
+ * already queued when the timer is disarmed is still delivered afterwards — and this
+ * timer's handler is the stepper ISR, whose last act is to program the next interval.
+ * A single late delivery is therefore enough to re-arm a timer that was just stopped,
+ * which is exactly how this presented: stopping between tests appeared to do nothing.
+ */
+void Timer::stop() {
+  if (timerid == 0) return;                 // never initialised, nothing to disarm
+  disable();                                // block the signal *first*
+  struct itimerspec its = {};               // zeroed it_value disarms
+  timer_settime(timerid, 0, &its, nullptr);
+  compare = 0;
+  period = 0;
+  active = false;
+}
+
 void Timer::setCompare(uint32_t compare) {
   uint32_t nsec_offset = 0;
   if (active) {
