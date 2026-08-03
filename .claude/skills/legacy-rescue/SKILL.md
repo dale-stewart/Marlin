@@ -136,6 +136,19 @@ before the run, and do not interleave other build targets while it is in flight.
 where equivalent mutants are known to exist, means the harness is broken — not that the
 suite is perfect.
 
+**If a custom runner rebuilds the suite itself, make its build reproducible — and treat
+"it worked when we captured it" as a countdown.** A runner that assembles its own binary
+usually collects inputs by walking the filesystem, and that order is neither stable nor
+the order the project's own build uses. Where the suite has any latent dependency on it —
+initialisation order is the classic one — the runner is measuring whichever arrangement
+the filesystem happened to hand it, and adding a file can change that at any time.
+
+The failure is at least loud if a baseline gate stands in front of it: it refuses instead
+of scoring a binary that no longer works. Without one, the same change quietly converts
+every mutant into a kill. Either way, the fix is to remove the ordering dependency from
+the suite, not to keep searching for an arrangement that happens to run — a lucky order
+is a result you cannot reproduce, and reproducing results is the whole job.
+
 **Make the coverage run and the mutation run name the same suite, and check that the
 default is the one you want.** Mutants are normally restricted to lines a coverage build
 marked as covered, so these are two measurements that must agree about what they are
