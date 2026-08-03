@@ -45,6 +45,7 @@
 #include "src/module/temperature.h"
 #include "src/gcode/gcode.h"
 #include "src/gcode/parser.h"
+#include "src/gcode/queue.h"
 
 #include <string.h>
 
@@ -71,6 +72,26 @@ namespace {
       if (was_running) print_job_timer.start();
     }
   };
+
+  /**
+   * A record that names a print still on the card.
+   *
+   * `PrintJobRecovery::valid()` is `info.valid() && interrupted_file_exists()` — the
+   * head/foot pair says the record is whole, and the filename says the job it describes
+   * can still be found. A record whose file has been deleted is not resumable however
+   * intact it is, so a save alone is not enough to make `check()` say yes.
+   */
+  void save_a_resumable_job(const char * const name = "resume.gco") {
+    card.openFileWrite(name);
+    card.write((void*)"G28\nG1 Z0.2\n", 11);
+    card.closefile();
+
+    // Before the save, not after: `check()` begins by reloading the record from the card,
+    // so a filename set only in memory would be overwritten by the one that was stored.
+    strncpy(recovery.info.sd_filename, name, sizeof(recovery.info.sd_filename) - 1);
+    recovery.info.sd_filename[sizeof(recovery.info.sd_filename) - 1] = '\0';
+    recovery.save(true);
+  }
 
   void run_gcode(const char * const line) {
     char buf[64];
@@ -241,6 +262,88 @@ MARLIN_TEST(power_loss, disabling_recovery_removes_the_offer) {
 
   recovery.enable(true);
   TEST_ASSERT_FALSE_MESSAGE(recovery.exists(), "enabling while idle fabricated a record");
+}
+
+/**
+ * What the machine does when it comes back on.
+ *
+ * `check()` is the whole feature from the user's side: it runs during startup, and its
+ * answer decides whether the printer offers to carry on or quietly forgets. A valid
+ * record means an offer — the firmware queues `M1000S`, which is what puts the prompt in
+ * front of the operator — and the record is left in place until that resume happens.
+ */
+MARLIN_TEST(power_loss, a_valid_record_offers_to_resume_at_startup) {
+  CleanSlate clean;
+
+  save_a_resumable_job();
+  queue.clear();
+  queue.injected_commands_P = nullptr;
+
+  TEST_ASSERT_TRUE_MESSAGE(recovery.check(), "a valid record was not offered for resume");
+  TEST_ASSERT_TRUE_MESSAGE(recovery.exists(), "the offer was discarded before it was taken up");
+
+  // M1000 is what puts the prompt in front of the operator, so the offer is only real if
+  // that command was actually queued. It goes to the injected-command slot, not the ring
+  // buffer that host commands arrive in.
+  TEST_ASSERT_NOT_NULL_MESSAGE(queue.injected_commands_P, "no resume command was queued");
+
+  queue.injected_commands_P = nullptr;
+  queue.clear();
+}
+
+/**
+ * A torn record is thrown away rather than acted on.
+ *
+ * Losing power *while saving* is the case the head/foot pair exists for: the two are
+ * written at opposite ends of the struct, so a partial write leaves them different. The
+ * firmware must treat that as no record at all — resuming from half a record would drive
+ * the machine to whatever the uninitialised remainder happened to say. Corrupting the
+ * foot and writing is the closest a test can get to power failing mid-write.
+ */
+MARLIN_TEST(power_loss, a_torn_record_is_discarded_rather_than_resumed) {
+  CleanSlate clean;
+
+  save_a_resumable_job();
+
+  // Put a mismatched pair on the card, through the file rather than through save(),
+  // which would recompute them. This is what half a write leaves behind.
+  job_recovery_info_t torn = recovery.info;
+  torn.valid_foot = uint8_t(torn.valid_head + 1);
+  card.openFileWrite(recovery.filename);
+  TEST_ASSERT_TRUE(card.isFileOpen());
+  card.write(&torn, sizeof(torn));
+  card.closefile();
+
+  queue.clear();
+
+  TEST_ASSERT_FALSE_MESSAGE(recovery.check(), "a torn record was offered for resume");
+  TEST_ASSERT_FALSE_MESSAGE(recovery.exists(), "a torn record was left on the card");
+  TEST_ASSERT_NULL_MESSAGE(queue.injected_commands_P, "a resume was queued for a torn record");
+
+  queue.clear();
+}
+
+/**
+ * A dry run is remembered as one.
+ *
+ * `M111 S8` makes the printer parse and report without moving or heating. Resuming a dry
+ * run as a real print would start extruding onto a bed that was never being printed on,
+ * so the flag has to survive with the rest of the state — and it is stored inverted from
+ * a bitmask, which is its own opportunity to get the sense backwards.
+ */
+MARLIN_TEST(power_loss, whether_the_job_was_a_dry_run_survives) {
+  CleanSlate clean;
+  const uint8_t was = marlin_debug_flags;
+
+  marlin_debug_flags = MARLIN_DEBUG_NONE;
+  recovery.save(true);
+  TEST_ASSERT_FALSE_MESSAGE(recovery.info.flag.dryrun, "a normal job was recorded as a dry run");
+
+  marlin_debug_flags = MARLIN_DEBUG_DRYRUN;
+  recovery.save(true);
+  TEST_ASSERT_TRUE_MESSAGE(recovery.info.flag.dryrun, "a dry run was recorded as a normal job");
+
+  marlin_debug_flags = was;
 }
 
 /**
