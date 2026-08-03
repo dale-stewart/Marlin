@@ -176,6 +176,30 @@ def covered_lines(target, coverage_build):
     return {l['line_number'] for f in data['files'] for l in f['lines'] if l['count'] > 0}
 
 
+def check_disk_space(target, mutants_dir):
+    """
+    Fail before generating rather than part-way through evaluating.
+
+    One mutant is a full copy of the target, and a large source file yields tens of
+    thousands of them — several GB, kept after the run because --rerun-survivors reads
+    them back. Each worker also needs a scratch dir. Running out of space mid-flight
+    surfaces as an OSError from a worker thread after most of the run is already spent.
+    """
+    src_bytes = (REPO / target).stat().st_size
+    free = shutil.disk_usage(mutants_dir.parent).free
+    # ~30k mutants for a 200 KB source has been measured; 20x the source size per 1000
+    # mutants is the right order. Ask for a conservative floor plus scratch headroom.
+    needed = max(2 << 30, src_bytes * 30000 // 1000 * 2)
+    if free < needed:
+        sys.exit(
+            f"not enough free space to generate mutants for {target}\n"
+            f"  free: {free / (1<<30):.1f} GiB, want at least {needed / (1<<30):.1f} GiB\n"
+            f"  {mutants_dir} holds one full copy of the target per mutant and is kept\n"
+            f"  after the run so --rerun-survivors can read it back. Delete it to reclaim\n"
+            f"  the space; the next full run regenerates it."
+        )
+
+
 def generate_mutants(target, mutants_dir, covered):
     """Generate mutants, keeping single-line changes on lines worth mutating."""
     shutil.rmtree(mutants_dir, ignore_errors=True)
@@ -281,8 +305,15 @@ def main():
             ctx['covered_count'] = 0
         mutants = [(str(mutants_dir / r['mutant']), r['line']) for r in previous if r['status'] == SURVIVED]
         total_generated = len(mutants)
+        missing = [m for m, _ in mutants if not os.path.exists(m)]
+        if missing:
+            sys.exit(f"{len(missing)} of {len(mutants)} survivor mutants are missing from "
+                     f"{mutants_dir}\n  (e.g. {missing[0]})\n"
+                     f"  The directory was cleaned, or generated for a different target.\n"
+                     f"  Re-run without RERUN= to regenerate before re-running survivors.")
         print(f"re-running {len(mutants)} survivors from {args.rerun_survivors}")
     else:
+        check_disk_space(target, mutants_dir)
         cov_build = args.coverage_build
         if cov_build is None:
             cov_build = f".pio/build/{args.env.replace('_test', '_coverage')}"

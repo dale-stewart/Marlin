@@ -425,29 +425,58 @@ survivors are likely equivalent as a result.
 
 ### What remains in 4a
 
-1. **Another survivor round on `temperature.cpp`**, which is at 54.0% against
-   `stepper.cpp`'s 67.3%, and whose detections are still mostly timeouts (414 of 775).
-
-   The survivor set was clustered from `.pio/mutation/temperature2.json` (2808 run: 361
-   KILLED, 414 TIMEOUT, 661 SURVIVED, 1372 BUILD_FAIL) and splits into two independent
-   bodies of work, so it takes two agents on two files without contention:
+1. **Another survivor round on `temperature.cpp`.** The survivor set was clustered from
+   `.pio/mutation/temperature2.json` (2808 run: 361 KILLED, 414 TIMEOUT, 661 SURVIVED,
+   1372 BUILD_FAIL — 54.0%) and split into two independent bodies of work, taken by two
+   agents on two files without contention.
 
    - **`PID_autotune()`, lines 780-1010 — roughly 200 survivors**, the largest single
      cluster in the file. Densest at `797-808` (47), `889-918` (59) and `952-973` (40).
      Extends `test_pid_autotune.cpp`. The lesson from the first round applies hardest
      here: the assertions that pay are the Ziegler-Nichols algebra and the relay
      symmetry, not the resulting gains.
-   - **The limit and shutdown paths — 133 survivors** across three separate places: the
-     MINTEMP/MAXTEMP range checks at `2973-2999` (63, and note that
-     `MAX_CONSECUTIVE_LOW_TEMPERATURE_ERROR_ALLOWED` means one low reading is not enough
-     to trigger), `disable_all_heaters()` at `3570-3588` (24), and
-     `auto_job_over_threshold()` / `auto_job_check_timer()` at `3608-3620` (43). Wants a
-     new `test_thermal_limits.cpp`. The range checks need *raw ADC* values rather than
-     celsius, which the existing sensor helpers may not yet provide.
+   - **The limit and shutdown paths — 133 survivors** — **done.** `test_thermal_limits.cpp`,
+     nine tests, on the same 400-line covered set so the two ends are comparable:
 
-   Two agents briefed on exactly this were killed by a session limit before either
-   finished its baseline mutation run. Both worktrees were clean and both had confirmed
-   the correct base and baseline first, so nothing was lost and nothing needs undoing.
+     | | Before | After |
+     |---|---|---|
+     | Killed by assertion | 361 | **419** |
+     | Timed out | 414 | 418 |
+     | Survived | 661 | 599 |
+     | Detection | 54.0% | **58.3%** |
+
+     The gain is +58 assertions; the timeout figure moved by 4, which is inside this
+     harness's run-to-run variation near the timeout boundary. Per cluster:
+     `disable_all_heaters()` 24 → 2, the print-timer threshold 43 → 7, both remainders
+     equivalent (single-hotend argument swaps, and `TERN0`/`TERN1` arms the compiler folds
+     away because the chamber is disabled — the disabled-build-flag class, reached through
+     a `constexpr` array rather than an `#if`).
+
+     The productive assertion was the threshold *relation*: `auto_job_over_threshold()` is
+     false at exactly `EXTRUDE_MINTEMP / 2` and true one degree above. That single pair of
+     assertions killed all 17 survivors on line 3608, including every arithmetic variant of
+     the `/2` and every comparison variant. Asserting that a 200 °C target starts the timer
+     would have killed none of them — every plausible threshold agrees at 200.
+
+   - **The MINTEMP/MAXTEMP range checks at `2973-2999` stayed at 63, and this is a
+     finding rather than a shortfall.** Those six lines have no observable outcome other
+     than shutting the machine down: `_temp_error()` ends in `minkill()`, which spins on
+     `while (!kill_state()) hal.watchdog_refresh();` — `watchdog_refresh()` is a no-op
+     under this HAL and nothing inside the loop can change the pin, so the call never
+     returns. Measured, not inferred: a probe driving `TEMP_0_PIN` to raw 1023 with a
+     target set hangs the binary. Recorded as blocked correction **#19**.
+
+     Of the 63: **24 equivalent**, **22 needing the `kill()` seam** (the mutant suppresses
+     an error that should fire, observable only as a shutdown that did not happen), and
+     **17 detectable only as a hang** (the mutant fires an error the original does not).
+     Those last 17 were deliberately *not* written. They would be honest characterization
+     tests, but they buy zero killed-by-assertion and cost a full timeout each on every
+     future run of this target. Converting survivors into timeouts is not progress.
+
+     This is **not** an instrument defect, so the #16/#18 precedent does not apply: on a
+     real board `minkill()` genuinely does wait for an operator to press the kill button.
+     The test HAL is being faithful. What is wanted is a production seam that lets the
+     shutdown be observed and returned from — gated on `MarlinCore.cpp` being rescued.
 3. **Reconsider the heater model's tuning.** The models are tuned, not derived, and the
    bed constant is load-bearing rather than cosmetic: the bed is bang-bang and
    `manage_heated_bed()` only reconsiders every `BED_CHECK_INTERVAL` (5 s), so a faster

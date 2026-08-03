@@ -200,11 +200,16 @@ ring-buffer race; #18, a test-HAL timer that re-armed on enable and livelocked h
 Both were fixed on the same reasoning: a characterization test cannot usefully pin a race
 or a livelock, and the test HAL exists to behave like the hardware it replaces.
 
-What remains before 4b: another survivor round on `temperature.cpp`, which is at 54.0%
-and whose detections are still mostly timeouts.
-The safety paths that end in `kill()` are a blocked correction rather than a gap: they
-need a seam that lets `kill()` return, which is a production surface change. Details at
-the end of the 4a section of the phase-4 document. 4b has not started.
+What remains before 4b: the PID autotune half of the `temperature.cpp` survivor round.
+The limit-and-shutdown half is done — `test_thermal_limits.cpp` took the file from 54.0%
+to **58.3%**, and every point of that came from assertions (killed-by-assertion 361 → 419,
+timeouts flat).
+
+The safety paths that end in `kill()` are a blocked correction rather than a gap, and now
+a measured one: those lines have no observable outcome other than shutting the machine
+down, so no assertion can reach them at all. They need a seam that lets `kill()` return,
+which is a production surface change. Recorded as register entry #19; details at the end
+of the 4a section of the phase-4 document. 4b has not started.
 
 ## Cross-cutting: a blocked-corrections register
 

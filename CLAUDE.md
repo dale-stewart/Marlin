@@ -92,7 +92,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 444,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 453,
 `linux_native_test` 377, `acceptance_native_test` 18 — each measured with
 `pio run -t marlin_default -e <env>`, i.e. against the **default config only**.
 

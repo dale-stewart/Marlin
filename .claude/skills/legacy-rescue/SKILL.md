@@ -209,6 +209,26 @@ For each survivor, in descending order of risk:
 - Survivors cluster. One test often kills a whole family — if every mutation of an
   accumulator survives, the cause is usually a single missing input class, not a
   missing assertion per mutant. Fix the input gap, then re-measure before writing more.
+- **There is a third category: code with no observable outcome at all.** Some code's only
+  effect is to end the process, halt the machine, or hand control somewhere that never
+  comes back. A test can reach it, but not survive it and assert afterwards, so *no*
+  assertion kills those mutants — they are neither unasserted nor unreached. Suspect this
+  wherever a probe **hangs or terminates the run** instead of failing.
+
+  Prove it by probing rather than reasoning about it, then record the whole cluster with
+  its measured cause and a count. It is a blocked seam, not a gap: what is wanted is a way
+  for the terminal path to be observed and returned from under test, which is a production
+  surface change and belongs behind the frontier.
+
+  Check first whether the halt is the *system under test* behaving correctly or the
+  *harness* being unfaithful. If the real system genuinely blocks there — waiting on an
+  operator, a reset, a signal that only exists in production — then the substitute is
+  being accurate, and the instrument-defect exception does not apply however inconvenient
+  that is.
+- **Do not convert survivors into timeouts to move the number.** Where a mutant can be
+  detected only by hanging, a test that makes it hang is real but nearly worthless: it
+  adds no killed-by-assertion and costs a full timeout on every future run of that target,
+  slowing the loop permanently. Prefer leaving the survivor recorded and classified.
 - **Look for an existing seam before adding one.** Platform or hardware abstraction
   layers, simulation and test builds, public state, configuration switches, and
   dependency-injection points already present for other reasons often provide what a test
