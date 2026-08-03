@@ -36,6 +36,7 @@
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
+#include "../support/simulated_media.h"
 
 #include "src/feature/powerloss.h"
 #include "src/sd/cardreader.h"
@@ -344,6 +345,95 @@ MARLIN_TEST(power_loss, whether_the_job_was_a_dry_run_survives) {
   TEST_ASSERT_TRUE_MESSAGE(recovery.info.flag.dryrun, "a dry run was recorded as a normal job");
 
   marlin_debug_flags = was;
+}
+
+/**
+ * A note on what cannot be tested here, so it is not re-investigated.
+ *
+ * `PrintJobRecovery::write()` does `open(false); file.seekSet(0); file.write(...)`, and
+ * every mutation of that seek survives — `seekSet(1)`, `seekSet(-1)`, and deleting the
+ * call entirely. They are equivalent by construction, not untested: `open(false)` uses
+ * `O_TRUNC`, so the file is always zero length at that point, and `SdBaseFile::seekSet()`
+ * begins `if (!isOpen() || pos > fileSize_) return false;`. Every target except 0 is past
+ * the end and fails, leaving the position where it already was — at 0, which is exactly
+ * where `seekSet(0)` would have left it. No assertion can distinguish them.
+ *
+ * The error branches below the write are `DEBUG_ECHOLNPGM` calls compiled out unless
+ * DEBUG_POWER_LOSS_RECOVERY is enabled, so those mutants are the disabled-build-flag
+ * class. Between them that accounts for the whole of the write() cluster.
+ */
+
+/**
+ * A card that has stopped accepting writes does not silently swallow the record.
+ *
+ * The failure is injected at the block layer, so the firmware's own error handling runs
+ * for real: `SdBaseFile::write()` sees the refusal, `PrintJobRecovery::write()` checks
+ * the short count, and `close()` fails when the buffered data cannot be flushed. What
+ * matters to a user is the outcome — the machine must not come back believing it has a
+ * record it does not have.
+ */
+MARLIN_TEST(power_loss, a_save_to_a_failing_card_does_not_leave_a_usable_record) {
+  CleanSlate clean;
+
+  simulated_card().fail_writes();
+  recovery.save(true);
+  simulated_card().allow_writes();
+
+  // Whatever reached the card, it must not read back as a resumable job.
+  memset(&recovery.info, 0, sizeof(recovery.info));
+  recovery.load();
+  TEST_ASSERT_FALSE_MESSAGE(recovery.valid(),
+    "a record written to a failing card was accepted as resumable");
+}
+
+/**
+ * The record is small enough to land in one block, so at this level it is all or nothing.
+ *
+ * Worth pinning because it bounds what the head/foot pair can actually defend against.
+ * The pair exists to catch a record that was written in part — but the whole struct fits
+ * inside a single 512-byte block, so a card refusing writes part-way cannot produce one:
+ * either the block lands whole or it does not land at all. A genuinely torn record needs
+ * the card to fail *inside* a block, which is a hardware failure mode no block-level
+ * interface can express.
+ *
+ * That is why `a_torn_record_is_discarded_rather_than_resumed` has to corrupt the record
+ * by hand: the honest fault injection here cannot reach that state. Asserting both halves
+ * of the boundary — one write allowed, none allowed — says which is which rather than
+ * leaving the reader to assume the fault injection covered it.
+ */
+MARLIN_TEST(power_loss, the_record_lands_whole_or_not_at_all) {
+  CleanSlate clean;
+
+  TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(SimulatedMedia::BLOCK_SIZE, sizeof(job_recovery_info_t),
+    "the record no longer fits in one block - a partial write is now reachable, and this "
+    "test should become the torn-record case it was standing in for");
+
+  // One block's worth of writing is the whole record.
+  save_a_resumable_job();
+  simulated_card().fail_writes(1);
+  recovery.save(true);
+  simulated_card().allow_writes();
+
+  memset(&recovery.info, 0, sizeof(recovery.info));
+  recovery.load();
+  TEST_ASSERT_TRUE_MESSAGE(recovery.info.valid(),
+    "a record that fitted in the one permitted write did not land whole");
+}
+
+// Reads keep working when writes do not — a worn-out card is usually still readable, and
+// a fault that broke both would not be testing what it claims to.
+MARLIN_TEST(power_loss, a_failing_card_still_reads) {
+  CleanSlate clean;
+
+  save_a_resumable_job();
+  const uint8_t head = recovery.info.valid_head;
+
+  simulated_card().fail_writes();
+  memset(&recovery.info, 0, sizeof(recovery.info));
+  recovery.load();
+  simulated_card().allow_writes();
+
+  TEST_ASSERT_EQUAL_MESSAGE(head, recovery.info.valid_head, "the record could not be read back");
 }
 
 /**

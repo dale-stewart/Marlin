@@ -79,14 +79,12 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
    * running; #24 stays recorded and is pinned by its own test rather than by crashing
    * every configuration that enables media.
    */
-  static SimulatedMedia simulated_card;
-
 #endif // HAS_MEDIA
 
 // Install the stand-ins a test cannot opt out of, once, before the first test runs.
 static void prepare_simulated_peripherals() {
   #if HAS_MEDIA
-    card.changeMedia(&simulated_card);
+    card.changeMedia(&simulated_card());
     card.mount();
   #endif
 }
@@ -132,6 +130,13 @@ static void quiesce_simulated_peripherals() {
   #endif
   TERN_(HAS_HEATED_BED, thermalManager.setTargetBed(0));
   TERN_(HAS_HEATED_CHAMBER, thermalManager.setTargetChamber(0));
+
+  // A card told to refuse writes stays that way until something says otherwise, and a
+  // test that fails while injecting the fault never reaches its own cleanup. Clearing it
+  // here rather than in a scope guard is the same reasoning as the heater targets above.
+  #if HAS_MEDIA
+    simulated_card().allow_writes();
+  #endif
 }
 
 void MarlinTest::run() {

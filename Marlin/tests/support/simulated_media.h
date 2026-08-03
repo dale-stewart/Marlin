@@ -116,6 +116,30 @@ public:
     // The root directory stays zeroed: a first byte of 0x00 means "no more entries".
   }
 
+  // ---- Fault injection ----
+
+  /**
+   * Start refusing writes, the way a card does once it has been pulled out, worn out, or
+   * write-protected.
+   *
+   * Failure is reported at the block layer — `writeBlock()` returns false — because that
+   * is where a real card refuses, and it lets the firmware's own error handling run:
+   * `SdBaseFile::write()` turns it into a short count, `PrintJobRecovery::write()` checks
+   * for -1, and `close()` fails when the buffered data cannot be flushed. Faking a
+   * failure higher up would skip the code the failure exists to exercise.
+   *
+   * `after` is how many writes still succeed first, so a card can be made to die
+   * part-way through a record rather than only before it — which is the interesting case
+   * for anything that writes more than one block.
+   *
+   * Deliberately not RAII. A failing assertion leaves a test through a `longjmp`, which
+   * runs no destructor, so a scope guard would leak the fault into every later test. The
+   * harness clears it after each test instead — see `quiesce_simulated_peripherals()`.
+   */
+  void fail_writes(const uint32_t after = 0) { writes_allowed = after; failing = true; }
+  void allow_writes() { failing = false; writes_allowed = 0; }
+  bool writes_are_failing() const { return failing; }
+
   // ---- DiskIODriver ----
 
   bool init(const uint8_t, const pin_t) override { return blocks != nullptr; }
@@ -130,6 +154,10 @@ public:
 
   bool writeBlock(const uint32_t b, const uint8_t * const src) override {
     if (b >= TOTAL_BLOCKS) return false;
+    if (failing) {
+      if (writes_allowed == 0) return false;   // the card refuses from here on
+      --writes_allowed;
+    }
     memcpy(block(b), src, BLOCK_SIZE);
     return true;
   }
@@ -152,6 +180,20 @@ private:
 
   uint8_t *blocks = nullptr;
   uint32_t cursor = 0;
+  bool failing = false;         // refusing writes
+  uint32_t writes_allowed = 0;  // ...after this many more have succeeded
 };
+
+/**
+ * The one card the harness installs, and the one tests reach for to make it misbehave.
+ *
+ * Constructed on first use rather than as a namespace-scope object: it is referenced from
+ * both the harness and individual tests, and a static with a constructor would reintroduce
+ * exactly the initialisation-order dependency that register entry #20 was about.
+ */
+inline SimulatedMedia& simulated_card() {
+  static SimulatedMedia the_card;
+  return the_card;
+}
 
 #endif // HAS_MEDIA
