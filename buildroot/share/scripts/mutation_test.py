@@ -434,8 +434,18 @@ def main():
         'run': len(mutants), 'results': results,
     }, indent=1))
     counts = report(results, total_generated)
-    print(f"\n  covered lines    {ctx['covered_count']}  (results are only comparable "
-          f"between runs with the same covered-line set)")
+    if ctx['covered_count']:
+        print(f"\n  covered lines    {ctx['covered_count']}  (results are only comparable "
+              f"between runs with the same covered-line set)")
+    else:
+        # Easy to miss the warning printed at the start of a long run, and the score is
+        # not comparable with any coverage-restricted one: it counts mutants on lines no
+        # test can reach, so it reads as a regression against a run that excluded them.
+        print(f"\n  *** NO COVERAGE RESTRICTION — every line was mutated, including lines "
+              f"no test reaches.\n"
+              f"      This score is not comparable with a coverage-restricted run. Build "
+              f"the matching\n"
+              f"      *_coverage env first (same suite and config), then re-run.")
     print(f"  mutant timeout   {ctx['timeout']}s, from a {baseline_s:.1f}s baseline "
           f"(a timeout scores as detected, so this must match too)")
     print(f"  results: {args.results}")

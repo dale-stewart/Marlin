@@ -28,6 +28,7 @@
  */
 
 #include "unit_tests.h"
+#include "src/module/temperature.h"
 
 /**
  * The registry, constructed on first use rather than at static-initialisation time.
@@ -109,6 +110,28 @@ static void quiesce_simulated_peripherals() {
   #ifdef __PLAT_LINUX__
     HAL_timer_stop_all();
   #endif
+
+  /**
+   * Leave nothing hot behind.
+   *
+   * A failing assertion does not return — Unity's failure path is a `longjmp` back into
+   * `UnityDefaultTestRun`, which unwinds no C++ stack, so a test's own cleanup is skipped
+   * and so is every destructor it was relying on. A heater target set for a test that
+   * then fails therefore survives into the next one, and the first later test that waits
+   * on temperature never finishes.
+   *
+   * That matters beyond tidiness, because it corrupts the measurement. Under mutation a
+   * detected mutant should be *killed*; if the failing assertion also leaves a target
+   * set, the run instead hangs somewhere later and scores TIMEOUT. The mutant is still
+   * detected, but the number that says how — the killed-by-assertion count — is wrong,
+   * and it is the only number worth reading. Called from `MarlinTest::run()` after the
+   * test returns, which is on the far side of the `longjmp` and so runs either way.
+   */
+  #if HAS_HOTEND
+    HOTEND_LOOP() thermalManager.setTargetHotend(0, e);
+  #endif
+  TERN_(HAS_HEATED_BED, thermalManager.setTargetBed(0));
+  TERN_(HAS_HEATED_CHAMBER, thermalManager.setTargetChamber(0));
 }
 
 void MarlinTest::run() {

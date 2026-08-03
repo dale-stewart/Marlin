@@ -41,6 +41,8 @@
 #include "src/sd/cardreader.h"
 #include "src/module/motion.h"
 #include "src/module/printcounter.h"
+#include "src/module/planner.h"
+#include "src/module/temperature.h"
 #include "src/gcode/gcode.h"
 #include "src/gcode/parser.h"
 
@@ -151,6 +153,94 @@ MARLIN_TEST(power_loss, purging_removes_the_recovery_file) {
 
   recovery.purge();
   TEST_ASSERT_FALSE_MESSAGE(recovery.exists(), "the recovery file outlived purge()");
+}
+
+/**
+ * Everything needed to carry on is in the record, not just where the nozzle was.
+ *
+ * Resuming reinstates the whole machine, so each of these is separately load-bearing:
+ * come back at the wrong feedrate and the print is ruined as surely as coming back in
+ * the wrong place. Each value is set to something distinguishable first and read back
+ * off the card, so a field that was never copied cannot pass by holding a plausible
+ * default.
+ */
+MARLIN_TEST(power_loss, the_record_carries_the_whole_machine_state) {
+  CleanSlate clean;
+
+  motion.feedrate_mm_s = 50.0f;                  // 3000 mm/min
+  motion.feedrate_percentage = 90;
+  planner.flow_percentage[0] = 115;
+  thermalManager.setTargetHotend(205, 0);
+  TERN_(HAS_HEATED_BED, thermalManager.setTargetBed(65));
+  TERN_(HAS_FAN, thermalManager.set_fan_speed(0, 128));
+
+  recovery.save(true, 3.5f, true);
+
+  // Scribble, so every value below has to have come back off the card.
+  memset(&recovery.info, 0, sizeof(recovery.info));
+  recovery.load();
+
+  TEST_ASSERT_EQUAL_UINT16(3000, recovery.info.feedrate);          // mm/min, not mm/s
+  TEST_ASSERT_EQUAL_INT16(90, recovery.info.feedrate_percentage);
+  TEST_ASSERT_EQUAL_INT16(115, recovery.info.flow_percentage[0]);
+  TEST_ASSERT_EQUAL_FLOAT(3.5f, recovery.info.zraise);
+  TEST_ASSERT_TRUE(recovery.info.flag.raised);
+
+  #if HAS_HOTEND
+    TEST_ASSERT_EQUAL_INT16(205, recovery.info.target_temperature[0]);
+  #endif
+  #if HAS_HEATED_BED
+    TEST_ASSERT_EQUAL_INT16(65, recovery.info.target_temperature_bed);
+  #endif
+  #if HAS_FAN
+    TEST_ASSERT_EQUAL_UINT8(128, recovery.info.fan_speed[0]);
+  #endif
+
+  thermalManager.setTargetHotend(0, 0);
+  TERN_(HAS_HEATED_BED, thermalManager.setTargetBed(0));
+}
+
+/**
+ * The validity counter is never allowed to land on zero.
+ *
+ * `if (!++info.valid_head) ++info.valid_head;` exists because zero is the "no record"
+ * value — `init()` clears the struct — so a counter that wrapped to zero would mark a
+ * perfectly good save as absent. It takes 256 saves to reach, which is why the branch
+ * needs an input rather than an assertion: set the counter to its last value and save
+ * once more.
+ */
+MARLIN_TEST(power_loss, the_validity_counter_skips_zero_when_it_wraps) {
+  CleanSlate clean;
+
+  recovery.save(true);
+  recovery.info.valid_head = 0xFF;
+  recovery.info.valid_foot = 0xFF;
+
+  recovery.save(true);   // 0xFF + 1 would be 0, which means "no record"
+
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(0, recovery.info.valid_head, "the counter wrapped to zero");
+  TEST_ASSERT_EQUAL(recovery.info.valid_head, recovery.info.valid_foot);
+  TEST_ASSERT_TRUE(recovery.info.valid());
+}
+
+/**
+ * Turning the feature off clears the offer; turning it on while idle does not create one.
+ *
+ * `changed()` purges when disabled and saves when enabled *and already printing*. The
+ * second condition is the interesting one: enabling mid-session on an idle machine must
+ * not fabricate a record, or the next boot would offer to resume a print that never ran.
+ */
+MARLIN_TEST(power_loss, disabling_recovery_removes_the_offer) {
+  CleanSlate clean;
+
+  recovery.save(true);
+  TEST_ASSERT_TRUE(recovery.exists());
+
+  recovery.enable(false);
+  TEST_ASSERT_FALSE_MESSAGE(recovery.exists(), "disabling left the recovery file in place");
+
+  recovery.enable(true);
+  TEST_ASSERT_FALSE_MESSAGE(recovery.exists(), "enabling while idle fabricated a record");
 }
 
 /**

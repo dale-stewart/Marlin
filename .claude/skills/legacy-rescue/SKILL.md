@@ -212,6 +212,17 @@ toolchain. Slower per mutant, but it measures the code that actually ships.
 
   Two runs at different timeouts are no more comparable than two runs over different
   covered-line sets. Store both in the results, and print both next to the score.
+- **State a *failing* test leaves behind turns kills into timeouts.** Many frameworks
+  abandon a failed test by jumping out of it rather than returning, which skips the
+  test's own cleanup and any scope-based teardown it was relying on. Under mutation that
+  is not merely untidy: the mutant is detected, the assertion fires, and then the state it
+  left hangs something later — so the run records a timeout instead of a kill. The score
+  is unchanged and the diagnosis is inverted.
+
+  The signal is a round of new tests where the total moves but the killed count does not.
+  If that happens, suspect the teardown before you suspect the tests. Put the reset
+  somewhere the jump cannot skip — the harness, after the test returns — rather than in
+  the tests themselves, and re-measure: kills and timeouts should trade places.
 - Build failure = **not a mutant**. Exclude it; it never produced a testable program.
 - **Equivalent mutants belong outside the denominator.** Watch for the systematic
   source: code disabled at build time — `#if`/`#ifdef`, ternaries on compile-time
