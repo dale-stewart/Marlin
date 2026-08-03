@@ -64,7 +64,16 @@ namespace {
       tidy();
     }
     ~MediaSlate() { tidy(); MYSERIAL1.host_connected = was_connected; }
+    /**
+     * `M524` only *requests* an abort — it sets `abort_sd_printing`, which the main loop
+     * is supposed to act on, and nothing runs the main loop here. Left set, that flag
+     * makes `isStillPrinting()` false for every later test, so the next print looks like
+     * it never started. `endFilePrintNow()` is the firmware's own way to finish the job
+     * on the spot: it clears the flag and closes the file.
+     */
     static void tidy() {
+      card.flag.sdprinting = false;
+      card.endFilePrintNow();
       if (card.isFileOpen()) card.closefile();
       if (!card.isMounted()) card.mount();
     }
@@ -85,10 +94,39 @@ namespace {
     return capture.finish();
   }
 
+  /**
+   * Names here must fit 8.3, because this build has no long-filename support.
+   * A longer stem is silently stored mangled, and the name used to write it will then
+   * not open it again — which presents as a file that vanishes rather than as an error.
+   */
   void put_file(const char * const name, const char * const text) {
     card.openFileWrite(name);
     card.write((void*)text, strlen(text));
     card.closefile();
+  }
+
+  /**
+   * A print running from the card, which is a different state from a file being open.
+   *
+   * Four commands and the queue's whole media branch only do anything while
+   * `card.isStillPrinting()` — the queue refuses to fetch otherwise
+   * (`if (!card.isStillFetching()) return;`), so selecting a file is not enough to reach
+   * any of it. `M23` then `M24` is the sequence a host uses, and using the commands
+   * rather than `startOrResumeFilePrinting()` keeps the fixture on the same path a real
+   * print takes.
+   */
+  void print_from_card(const char * const name, const char * const gcode) {
+    put_file(name, gcode);
+    char select[64];
+    snprintf(select, sizeof(select), "M23 %s", name);
+    send(select);
+    send("M24");
+  }
+
+  // Let the queue pull whatever the file has for it, without running the commands.
+  size_t fetch_queued_commands() {
+    queue.get_available_commands();
+    return queue.ring_buffer.length;
   }
 
 }
@@ -215,6 +253,107 @@ MARLIN_TEST(media_commands, M28_and_M29_write_a_file_to_the_card) {
   send("M29");
   TEST_ASSERT_FALSE_MESSAGE(card.flag.saving, "M29 did not leave saving mode");
   TEST_ASSERT_TRUE_MESSAGE(card.fileExists("upload.gco"), "the uploaded file is not on the card");
+}
+
+//
+// ---- With a print actually running from the card ----
+//
+
+// M24 starts the selected file printing; until it does, the card is merely open.
+MARLIN_TEST(media_commands, M24_starts_the_selected_file_printing) {
+  MediaSlate slate;
+  put_file("run.gco", "G91\nG90\n");
+
+  send("M23 run.gco");
+  TEST_ASSERT_TRUE(card.isFileOpen());
+  TEST_ASSERT_FALSE_MESSAGE(card.isPrinting(), "selecting a file started a print on its own");
+
+  send("M24");
+  TEST_ASSERT_TRUE_MESSAGE(card.isStillPrinting(), "M24 did not start the print");
+
+}
+
+/**
+ * M25 pauses without giving up the file, which is what makes resuming possible.
+ *
+ * Paused is its own state — `isPaused()` is "the file is open but not printing" — and it
+ * is the distinction that separates a pause from an abort. Asserting all three of open,
+ * not printing, and paused says which state it is rather than only that it changed.
+ */
+MARLIN_TEST(media_commands, M25_pauses_the_print_without_closing_the_file) {
+  MediaSlate slate;
+  print_from_card("pausable.gco", "G90\nG90\nG90\n");
+
+  send("M25");
+
+  TEST_ASSERT_FALSE_MESSAGE(card.isPrinting(), "M25 did not stop the print");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "M25 closed the file");
+  TEST_ASSERT_TRUE_MESSAGE(card.isPaused(), "the print is neither running nor paused");
+
+}
+
+/**
+ * The queue reads the print from the card.
+ *
+ * This is the media half of `GCodeQueue`, and it is only reachable while a print is
+ * running — `get_sdcard_commands()` returns immediately unless `isStillFetching()`. The
+ * position advancing is the evidence the bytes came off the card rather than from
+ * anywhere else.
+ */
+MARLIN_TEST(media_commands, the_queue_fetches_commands_from_the_running_file) {
+  MediaSlate slate;
+  print_from_card("queued.gco", "G90\nG91\nG90\n");
+  queue.clear();
+
+  TEST_ASSERT_EQUAL_UINT32(0, card.getIndex());
+  const size_t queued = fetch_queued_commands();
+
+  TEST_ASSERT_GREATER_THAN_MESSAGE(0, queued, "nothing was fetched from the running file");
+  TEST_ASSERT_GREATER_THAN_MESSAGE(0, card.getIndex(), "the file position did not advance");
+
+  queue.clear();
+}
+
+// Nothing is fetched from a file that is merely selected — the gate is the print, not the
+// open file, which is why every command below needed this fixture.
+MARLIN_TEST(media_commands, the_queue_ignores_a_file_that_is_not_printing) {
+  MediaSlate slate;
+  put_file("idle.gco", "G90\nG90\n");
+  send("M23 idle.gco");
+  queue.clear();
+
+  TEST_ASSERT_EQUAL_MESSAGE(0, fetch_queued_commands(), "a file that is not printing was fetched");
+  TEST_ASSERT_EQUAL_UINT32(0, card.getIndex());
+}
+
+// M32 does M23 and M24 in one, which is how a host starts a print in a single command.
+MARLIN_TEST(media_commands, M32_selects_and_starts_in_one_command) {
+  MediaSlate slate;
+  put_file("oneshot.gco", "G90\nG90\n");
+
+  send("M32 oneshot.gco");
+
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "M32 did not open the file");
+  TEST_ASSERT_TRUE_MESSAGE(card.isStillPrinting(), "M32 did not start printing");
+
+}
+
+/**
+ * M524 aborts the print.
+ *
+ * The abort is requested rather than performed on the spot — `abort_sd_printing` is a
+ * flag the main loop acts on — so what the command guarantees is that the print stops
+ * being one that should still be fetched from. `isStillPrinting()` is exactly that
+ * question, which is why it is the thing asserted.
+ */
+MARLIN_TEST(media_commands, M524_abandons_the_print) {
+  MediaSlate slate;
+  print_from_card("abort.gco", "G90\nG90\nG90\n");
+  TEST_ASSERT_TRUE(card.isStillPrinting());
+
+  send("M524");
+
+  TEST_ASSERT_FALSE_MESSAGE(card.isStillPrinting(), "M524 left the print running");
 }
 
 #endif // HAS_MEDIA
