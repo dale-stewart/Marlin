@@ -42,6 +42,10 @@
 #include "src/gcode/gcode.h"
 #include "src/gcode/parser.h"
 #include "src/gcode/queue.h"
+#include "src/module/printcounter.h"
+#if ENABLED(POWER_LOSS_RECOVERY)
+  #include "src/feature/powerloss.h"
+#endif
 
 #include <string.h>
 
@@ -127,6 +131,24 @@ namespace {
   size_t fetch_queued_commands() {
     queue.get_available_commands();
     return queue.ring_buffer.length;
+  }
+
+  /**
+   * Run the print to the end of the file.
+   *
+   * Fetching and advancing is what `MarlinCore::loop()` does; doing it here keeps the
+   * clock and the interrupts under the test's control. The bound is a guard, not a
+   * timeout — a print of a handful of lines that has not finished in a thousand passes is
+   * not going to, and returning rather than spinning turns a firmware change that breaks
+   * this into a failed assertion instead of a hung suite.
+   */
+  bool run_print_to_completion(const uint16_t max_passes = 1000) {
+    for (uint16_t i = 0; i < max_passes; ++i) {
+      if (!card.isStillFetching() && queue.ring_buffer.empty()) return true;
+      queue.get_available_commands();
+      queue.advance();
+    }
+    return false;
   }
 
 }
@@ -354,6 +376,100 @@ MARLIN_TEST(media_commands, M524_abandons_the_print) {
   send("M524");
 
   TEST_ASSERT_FALSE_MESSAGE(card.isStillPrinting(), "M524 left the print running");
+}
+
+/**
+ * A print that reaches the end of the file stops being one.
+ *
+ * `fileHasFinished()` closes the file, sets `sdprintdone` so no more bytes are fetched,
+ * and flags the machine so the main loop will enqueue M1001. Running the commands out of
+ * the file rather than seeking to the end is what makes this the real path: the queue has
+ * to notice the end while it is reading, not be told about it.
+ */
+MARLIN_TEST(media_commands, a_print_that_reaches_the_end_of_the_file_finishes) {
+  MediaSlate slate;
+  print_from_card("short.gco", "G90\nG91\nG90\n");
+  queue.clear();
+
+  TEST_ASSERT_TRUE_MESSAGE(run_print_to_completion(), "the print never reached the end of the file");
+
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.sdprintdone, "the print did not record itself as done");
+  TEST_ASSERT_FALSE_MESSAGE(card.isStillFetching(), "the queue would still fetch from a finished print");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(), "the finished print left its file open");
+
+  queue.clear();
+}
+
+/**
+ * M1001 is what actually ends the job, and it is the reason a finished print is safe to
+ * power off.
+ *
+ * It is enqueued once the file runs out, and it does the tidying the rest of the firmware
+ * depends on: the recovery record is purged, so the next power-on does not offer to
+ * resume a print that already finished, and the job timer stops. Both are asserted
+ * because either alone would leave the machine wrong in a way the operator would see.
+ */
+MARLIN_TEST(media_commands, M1001_purges_the_recovery_record_and_stops_the_clock) {
+  MediaSlate slate;
+  print_from_card("finish.gco", "G90\nG90\n");
+  queue.clear();
+
+  print_job_timer.start();
+  #if ENABLED(POWER_LOSS_RECOVERY)
+    recovery.save(true);
+    TEST_ASSERT_TRUE_MESSAGE(recovery.exists(), "no recovery record to purge");
+  #endif
+
+  TEST_ASSERT_TRUE(run_print_to_completion());
+  send("M1001");
+
+  #if ENABLED(POWER_LOSS_RECOVERY)
+    TEST_ASSERT_FALSE_MESSAGE(recovery.exists(),
+      "a finished print left a recovery record, so the next boot would offer to resume it");
+  #endif
+  TEST_ASSERT_FALSE_MESSAGE(print_job_timer.isRunning(), "the job timer is still running");
+  TEST_ASSERT_FALSE_MESSAGE(card.isPrinting(), "the card still believes it is printing");
+
+  queue.clear();
+}
+
+/**
+ * M928 starts logging what follows into a file on the card.
+ *
+ * The same machinery as M28 — the card in saving mode — reached by a different command,
+ * and what a host uses to capture a session rather than upload a print.
+ *
+ * Note where the *end* of a log lives, because it is not where it looks. `M29`'s handler
+ * is one line, `card.flag.saving = false;`, and it does not touch `flag.logging`. Logging
+ * is ended by `CardReader::closefile()`, which the queue's write path calls when it sees
+ * M29 arrive *in the command stream* — the branch at `queue.cpp:687` that decides whether
+ * a line is written to the file or executed. So a directly dispatched `M29` cannot end a
+ * log, and this test closes the file the way the firmware does instead of pretending the
+ * command did it.
+ */
+MARLIN_TEST(media_commands, M928_starts_logging_to_a_file) {
+  MediaSlate slate;
+
+  send("M928 log.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "M928 did not open a log file");
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.logging, "M928 did not put the card into logging mode");
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.saving, "logging did not imply saving");
+
+  card.closefile();
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.logging, "closing the file left the card logging");
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("log.gco"), "the log file is not on the card");
+}
+
+// M29 clears the saving flag and nothing else — the rest of ending an upload happens in
+// the queue, which is why this asserts so little.
+MARLIN_TEST(media_commands, M29_clears_the_saving_flag) {
+  MediaSlate slate;
+
+  send("M28 up2.gco");
+  TEST_ASSERT_TRUE(card.flag.saving);
+
+  send("M29");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.saving, "M29 did not clear the saving flag");
 }
 
 #endif // HAS_MEDIA
