@@ -57,52 +57,36 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
 #if HAS_MEDIA
 
   #include "src/sd/cardreader.h"
+  #include "tests/support/simulated_media.h"
 
   /**
-   * An empty card slot, installed before any test runs.
+   * A formatted card, present from the first test.
    *
    * `Marlin::idle()` calls `CardReader::manage_media()`, so *every* test that waits for
-   * anything reaches the media layer whether it cares about media or not. Left to
-   * itself that ends in `Sd2Card::init()`, which polls a card over SPI and gives up on a
-   * deadline: `while (cardCommand(CMD0, 0) != R1_IDLE_STATE) if (ELAPSED(millis(), …))`.
+   * anything reaches the media layer whether it cares about media or not. Without a
+   * stand-in that ends in `Sd2Card::init()`, which polls a card over SPI and gives up on
+   * a deadline: `while (cardCommand(CMD0, 0) != R1_IDLE_STATE) if (ELAPSED(millis(), …))`.
+   * Both halves fail here — nothing is on the simulated bus so no card ever answers, and
+   * under a HAL where time only advances when a test asks, `millis()` does not move
+   * inside the loop, so the deadline never arrives. Production code that is correct on
+   * hardware becomes an infinite loop.
    *
-   * Both halves of that loop fail here. Nothing is on the simulated bus, so the card
-   * never answers — and under a HAL where time only advances when a test asks for it,
-   * `millis()` does not move inside the loop, so the deadline never arrives either. The
-   * result is a genuine infinite loop in production code that is perfectly correct on
-   * hardware.
-   *
-   * Reporting failure from `init()` is the honest answer for a machine with no card in
-   * it, and it stops the firmware at the point it already handles — mount failed — rather
-   * than requiring the SD command protocol to be simulated to test code far above it. A
-   * test that wants working media replaces this through the same public seam,
-   * `CardReader::changeMedia()`.
+   * An empty slot is not enough either. Reporting "no card" leaves `CardReader::root`
+   * unmounted, and the firmware then walks into defect #24 — `jobRecoverFileExists()`
+   * opens a file on an unmounted volume without checking, and dereferences null. A
+   * mounted volume is both the more useful default and the one that keeps the suite
+   * running; #24 stays recorded and is pinned by its own test rather than by crashing
+   * every configuration that enables media.
    */
-  class EmptyCardSlot : public DiskIODriver {
-  public:
-    bool init(const uint8_t, const pin_t) override { return false; }  // no card
-    bool readCSD(csd_t * const) override { return false; }
-    bool readStart(const uint32_t) override { return false; }
-    bool readData(uint8_t * const) override { return false; }
-    bool readStop() override { return false; }
-    bool writeStart(const uint32_t, const uint32_t) override { return false; }
-    bool writeData(const uint8_t*) override { return false; }
-    bool writeStop() override { return false; }
-    bool readBlock(const uint32_t, uint8_t * const) override { return false; }
-    bool writeBlock(const uint32_t, const uint8_t * const) override { return false; }
-    uint32_t cardSize() override { return 0; }
-    bool isReady() override { return false; }
-    void idle() override {}
-  };
-
-  static EmptyCardSlot empty_card_slot;
+  static SimulatedMedia simulated_card;
 
 #endif // HAS_MEDIA
 
 // Install the stand-ins a test cannot opt out of, once, before the first test runs.
 static void prepare_simulated_peripherals() {
   #if HAS_MEDIA
-    card.changeMedia(&empty_card_slot);
+    card.changeMedia(&simulated_card);
+    card.mount();
   #endif
 }
 
