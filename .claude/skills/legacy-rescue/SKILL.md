@@ -284,6 +284,20 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **A build option can be what makes a line unobservable.** Where a feature is compiled
+  out, the code that *feeds* it often still compiles and still runs: a value is computed
+  and then handed to something that discards it, or stored in a field the disabled feature
+  was the only reader of. Coverage reports those lines as covered, because they are. No
+  assertion can kill their mutants, because nothing downstream can see the result — and
+  from the report that is indistinguishable from a missing test.
+
+  So when a survivor cluster sits on a computation whose result you cannot find a reader
+  for, look for the reader behind a disabled option before concluding the code is dead or
+  the test is missing. The fix is usually to **turn the option on in the pinned
+  configuration** rather than to write a cleverer assertion: that is the input class, and
+  it costs one configuration line. Where the option cannot be enabled — it needs hardware
+  the build cannot have — say so with the count, in the same terms as any other blocked
+  cluster.
 - **Do not convert survivors into timeouts to move the number.** Where a mutant can be
   detected only by hanging, a test that makes it hang is real but nearly worthless: it
   adds no killed-by-assertion and costs a full timeout on every future run of that target,
