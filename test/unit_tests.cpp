@@ -54,6 +54,58 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
   all_marlin_tests().push_back(this);
 }
 
+#if HAS_MEDIA
+
+  #include "src/sd/cardreader.h"
+
+  /**
+   * An empty card slot, installed before any test runs.
+   *
+   * `Marlin::idle()` calls `CardReader::manage_media()`, so *every* test that waits for
+   * anything reaches the media layer whether it cares about media or not. Left to
+   * itself that ends in `Sd2Card::init()`, which polls a card over SPI and gives up on a
+   * deadline: `while (cardCommand(CMD0, 0) != R1_IDLE_STATE) if (ELAPSED(millis(), …))`.
+   *
+   * Both halves of that loop fail here. Nothing is on the simulated bus, so the card
+   * never answers — and under a HAL where time only advances when a test asks for it,
+   * `millis()` does not move inside the loop, so the deadline never arrives either. The
+   * result is a genuine infinite loop in production code that is perfectly correct on
+   * hardware.
+   *
+   * Reporting failure from `init()` is the honest answer for a machine with no card in
+   * it, and it stops the firmware at the point it already handles — mount failed — rather
+   * than requiring the SD command protocol to be simulated to test code far above it. A
+   * test that wants working media replaces this through the same public seam,
+   * `CardReader::changeMedia()`.
+   */
+  class EmptyCardSlot : public DiskIODriver {
+  public:
+    bool init(const uint8_t, const pin_t) override { return false; }  // no card
+    bool readCSD(csd_t * const) override { return false; }
+    bool readStart(const uint32_t) override { return false; }
+    bool readData(uint8_t * const) override { return false; }
+    bool readStop() override { return false; }
+    bool writeStart(const uint32_t, const uint32_t) override { return false; }
+    bool writeData(const uint8_t*) override { return false; }
+    bool writeStop() override { return false; }
+    bool readBlock(const uint32_t, uint8_t * const) override { return false; }
+    bool writeBlock(const uint32_t, const uint8_t * const) override { return false; }
+    uint32_t cardSize() override { return 0; }
+    bool isReady() override { return false; }
+    void idle() override {}
+  };
+
+  static EmptyCardSlot empty_card_slot;
+
+#endif // HAS_MEDIA
+
+// Install the stand-ins a test cannot opt out of, once, before the first test runs.
+static void prepare_simulated_peripherals() {
+  #if HAS_MEDIA
+    card.changeMedia(&empty_card_slot);
+  #endif
+}
+
 /**
  * Put the simulated peripherals back to rest between tests.
  *
@@ -82,6 +134,7 @@ void MarlinTest::run() {
 }
 
 void run_all_marlin_tests() {
+  prepare_simulated_peripherals();
   for (const auto registration : all_marlin_tests()) {
     registration->run();
   }

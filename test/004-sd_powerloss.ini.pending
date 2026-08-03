@@ -33,3 +33,16 @@ nozzle_park_feature        = on
 # Auto-enabled with media, but BOARD_SIMULATED has no SD-detect pin, so Warnings.cpp
 # reports it as unnecessary and this env builds with -Werror.
 reinit_noisy_lcd           = off
+
+# ---------------------------------------------------------------------------------
+# PARKED — not yet part of the discovered set (`.pending`, so `test-marlin` skips it).
+#
+# The configuration is correct and builds. It cannot run yet because the fixture has no
+# mounted volume: `EmptyCardSlot` in test/unit_tests.cpp reports an empty slot, which is
+# honest but leaves `CardReader::root` unmounted, and `M502` then walks into defect #24
+# (a null dereference in `jobRecoverFileExists`) and segfaults the binary.
+#
+# Unparking needs a RAM-backed block device holding a small formatted image, injected via
+# `CardReader::changeMedia()`. That is the remaining Phase 4b work for this configuration
+# — the seam is already there, only the fake filesystem is missing.
+# ---------------------------------------------------------------------------------
