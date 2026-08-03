@@ -97,37 +97,58 @@ and reported it.
 `pio run -t marlin_default -e <env>`, i.e. against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
-varies the *config* and holds the env fixed: it runs `linux_native_test` alone against all
-three configs in `test/`, reporting **377, 378, 378**. The counts above vary the *env* and
-hold the config fixed. Give an agent "377" as a baseline without saying which, and a
-correct tree reports a mismatch.
+varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
+three configs in `test/`, reporting **464, 465, 465**. The counts above vary the *env* and
+hold the config fixed. Give an agent a bare number as a baseline without saying which, and
+a correct tree reports a mismatch.
+
+## Which HAL the tests run against
+
+**The test HAL is the working loop. The LINUX HAL is an integration check.**
+
+`testhal_native_test` is a strict superset — verified by comparing the test names the two
+binaries actually register, and no test exists under LINUX that does not exist here. It is
+also the only env where time advances on request, so motion, blocking commands and the
+interrupt handlers are reachable at all; every coverage and mutation figure in `docs/`
+comes from it.
+
+The LINUX HAL backs its peripherals with real OS facilities — wall-clock sleeps, POSIX
+timers, signals — which is why it is slower and why every instrument defect found so far
+(register #16, #18, #20) lived there rather than in the firmware. It still earns its place
+as the only thing exercising that HAL, and #20 was a genuine order-dependence it caught
+that the test HAL could not. Run it deliberately, with `make unit-test-integration`, not
+on every change.
 
 ## Test, coverage, and mutation tooling
 
 ```bash
-make unit-test-all-local                    # linux_native_test only, over all 3 configs in test/
-make unit-test-coverage                     # one suite + gcov/gcovr report
-make unit-test-mutation TARGET=<file.cpp>   # mutation-test one source file
+make unit-test-all-local                    # test HAL, all 3 configs in test/
+make unit-test-integration                  # LINUX HAL, all 3 configs — the slow check
+make unit-test-coverage                     # test HAL + gcov/gcovr report
+make unit-test-mutation TARGET=<file.cpp>   # mutation-test one source file, test HAL
 pio run -t marlin_default -e acceptance_native_test        # acceptance suite alone
 pio run -t marlin_default -e acceptance_native_coverage    # ... with coverage
 ```
 
-**Coverage and mutation must name the same suite, and neither defaults to the one that
-matters.** `COVERAGE_ENV` and `MUTATION_ENV` both default to LINUX, where motion,
-blocking commands and the temperature ISR do not run. Measuring anything under `testhal`
-means saying so twice:
+**Everything defaults to the test HAL now.** `UNIT_TEST_ENV`, `COVERAGE_ENV` and
+`MUTATION_ENV` all name `testhal_*`, so the bare commands above measure the suite the
+documents quote. Nothing needs saying twice any more:
 
 ```bash
-make unit-test-coverage COVERAGE_ENV=testhal_native_coverage
-make unit-test-mutation TARGET=<file.cpp> MUTATION_ENV=testhal_native_test
-make unit-test-mutation TARGET=<file.cpp> MUTATION_ENV=testhal_native_test \
-     RERUN=.pio/mutation/results.json      # MUTATION_ENV again, or this reverts to LINUX
+make unit-test-all-local                                  # test HAL, all three configs
+make unit-test-coverage                                   # test HAL + gcov
+make unit-test-mutation TARGET=<file.cpp>                 # test HAL
+make unit-test-mutation TARGET=<file.cpp> RERUN=.pio/mutation/results.json
+make unit-test-integration                                # the LINUX HAL, run deliberately
 ```
 
-Getting this wrong is not loud. A LINUX/LINUX pair is self-consistent and produces a
-perfectly plausible report — of a suite where most of the interesting lines never
-execute, so unasserted lines and unreachable lines become indistinguishable. The headline
-figures in `docs/` are all `testhal`.
+**Coverage and mutation must still name the same suite** whenever either is overridden —
+mutants are restricted to the lines the coverage build marked covered, so a mismatched
+pair measures one suite against another's reach. `MUTATION_ENV` must also be repeated on
+a `RERUN=`. Getting it wrong is not loud: a self-consistent pair produces a perfectly
+plausible report, just of a different suite, and under LINUX most of the interesting
+lines never execute — so *unasserted* and *unreachable* become indistinguishable, which
+is the one distinction this whole exercise exists to make.
 
 `make unit-test-coverage` prints both a whole-tree number and the **platform-agnostic**
 one (excluding `Marlin/src/HAL/`), which is the figure the plan documents quote — 74.3%
@@ -152,10 +173,10 @@ Environments added by this fork, in `ini/native.ini`:
 
 | Env | Purpose |
 |---|---|
-| `linux_native_coverage` | `linux_native_test` + gcov instrumentation |
+| `linux_native_coverage` | `linux_native_test` + gcov instrumentation (integration only) |
 | `acceptance_native_test` | acceptance suite only, unit tests excluded |
 | `acceptance_native_coverage` | the same, with coverage |
-| `testhal_native_test` | unit tests against `HAL/TEST` — time advances only on request |
+| `testhal_native_test` | **the default suite** — unit tests against `HAL/TEST`, time advances only on request |
 | `testhal_native_coverage` | the same, with coverage; the only env that measures motion and blocking commands |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`

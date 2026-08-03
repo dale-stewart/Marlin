@@ -53,7 +53,8 @@ help:
 	@echo "make tests-all-local-docker    : Run all tests locally, using docker"
 	@echo "make unit-test-single-local    : Run unit tests for a single config locally"
 	@echo "make unit-test-single-local-docker : Run unit tests for a single config locally, using docker"
-	@echo "make unit-test-all-local       : Run all code tests locally"
+	@echo "make unit-test-all-local       : Run all code tests locally (test HAL)"
+	@echo "make unit-test-integration     : Run the same tests against the LINUX HAL"
 	@echo "make unit-test-coverage        : Run one config's unit tests with gcov, report coverage"
 	@echo "make unit-test-mutation        : Mutation-test one source file (TARGET=path/to/file.cpp)"
 	@echo "make unit-test-all-local-docker : Run all code tests locally, using docker"
@@ -70,6 +71,15 @@ help:
 	@echo "  UNIT_TEST_CONFIG     Set the name of the config from the test folder, without"
 	@echo "                       the leading number. Default is 'default'". Used with the
 	@echo "                       unit-test-single-* tasks"
+	@echo "  UNIT_TEST_ENV        Environment the unit tests run in. Defaults to"
+	@echo "                       testhal_native_test, the only one where time can be"
+	@echo "                       advanced on request so motion and the ISRs are reachable"
+	@echo "  COVERAGE_ENV         Suite to measure coverage for. Must name the same suite"
+	@echo "                       as MUTATION_ENV, or mutants are restricted to lines a"
+	@echo "                       different suite covered"
+	@echo "  MUTATION_ENV         Suite to mutation-test against. Carry it on RERUN= too"
+	@echo "  MUTATION_MUTANT_DIR  Where generated mutants go — several GB per target, kept"
+	@echo "                       so RERUN= can read them back"
 	@echo "  VERBOSE_PLATFORMIO   If you want the full PIO output, set any value"
 	@echo "  GIT_RESET_HARD       Used by CI: reset all local changes. WARNING:"
 	@echo "                       THIS WILL UNDO ANY CHANGES YOU'VE MADE!"
@@ -114,14 +124,30 @@ tests-all-local-docker:
 	@if ! $(CONTAINER_RT_BIN) images -q $(CONTAINER_IMAGE) > /dev/null ; then $(MAKE) setup-local-docker ; fi
 	$(CONTAINER_RT_BIN) run $(CONTAINER_RT_OPTS) $(CONTAINER_IMAGE) make tests-all-local VERBOSE_PLATFORMIO=$(VERBOSE_PLATFORMIO) GIT_RESET_HARD=$(GIT_RESET_HARD)
 
+# The suite everything measures against. The test HAL is a strict superset of the LINUX
+# one — every test that runs there runs here — and it is the only env where time can be
+# advanced on request, so motion, blocking commands and the interrupt handlers are
+# reachable. The LINUX HAL keeps its peripherals on real OS facilities (wall-clock sleeps,
+# POSIX timers, signals), which makes it slower and, on the evidence of register entries
+# #16, #18 and #20, the source of every instrument defect found so far. It is kept as an
+# integration check, not as the working loop: see `unit-test-integration`.
+UNIT_TEST_ENV ?= testhal_native_test
+
 unit-test-single-local:
-	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e linux_native_test
+	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e $(UNIT_TEST_ENV)
 
 unit-test-single-local-docker:
 	@if ! $(CONTAINER_RT_BIN) images -q $(CONTAINER_IMAGE) > /dev/null ; then $(MAKE) setup-local-docker ; fi
 	$(CONTAINER_RT_BIN) run $(CONTAINER_RT_OPTS)  $(CONTAINER_IMAGE) make unit-test-single-local UNIT_TEST_CONFIG=$(UNIT_TEST_CONFIG)
 
 unit-test-all-local:
+	platformio run -t test-marlin -e $(UNIT_TEST_ENV)
+
+# The same tests against the LINUX HAL, where the peripherals are real OS facilities.
+# Slower and historically the noisier of the two, so it is run deliberately rather than
+# on every change — but it is the only thing that exercises that HAL, and it has earned
+# its keep by failing when the test HAL could not.
+unit-test-integration:
 	platformio run -t test-marlin -e linux_native_test
 
 COVERAGE_DIR ?= .pio/coverage
@@ -130,7 +156,7 @@ COVERAGE_DIR ?= .pio/coverage
 # so COVERAGE_ENV must name the same suite as MUTATION_ENV below or the restriction is
 # taken from the wrong measurement — silently, since both produce a plausible report.
 #   make unit-test-coverage COVERAGE_ENV=testhal_native_coverage
-COVERAGE_ENV ?= linux_native_coverage
+COVERAGE_ENV ?= testhal_native_coverage
 
 unit-test-coverage:
 	@command -v gcovr >/dev/null || (echo 'gcovr is not installed. Install it with "uv tool install gcovr" or "pipx install gcovr"' && exit 1)
@@ -157,7 +183,7 @@ unit-test-coverage:
 # Restricting mutants to covered lines needs a coverage build of the same suite; run
 # "make unit-test-coverage" first with a matching COVERAGE_ENV, or pass
 # MUTATION_COVERAGE= to mutate every line.
-MUTATION_ENV ?= linux_native_test
+MUTATION_ENV ?= testhal_native_test
 MUTATION_RESULTS ?= .pio/mutation/results.json
 
 # Where the generated mutants live. One full copy of the target per mutant — a few GB for

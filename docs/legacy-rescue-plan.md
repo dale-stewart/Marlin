@@ -161,6 +161,32 @@ and the only phase that needs real step-4 seams (clock, ADC, GPIO, stepper ISR).
 is severe (`motion.h` 162, `planner.h` 151, `temperature.h` 124), so these surfaces stay
 frozen for a long time. Budget the most time here; expect seam work to dominate.
 
+## Decision: the test HAL is the working loop
+
+Taken 2026-08-03, after `linux_native_test` produced its third instrument defect
+(register #20) without ever having found a firmware one.
+
+Everything from here — the suite, coverage, mutation — runs against
+`testhal_native_test` by default. The LINUX HAL suite is **integration testing**: run
+deliberately with `make unit-test-integration`, not on every change.
+
+The precondition was checked rather than assumed: the two binaries were asked which tests
+they actually register, and **no test exists under LINUX that does not also exist under
+the test HAL**, so the switch drops nothing. The test HAL also runs all three configs
+(464/465/465) in comparable wall-clock time.
+
+The reasoning is cost and reliability. The LINUX HAL backs its peripherals with real
+operating-system facilities — wall-clock sleeps, POSIX timers, signals — so it is slower
+and its failures are less reproducible; #16 (a serial race), #18 (a timer that re-armed on
+enable) and #20 (link-order dependence via a leaked POSIX timer) were all faults in the
+instrument. The test HAL makes time a counter, which removes that entire class.
+
+What this costs, stated so it is not discovered later: the LINUX HAL is the environment
+upstream actually runs, and it is the only thing exercising that HAL's code. #20 was a
+real order-dependence that the test HAL could not have caught, because its timers are not
+real ones. Keeping the integration target — and running it before anything is called done
+— is what stops this from becoming a blind spot.
+
 ## Phase 4 — Expand the frontier
 
 Detailed in **`docs/legacy-rescue-phase-4.md`**, written after Phases 2 and 3 reached
