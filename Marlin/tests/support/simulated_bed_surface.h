@@ -36,6 +36,12 @@
  * tests derivable: the height at any probe point is known in advance from the plane, so a
  * measurement can be checked against the surface instead of against a previous run.
  *
+ * The name says *surface* because `SimulatedBed` was already taken, by the heated bed in
+ * `simulated_heaters.h`. Two header-defined classes with the same name and no key function
+ * each emit a weak vtable under the same mangled symbol; the linker keeps one, and objects of
+ * the other get its method pointers. That is what register #26 turned out to be — see there
+ * for what it looked like from the outside, which was nothing like a name collision.
+ *
  * X and Y come from the simulated carriages rather than from `stepper.position()`, for the
  * reason given in `simulated_endstops.h` — homing resets the firmware's step counters
  * part-way through a sequence, so a surface driven from them would move under the probe.
@@ -48,7 +54,7 @@
 
 #ifdef __PLAT_TEST__
 
-class SimulatedBed : public Peripheral {
+class SimulatedBedSurface : public Peripheral {
 public:
 
   /**
@@ -59,7 +65,7 @@ public:
    *                          across a 100 mm bed: a real machine's worth of error
    * @param start_z_mm        where the nozzle starts, in mm above the origin
    */
-  SimulatedBed(const SimulatedAxisWithLimit &x, const SimulatedAxisWithLimit &y,
+  SimulatedBedSurface(const SimulatedAxisWithLimit &x, const SimulatedAxisWithLimit &y,
                const float steps_per_mm,
                const float height_at_origin, const float tilt_x, const float tilt_y,
                const float start_z_mm)
@@ -70,7 +76,7 @@ public:
     settle();
   }
 
-  ~SimulatedBed() {
+  ~SimulatedBedSurface() {
     Gpio::attachPeripheral(Z_STEP_PIN, nullptr);
     // Leave the probe open, or the next test starts with it already pressed.
     Gpio::set(Z_MIN_PIN, Z_MIN_ENDSTOP_HIT_STATE ? 0 : 1);

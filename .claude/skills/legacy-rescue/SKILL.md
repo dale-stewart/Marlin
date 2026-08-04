@@ -284,6 +284,24 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **When a virtual call arrives somewhere impossible, dump the dispatch table.** Symptoms
+  that no ordinary bug explains — a call landing in another class's method, cleanup emitted
+  but never run, an object that is provably intact behaving as though it were not — are
+  usually a *definition* problem rather than a runtime one. In languages that emit
+  per-class dispatch tables, print the table for the type involved and read the entries.
+  It takes one command and it either names the wrong function immediately or rules the
+  whole class of cause out.
+
+  The cause worth suspecting first is **two definitions sharing one name**. Test fixtures
+  are unusually prone to it: they live in headers, they are written quickly, they are named
+  for the thing they stand in for — so two different fixtures for two different aspects of
+  the same physical part end up with the same obvious name. Where the language merges such
+  definitions silently, one wins and objects of the other get its behaviour, with no
+  diagnostic at compile or link time.
+
+  Search the fixture directory for the name before adding a type to it. That is a
+  one-second check against a fault that presents as memory corruption and reads, from
+  every angle except the dispatch table, as something else entirely.
 - **A sanitizer's first report is where the damage surfaced, not always where it began.**
   One fault can produce several, and the tool stops at the first one it meets. If the first
   report describes a *read* of something already dead, look for the *write* that killed it:
