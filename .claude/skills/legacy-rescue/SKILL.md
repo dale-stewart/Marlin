@@ -284,6 +284,22 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **A sanitizer's first report is where the damage surfaced, not always where it began.**
+  One fault can produce several, and the tool stops at the first one it meets. If the first
+  report describes a *read* of something already dead, look for the *write* that killed it:
+  most sanitizers can be told to suppress a category so the run continues to the next
+  finding, and the second report is often the cause of the first.
+
+  The tell is a symptom no ordinary bug explains. Cleanup that is emitted but never runs,
+  an object constructed and never destroyed while its neighbours in the same frame are, a
+  failure that moves when unrelated code changes — those are not lifetime bugs, they are
+  what a large stray write looks like from the inside. Do not build a theory that explains
+  them as ordinary; find the write.
+
+  And treat any fixture that writes a large buffer from a callback as a hazard in itself,
+  separately from whatever aims it. A small stray write corrupts one thing and is hard to
+  find; a kilobyte-scale one destroys the evidence, including the frames you would use to
+  work out where it came from.
 - **Make the harness check its own invariants between tests, not just the code's.** Shared
   state that a test registers and the framework dispatches through — callbacks, listeners,
   handles, anything holding a pointer to a fixture — has to be given back when the fixture
