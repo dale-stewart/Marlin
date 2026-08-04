@@ -29,6 +29,7 @@
 
 #include "unit_tests.h"
 #include "src/module/temperature.h"
+#include "src/module/planner.h"
 
 /**
  * The registry, constructed on first use rather than at static-initialisation time.
@@ -137,6 +138,23 @@ static void quiesce_simulated_peripherals() {
   #if HAS_MEDIA
     simulated_card().allow_writes();
   #endif
+
+  /**
+   * Leave nothing planned, either.
+   *
+   * A block in the planner is motion the machine still intends to perform, and the thing that
+   * would consume it — the stepper interrupt, driven from the main loop — is not running
+   * between tests. So a test that queues a move and does not run it hands the next test a
+   * machine that is busy. That is not merely untidy: `planner.synchronize()` spins on
+   * `idle()` until the queue drains, and `idle()` in a test build eventually reaches `kill()`
+   * unless the kill button has been released for the duration — so the symptom is a *later*
+   * test hanging, in some configurations and not others, with nothing wrong with it.
+   *
+   * `clear_block_buffer()` rather than `quick_stop()`: the latter sets a counter that only
+   * the temperature interrupt clears, which would leave the machine busy for a different
+   * reason.
+   */
+  planner.clear_block_buffer();
 }
 
 void MarlinTest::run() {

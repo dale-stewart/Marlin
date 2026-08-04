@@ -284,6 +284,24 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **A survivor that should obviously have died means the test is wrong, not the tool.**
+  When a mutant contradicts an assertion you believe covers it and still survives, stop and
+  apply that one mutation to the real source by hand, then run the suite. Either it fails —
+  and the discrepancy is in the harness — or it passes, and the test was never testing what
+  you thought. It is the cheapest experiment available and it settles the question in one
+  build.
+
+  The usual cause is an assertion that cannot fail. Watch particularly for a **tolerance,
+  bound, or expected value computed from configuration**: it reads as rigorous, and if the
+  configuration is uninitialised in the test build it can evaluate to zero, to infinity, or
+  to the very quantity being asserted. A tolerance derived from a setting that is zero is
+  not a tight tolerance — it is no assertion at all, and nothing in the report says so.
+
+  So assert the fixture's own preconditions alongside the behaviour: that the machine was
+  configured, that the state the test needs was actually reached, that the quantity a
+  tolerance is derived from is sane. Those assertions never fail in a healthy run, which is
+  exactly why they are worth having — they fail the day the fixture silently stops setting
+  something up, instead of letting every test in the file quietly become vacuous.
 - **A build option can be what makes a line unobservable.** Where a feature is compiled
   out, the code that *feeds* it often still compiles and still runs: a value is computed
   and then handed to something that discards it, or stored in a field the disabled feature

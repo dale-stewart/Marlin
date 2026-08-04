@@ -30,6 +30,11 @@
 #include "src/gcode/queue.h"
 #include "src/gcode/gcode.h"
 #include "src/module/motion.h"
+#include "src/module/planner.h"
+#include "src/MarlinCore.h"
+#ifdef __PLAT_TEST__
+  #include "../support/simulated_machine.h"
+#endif
 #include <string.h>
 #include <stdio.h>
 
@@ -322,3 +327,159 @@ MARLIN_TEST(queue, a_comment_line_is_not_queued) {
   drain_queue();
   TEST_ASSERT_EQUAL(before, motion.feedrate_percentage);
 }
+
+/**
+ * The resend window is two line numbers wide, and it has an edge.
+ *
+ * When the machine asks for a resend, the line it is complaining about may already be in
+ * flight — so it arrives again, out of sequence, through no fault of the host. Repeating the
+ * last line or the one before it is therefore ignored in silence; anything older than that is
+ * a genuinely lost line and must be refused loudly, or the print continues with a gap in it.
+ *
+ * The three cases here sit on both sides of that edge, which is what pins the width of the
+ * window rather than merely its existence.
+ */
+MARLIN_TEST(queue, a_line_number_just_behind_is_ignored_and_an_older_one_is_an_error) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  host_transmits_checksummed("N1 M220 S11");
+  host_transmits_checksummed("N2 M220 S22");
+  host_transmits_checksummed("N3 M220 S33");
+  drain_queue();
+  TEST_ASSERT_EQUAL(33, motion.feedrate_percentage);
+
+  // N3 again — the last line, inside the window.
+  motion.feedrate_percentage = 50;
+  host_transmits_checksummed("N3 M220 S77");
+  drain_queue();
+  TEST_ASSERT_EQUAL_MESSAGE(50, motion.feedrate_percentage, "the last line repeated should be ignored");
+
+  // N2 — one behind, still inside the window.
+  host_transmits_checksummed("N2 M220 S78");
+  drain_queue();
+  TEST_ASSERT_EQUAL_MESSAGE(50, motion.feedrate_percentage, "the line before last should be ignored");
+
+  // N1 — outside it. Refused, and the count is not disturbed by the refusal.
+  host_transmits_checksummed("N1 M220 S79");
+  drain_queue();
+  TEST_ASSERT_EQUAL_MESSAGE(50, motion.feedrate_percentage, "an older line should be refused");
+
+  // The sequence is still where it was, so the next line in order runs.
+  host_transmits_checksummed("N4 M220 S44");
+  drain_queue();
+  TEST_ASSERT_EQUAL_MESSAGE(44, motion.feedrate_percentage, "a refusal should not move the sequence");
+}
+
+/**
+ * Commands that cannot wait are acted on as the line is read.
+ *
+ * `M108` and `M410` exist to reach a machine that is *already* stuck — waiting for a
+ * temperature, or part-way through a move queue that will take a minute to drain. Queueing
+ * them would defeat them, so they are recognised in the serial reader before the line is
+ * enqueued at all. That is the property to assert: the effect must be visible without the
+ * queue being advanced even once.
+ *
+ * `M112` sits in the same switch and cannot be tested here — it calls `kill()`, which does not
+ * return. See the defect register for the class.
+ */
+MARLIN_TEST(queue, M108_stops_a_wait_without_the_queue_being_advanced) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  marlin.wait_for_heatup = true;
+  host_transmits("M108");                      // read only — drain_queue() is deliberately not called
+
+  TEST_ASSERT_FALSE_MESSAGE(marlin.wait_for_heatup, "M108 should end the wait as it is read");
+}
+
+/**
+ * A near-miss must not be taken for the emergency command.
+ *
+ * The switch tests three characters by position, so `M118` differs from `M108` in exactly the
+ * one the switch does not select on. Without this the test above is satisfied by an
+ * implementation that fires on any `M1x8`, which would abandon a heat-up whenever a host sent
+ * a message to the display.
+ */
+MARLIN_TEST(queue, a_command_that_merely_looks_like_M108_does_not_stop_a_wait) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  marlin.wait_for_heatup = true;
+  host_transmits("M118 hello");
+
+  TEST_ASSERT_TRUE_MESSAGE(marlin.wait_for_heatup, "M118 should not be taken for M108");
+
+  marlin.wait_for_heatup = false;              // leave nothing waiting behind
+  drain_queue();
+}
+
+#ifdef __PLAT_TEST__
+
+/**
+ * `M410` empties the planner where it stands.
+ *
+ * An emergency stop throws away motion that was planned but not yet performed. Asserting that
+ * the planner is empty afterwards is the relationship — and the fixture has to prove there was
+ * something there to throw away, or the assertion holds trivially.
+ *
+ * Test-HAL only, and `SimulatedMachine` rather than a local fixture, for two reasons that both
+ * bite. `quick_stop()` sets a counter that only the temperature interrupt clears, and
+ * `quickstop_stepper()` then calls `synchronize()`, which spins on `idle()` until it does — so
+ * the command only returns under a HAL where time advances and interrupts fire. And a long
+ * `idle()` wait is exactly what walks into the kill button that reads as held in a test build;
+ * without the fixture's `release_kill_button()` this hangs after 250 passes, in some
+ * configurations and not others, which is how it first showed up.
+ */
+MARLIN_TEST(queue, M410_discards_motion_that_had_been_planned_but_not_performed) {
+  CleanQueue clean;
+  SimulatedMachine machine;
+  queue.set_current_line_number(0);
+
+  xyze_pos_t target = { 0 };
+  motion.position = target;
+  planner.set_position_mm(target);
+  for (uint8_t i = 1; i <= 3; ++i) {
+    target.x = float(i);
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(target, 5.0f), "the fixture failed to plan a move");
+  }
+  TEST_ASSERT_TRUE_MESSAGE(planner.movesplanned() > 0,
+    "the fixture planned nothing, so there is nothing for M410 to discard");
+
+  host_transmits("M410");                      // recognised as the line is read
+
+  TEST_ASSERT_EQUAL_MESSAGE(0, planner.movesplanned(), "M410 should empty the planner");
+}
+
+/**
+ * A command one character away from `M410` leaves the motion alone.
+ *
+ * The switch selects on the fourth character and then checks the second and third, so `M411`
+ * differs in the selector and `M100` differs in the pair. Neither is a real command in this
+ * build, which does not matter: the emergency check runs on the raw line before anything is
+ * parsed, so what is being tested is exactly the character comparison. Without this the test
+ * above is satisfied by an implementation that stops on any `M4xx`.
+ */
+MARLIN_TEST(queue, a_command_one_character_away_from_M410_does_not_stop_the_steppers) {
+  CleanQueue clean;
+  SimulatedMachine machine;
+  queue.set_current_line_number(0);
+
+  xyze_pos_t target = { 0 };
+  motion.position = target;
+  planner.set_position_mm(target);
+  for (uint8_t i = 1; i <= 3; ++i) {
+    target.x = float(i);
+    planner.buffer_line(target, 5.0f);
+  }
+  const uint8_t planned = planner.movesplanned();
+  TEST_ASSERT_TRUE_MESSAGE(planned > 0, "the fixture planned no moves to leave alone");
+
+  host_transmits("M411");
+  TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M411 should not be taken for M410");
+
+  host_transmits("M100");
+  TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M100 should not be taken for M410");
+}
+
+#endif // __PLAT_TEST__
