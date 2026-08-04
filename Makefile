@@ -57,6 +57,7 @@ help:
 	@echo "make unit-test-integration     : Run the same tests against the LINUX HAL"
 	@echo "make unit-test-coverage        : Run one config's unit tests with gcov, report coverage"
 	@echo "make unit-test-mutation        : Mutation-test one source file (TARGET=path/to/file.cpp)"
+	@echo "make unit-test-asan            : Run one config's unit tests under AddressSanitizer"
 	@echo "make unit-test-all-local-docker : Run all code tests locally, using docker"
 	@echo "make setup-local-docker        : Setup local docker"
 	@echo ""
@@ -192,6 +193,15 @@ MUTATION_RESULTS ?= .pio/mutation/results.json
 #   make unit-test-mutation TARGET=... MUTATION_MUTANT_DIR=/mnt/big/marlin-mutants
 # A RERUN must name the same directory as the full run that produced its results file.
 MUTATION_MUTANT_DIR ?=
+
+# The suite under AddressSanitizer. Not part of the normal loop: it is slower, and a
+# sanitizer abort stops the run at the first fault rather than reporting all of them, so
+# it is a fix-and-repeat cycle rather than a measurement.
+ASAN_ENV ?= testhal_native_asan
+
+.PHONY: unit-test-asan
+unit-test-asan:
+	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e $(ASAN_ENV)
 
 unit-test-mutation:
 	@if ! test -n "$(TARGET)" ; then echo "***ERROR*** Set TARGET=<source-file>" ; exit 1 ; fi

@@ -244,7 +244,12 @@ MARLIN_TEST(gcode, parse_empty_line_resets_state) {
   TEST_ASSERT_EQUAL(118, parser.codenum);
   TEST_ASSERT_TRUE(parser.has_string());
 
-  char current_command[] = "";
+  // A sized buffer, not `char[] = ""`. `parse()` takes a non-const pointer and rewrites
+  // its input in place — it strips the checksum and terminates the line short — so a
+  // one-byte array is not a valid argument however empty the command is. Found by
+  // AddressSanitizer, which reported the read past the end long before it would ever
+  // have corrupted anything visible.
+  char current_command[MAX_CMD_SIZE] = "";
   parser.parse(current_command);
   TEST_ASSERT_EQUAL('?', parser.command_letter);
   TEST_ASSERT_EQUAL(0, parser.codenum);

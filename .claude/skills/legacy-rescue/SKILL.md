@@ -284,6 +284,22 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **Run the suite under a sanitizer once it is worth trusting.** Coverage says a line ran
+  and mutation says a test noticed; neither says the suite is reading memory it owns. A
+  fixture that outlives the registration pointing at it, or an undersized buffer handed to
+  something that writes in place, corrupts quietly — and surfaces later as an unrelated
+  test crashing, hanging, or passing for the wrong reason. Chasing that from the symptom is
+  expensive; a sanitizer names the write and the frame it came from.
+
+  Make it a separate build rather than a flag on the normal one. It is slower, and it stops
+  at the first fault instead of reporting all of them, so it is a fix-and-repeat cycle
+  rather than a measurement — a different activity from the one the regular suite serves.
+
+  Expect it to find faults in the **harness** before it finds any in the code under test:
+  test fixtures are written quickly, are exempt from review, and are exactly where lifetime
+  mistakes live. Expect it also to disagree with the ordinary build about a result or two,
+  because it changes the optimisation level; when it does, the assertion that moved was
+  pinning the compiler rather than the code, and is worth knowing about either way.
 - **A survivor that should obviously have died means the test is wrong, not the tool.**
   When a mutant contradicts an assertion you believe covers it and still survives, stop and
   apply that one mutation to the real source by hand, then run the suite. Either it fails —
