@@ -42,6 +42,7 @@
 #include "../support/simulated_machine.h"
 #include "../support/simulated_endstops.h"
 #include "../support/simulated_bed_surface.h"
+#include "../gcode/serial_capture.h"
 
 #include "src/feature/bedlevel/bedlevel.h"
 #include "src/gcode/gcode.h"
@@ -52,6 +53,8 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
+#include <string>
 
 namespace {
 
@@ -104,6 +107,19 @@ namespace {
     motion.position = here;
     planner.set_position_mm(here);
     motion.set_all_homed();
+  }
+
+  std::string reply_to(const char * const line) {
+    SerialCapture capture;
+    send(line);
+    return capture.finish();
+  }
+
+  // Pull one of the fitted plane's coefficients out of the "Eqn coefficients" report.
+  float coefficient(const std::string &reply, const char * const name) {
+    const size_t at = reply.find(name);
+    if (at == std::string::npos) return NAN;
+    return strtof(reply.c_str() + at + strlen(name), nullptr);
   }
 
   // What the machine will actually do to a requested Z at this point on the bed.
@@ -236,6 +252,148 @@ MARLIN_TEST(bed_leveling, M420_switches_the_correction_off_and_back_on) {
   TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-4f, with_levelling,
     correction_at(80.0f, 60.0f) - correction_at(40.0f, 60.0f),
     "switching levelling off and on should not change the plane it measured");
+}
+
+/**
+ * The plane the machine reports is the plane the bed has.
+ *
+ * `G29 V1` and above print the fit as an equation, and its coefficients are the slopes in X
+ * and Y — the same two numbers the fixture was built from. So this compares the firmware's
+ * own statement of what it measured against the surface that produced it, which is a
+ * stronger claim than the corrections agreeing: a fit could be self-consistently wrong and
+ * still correct moves consistently with itself.
+ *
+ * The tolerance is derived rather than chosen. Every probe reading is quantised to a whole
+ * step, so a slope recovered from readings across a span can be wrong by about one step over
+ * that span; anything tighter would be asserting a precision the machine does not have.
+ */
+MARLIN_TEST(bed_leveling, the_reported_plane_equation_matches_the_bed) {
+  SimulatedMachine machine;
+  LevellingSlate slate;
+
+  constexpr float TILT_X = 0.004f, TILT_Y = -0.002f;
+  XRail x(50.0f); YRail y(50.0f);
+  SimulatedBedSurface bed(x, y, SPM, 0.0f, TILT_X, TILT_Y, 5.0f);
+  standing_at(50.0f, 50.0f, 5.0f);
+
+  const std::string reply = reply_to("G29 V1");
+
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("Eqn coefficients") != std::string::npos,
+    "G29 V1 should report the plane it fitted");
+
+  // One step across the probed span, which is the grid's width.
+  const float span = float(X_BED_SIZE) - 2.0f * (PROBING_MARGIN);
+  const float slope_tolerance = (1.0f / SPM) / span * 4.0f;
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(slope_tolerance, TILT_X, coefficient(reply, "a: "),
+    "the fitted X slope should be the bed's X slope");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(slope_tolerance, TILT_Y, coefficient(reply, "b: "),
+    "the fitted Y slope should be the bed's Y slope");
+}
+
+/**
+ * A more talkative run measures the same bed.
+ *
+ * `V4` turns on the topography map and the extra reports on top of it. The output is not
+ * asserted line by line — it is a diagnostic aid, not an interface — but the plane it reports
+ * has to be the same one a quiet run finds, or the reporting is changing the measurement.
+ */
+MARLIN_TEST(bed_leveling, a_verbose_run_measures_what_a_quiet_one_does) {
+  SimulatedMachine machine;
+  LevellingSlate slate;
+
+  constexpr float TILT_X = 0.004f;
+  XRail x(50.0f); YRail y(50.0f);
+  SimulatedBedSurface bed(x, y, SPM, 0.0f, TILT_X, 0.0f, 5.0f);
+  standing_at(50.0f, 50.0f, 5.0f);
+
+  const std::string quiet = reply_to("G29 V1");
+  const float quiet_a = coefficient(quiet, "a: ");
+
+  LevellingSlate::tidy();
+  standing_at(50.0f, 50.0f, 5.0f);
+  const std::string loud = reply_to("G29 V4");
+
+  TEST_ASSERT_TRUE_MESSAGE(loud.find("Bed Height Topography") != std::string::npos,
+    "V4 should include the topography map");
+  TEST_ASSERT_TRUE_MESSAGE(loud.length() > quiet.length(),
+    "a more verbose run should say more");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, quiet_a, coefficient(loud, "a: "),
+    "how much the run says should not change what it measures");
+}
+
+/**
+ * A dry run measures the bed and changes nothing.
+ *
+ * `G29 D` exists so an operator can see what the bed looks like without committing to it —
+ * so it has to probe, report, and leave the machine exactly as it was. Asserting both halves
+ * is the point: a dry run that skipped probing would also leave the machine alone.
+ */
+MARLIN_TEST(bed_leveling, a_dry_run_reports_the_bed_without_changing_anything) {
+  SimulatedMachine machine;
+  LevellingSlate slate;
+
+  constexpr float TILT_X = 0.004f;
+  XRail x(50.0f); YRail y(50.0f);
+  SimulatedBedSurface bed(x, y, SPM, 0.0f, TILT_X, 0.0f, 5.0f);
+  standing_at(50.0f, 50.0f, 5.0f);
+
+  const std::string reply = reply_to("G29 D V1");
+
+  // It probed: the plane it reports is the bed's.
+  const float span = float(X_BED_SIZE) - 2.0f * (PROBING_MARGIN);
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE((1.0f / SPM) / span * 4.0f, TILT_X, coefficient(reply, "a: "),
+    "a dry run should still measure the bed");
+
+  // ...and it committed nothing.
+  TEST_ASSERT_FALSE_MESSAGE(planner.leveling_active, "a dry run should not switch levelling on");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 0.0f, correction_at(80.0f, 60.0f) - correction_at(40.0f, 60.0f),
+    "a dry run should leave moves uncorrected");
+}
+
+/**
+ * Every probed point lies on the plane the machine fitted.
+ *
+ * The corrected topography table prints, for each probe point, how far it sits from the
+ * fitted plane. The bed here *is* a plane, so every one of those residuals has to be zero —
+ * not approximately similar to each other, zero — and any of them being large means the fit
+ * missed a point that the corrections elsewhere would then be wrong about.
+ *
+ * It is the strongest statement available about the fit, and it costs nothing extra: the
+ * firmware already computes and prints exactly this. Reading a diagnostic table for a
+ * property rather than for its layout also keeps the test from pinning the formatting, which
+ * is not behaviour anybody depends on.
+ */
+MARLIN_TEST(bed_leveling, every_probed_point_lies_on_the_fitted_plane) {
+  SimulatedMachine machine;
+  LevellingSlate slate;
+
+  XRail x(50.0f); YRail y(50.0f);
+  SimulatedBedSurface bed(x, y, SPM, 0.0f, 0.004f, -0.002f, 5.0f);
+  standing_at(50.0f, 50.0f, 5.0f);
+
+  const std::string reply = reply_to("G29 V4");
+
+  const size_t at = reply.find("Corrected Bed Height vs. Bed Topology:");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "V4 should print the corrected topography");
+
+  // Every signed number in the table that follows, until the next titled section.
+  const size_t end = reply.find("\n\n", at + 40);
+  const std::string table = reply.substr(at, (end == std::string::npos ? reply.size() : end) - at);
+
+  // Two steps: each reading is quantised to one, and the residual is a difference of two.
+  const float tolerance = 2.0f / SPM;
+  uint8_t residuals = 0;
+  for (size_t i = 0; i < table.size(); ++i) {
+    if (table[i] != '+' && table[i] != '-') continue;
+    const float residual = strtof(table.c_str() + i, nullptr);
+    ++residuals;
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(tolerance, 0.0f, residual,
+      "a probed point sits off the plane the machine fitted to it");
+  }
+
+  TEST_ASSERT_EQUAL_MESSAGE(GRID_MAX_POINTS_X * GRID_MAX_POINTS_Y, residuals,
+    "the table should hold one residual per probe point");
 }
 
 #endif // __PLAT_TEST__ && HAS_LEVELING && ABL_PLANAR

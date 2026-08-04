@@ -284,6 +284,18 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **Read the diagnostic output the code already produces — for its properties, not its
+  layout.** Code that reports on itself often computes exactly the quantity a test needs and
+  then prints it: residuals, deviations, coefficients, counts. Those are the terms the
+  domain is stated in, and they are already there. Asserting a *property* of them — every
+  residual is zero, the reported coefficients equal the inputs the fixture was built from —
+  is a derived assertion that costs one test and reaches code no ordinary path does.
+
+  It matters that it is the property and not the format. Pinning the layout of a diagnostic
+  freezes something nobody depends on and breaks on every cosmetic change; pinning the
+  property survives reformatting and still fails when the numbers are wrong. Here one such
+  test raised a target from 37% to 54% on its own, because a whole reporting path had been
+  reachable but unasserted.
 - **When a virtual call arrives somewhere impossible, dump the dispatch table.** Symptoms
   that no ordinary bug explains — a call landing in another class's method, cleanup emitted
   but never run, an object that is provably intact behaving as though it were not — are
