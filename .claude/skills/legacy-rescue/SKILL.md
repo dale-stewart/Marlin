@@ -284,6 +284,27 @@ For each survivor, in descending order of risk:
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **Make the harness check its own invariants between tests, not just the code's.** Shared
+  state that a test registers and the framework dispatches through — callbacks, listeners,
+  handles, anything holding a pointer to a fixture — has to be given back when the fixture
+  goes. When it is not, the next dispatch runs against a dead object, and the damage lands
+  in whichever unrelated test happens to be running: it fails by corruption rather than by
+  assertion, so the failing test is never the one at fault.
+
+  A check that the registry ends each test as it began turns that into a named failure at
+  the test that caused it. Compare against the state before the first test rather than
+  against empty, so fixtures that legitimately install something for the whole run are not
+  reported. Restore what you found, so one fault is reported once instead of by every test
+  after it.
+
+  Run the check *outside* the test, and be careful how it reports. A framework whose failure
+  path is a non-local jump will jump to a stale target if you call its assertion macros
+  after the test has returned — which corrupts the run instead of reporting it. Collect the
+  findings and fail one synthetic test at the end.
+
+  It is also a diagnostic, not only a guard: a clean report at every boundary told me a
+  dangling pointer I was hunting could not have been left by an earlier test, which is half
+  the answer for the cost of running the suite once.
 - **Run the suite under a sanitizer once it is worth trusting.** Coverage says a line ran
   and mutation says a test noticed; neither says the suite is reading memory it owns. A
   fixture that outlives the registration pointing at it, or an undersized buffer handed to

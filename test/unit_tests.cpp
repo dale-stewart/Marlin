@@ -30,6 +30,8 @@
 #include "unit_tests.h"
 #include "src/module/temperature.h"
 #include "src/module/planner.h"
+#include <stdio.h>
+#include <string>
 
 /**
  * The registry, constructed on first use rather than at static-initialisation time.
@@ -82,8 +84,66 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
    */
 #endif // HAS_MEDIA
 
+#ifdef __PLAT_TEST__
+
+  #include "src/HAL/TEST/hardware/Gpio.h"
+
+  // What was attached before any test ran — the baseline a test is expected to restore.
+  static Peripheral *baseline_peripherals[Gpio::pin_count + 1] = { nullptr };
+
+  static void record_attached_peripherals() {
+    for (int i = 0; i <= Gpio::pin_count; ++i) baseline_peripherals[i] = Gpio::pin_map[i].cb;
+  }
+
+  /**
+   * Findings are collected rather than asserted on the spot.
+   *
+   * This runs after `UnityDefaultTestRun()` has returned, which is outside any test: Unity's
+   * failure macros `longjmp` to a buffer that is no longer current, so failing here would
+   * corrupt the run rather than report it. The leaks are recorded, the pin table is put
+   * back, and one synthetic test at the end of the suite reports the lot.
+   */
+  static std::string peripheral_leaks;
+
+  static void check_no_peripheral_was_left_attached(const std::string &test_name) {
+    for (int i = 0; i <= Gpio::pin_count; ++i) {
+      if (Gpio::pin_map[i].cb == baseline_peripherals[i]) continue;
+      const bool left_attached = Gpio::pin_map[i].cb != nullptr;
+      char line[160];
+      snprintf(line, sizeof(line), "\n  %s %s pin %d",
+        test_name.c_str(),
+        left_attached ? "left a peripheral attached to" : "detached the peripheral on",
+        i);
+      peripheral_leaks += line;
+      // Put it back, so one fault is reported once rather than by every test after it.
+      Gpio::pin_map[i].cb = baseline_peripherals[i];
+    }
+  }
+
+  /**
+   * A peripheral registered with `Gpio::attachPeripheral()` is almost always a local of the
+   * test that made it, so the registration has to be withdrawn when the object goes. When it
+   * is not, the pointer stays in the pin table and the next write to that pin — from an
+   * interrupt, in an unrelated test — calls a method on a returned stack frame. The damage
+   * lands wherever that memory was reused, so the test that fails is never the test at
+   * fault, and it fails by corruption rather than by assertion. Register #26 was this.
+   *
+   * Detaching one that was there before the run is the same fault seen from the other side:
+   * the peripheral is still alive but no longer being told about its pin.
+   */
+  MARLIN_TEST(harness, no_test_left_the_pin_table_disturbed) {
+    if (!peripheral_leaks.empty())
+      TEST_FAIL_MESSAGE(("peripherals were left registered to dead objects:" + peripheral_leaks).c_str());
+  }
+
+#else
+  static void record_attached_peripherals() {}
+  static void check_no_peripheral_was_left_attached(const std::string&) {}
+#endif
+
 // Install the stand-ins a test cannot opt out of, once, before the first test runs.
 static void prepare_simulated_peripherals() {
+  record_attached_peripherals();
   #if HAS_MEDIA
     card.changeMedia(&simulated_card());
     card.mount();
@@ -105,6 +165,8 @@ static void prepare_simulated_peripherals() {
  * in, which is the property that lets a mutation harness link the objects in whatever
  * order it finds them.
  */
+static std::string current_test_name;
+
 static void quiesce_simulated_peripherals() {
   #ifdef __PLAT_LINUX__
     HAL_timer_stop_all();
@@ -155,10 +217,28 @@ static void quiesce_simulated_peripherals() {
    * reason.
    */
   planner.clear_block_buffer();
+
+  /**
+   * Leave no peripheral pointing at a dead object.
+   *
+   * A simulated peripheral is registered with `Gpio::attachPeripheral()` and is almost
+   * always a local of the test that made it, so the registration has to be withdrawn when
+   * the object goes. When it is not, the pointer stays in the pin table and the *next*
+   * write to that pin — from an interrupt, in an unrelated test — calls a method on a
+   * returned stack frame. The damage lands wherever that memory has been reused, so the
+   * test that fails is never the test at fault, and it fails by corruption rather than by
+   * assertion. Register #26 was exactly this, and it cost a full diagnosis to find.
+   *
+   * Checking here turns it into a named failure at the test that caused it. The comparison
+   * is against what was attached before the run started rather than against nothing,
+   * because a fixture may legitimately install something for the whole process.
+   */
+  check_no_peripheral_was_left_attached(current_test_name);
 }
 
 void MarlinTest::run() {
   Unity.TestFile = file.c_str();
+  current_test_name = name;
   UnityDefaultTestRun((UnityTestFunction)test, name.c_str(), line);
   quiesce_simulated_peripherals();
 }
