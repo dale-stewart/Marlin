@@ -296,6 +296,17 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **A report is a grid, a list, or a table — assert its shape, not its spacing.** For code
+  whose output *is* a structure, the properties worth pinning are how many rows it has, how
+  many terms are in each, what those terms are, and whatever regularity makes it readable as a
+  structure at all — a sign on every term so columns align, a fixed field per record, one entry
+  per input. Those are what a reader depends on and what the printing loop can get wrong;
+  mutants that change a loop bound, read the wrong element, or drop a separator all fail such
+  assertions, while reformatting does not.
+
+  Reach for the degenerate input to test the regularity itself. Alignment rules usually only
+  bite on the value that would otherwise be printed short — a zero, an empty field, a missing
+  record — so the case that exercises them is the boring one nobody writes a test for.
 - **Assert the channel a message came out on, not only its words.** Diagnostic text is
   often produced in more than one place — an error report and a status line, a log record and
   a user-facing notice — and the same wording travels both. An assertion that searches for
