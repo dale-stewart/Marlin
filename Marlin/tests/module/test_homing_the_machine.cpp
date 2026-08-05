@@ -44,6 +44,7 @@
 #include "src/module/motion.h"
 #include "src/module/planner.h"
 #include "src/module/probe.h"
+#include "src/module/endstops.h"
 #include "src/feature/bedlevel/bedlevel.h"
 #include "src/libs/vector_3.h"
 
@@ -471,5 +472,116 @@ MARLIN_TEST(homing_machine, G28_leaves_levelling_off_if_it_was_off) {
 }
 
 #endif // HAS_LEVELING
+
+
+/**
+ * Homing Z with a probe reports where the *nozzle* is, not where the probe triggered.
+ *
+ * The switch closes when the probe touches the bed, and the probe hangs below the nozzle — so
+ * the nozzle is still that far up. Every move afterwards is commanded in nozzle coordinates,
+ * so the offset has to be taken out at the moment the origin is set, or the first layer is
+ * printed the probe's offset too high for the rest of the machine's life.
+ *
+ * The assertion is the difference between two runs over the same bed, so it is the correction
+ * that is checked rather than the height it was applied to.
+ */
+MARLIN_TEST(homing_machine, homing_Z_with_a_probe_reports_the_nozzle_height) {
+  constexpr float OFFSET_Z = -2.0f;
+  float level = 0.0f, hanging_low = 0.0f;
+
+  {
+    UnhomedMachine m;
+    const float was = probe.offset.z;
+    probe.offset.z = 0.0f;
+    host_sends("G28");
+    level = motion.position.z;
+    probe.offset.z = was;
+  }
+  {
+    UnhomedMachine m;
+    const float was = probe.offset.z;
+    probe.offset.z = OFFSET_Z;
+    host_sends("G28");
+    hanging_low = motion.position.z;
+    probe.offset.z = was;
+  }
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, -OFFSET_Z, hanging_low - level,
+    "a probe two millimetres below the nozzle should leave the nozzle reported two higher");
+}
+
+/**
+ * The probe is put away when homing finishes.
+ *
+ * Leaving it deployed leaves the Z endstop watching the probe, so the next ordinary move
+ * downwards would stop on it. Homing is the one sequence that deploys the probe without the
+ * caller asking, so it is the one that has to put it back.
+ */
+MARLIN_TEST(homing_machine, homing_puts_the_probe_away_afterwards) {
+  UnhomedMachine m;
+
+  host_sends("G28");
+
+  TEST_ASSERT_FALSE_MESSAGE(endstops.z_probe_enabled,
+    "the probe should be stowed once homing is over");
+}
+
+/**
+ * Between the two touches, Z retreats by the probe's clearance rather than the axis's bump.
+ *
+ * `HOMING_BUMP_MM` is how far a limit switch needs backing off to be approached again. A probe
+ * needs more than that: it has to be clear of the bed, because what happens between the two
+ * touches is a move across a surface it is nearly touching. So the retreat is the larger of
+ * the two distances, which for this machine is the probe clearance.
+ *
+ * The nozzle starts just above the bed so that the retreat is the highest point of the whole
+ * sequence, and `R0` suppresses the pre-homing raise that would otherwise be higher still.
+ */
+MARLIN_TEST(homing_machine, Z_retreats_by_the_probe_clearance_between_its_two_touches) {
+  UnhomedMachine m;
+
+  host_sends("G28 X Y");
+
+  // Deploy first. Homing Z deploys the probe itself, and deploying raises to the deploy
+  // clearance — which is higher than the retreat and would be all this measured. Asking for
+  // it in advance makes the deploy inside the sequence a no-op.
+  probe.deploy();
+
+  // Down near the bed, machine and fixture agreeing.
+  constexpr float START_Z = 1.0f;
+  m.bed.place_nozzle_at(START_Z);
+  xyze_pos_t here = motion.position; here.z = START_Z;
+  motion.position = here;
+  planner.set_position_mm(here);
+  m.bed.forget_highest();
+
+  host_sends("G28 Z R0");
+
+  constexpr xyz_float_t bump = HOMING_BUMP_MM;
+  const float retreated_to = m.bed.highest_mm();
+
+  TEST_ASSERT_TRUE_MESSAGE((Z_CLEARANCE_BETWEEN_PROBES) > bump.z,
+    "this test distinguishes two distances, so they must differ");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.3f, m.bed.height_at(0.0f, 0.0f) + (Z_CLEARANCE_BETWEEN_PROBES),
+    retreated_to,
+    "Z should retreat by the probe clearance, not by the axis homing bump");
+}
+
+/**
+ * Homing leaves no endstop hit outstanding.
+ *
+ * An endstop closing is normally an event worth telling the host about — it means a move was
+ * stopped by something. During homing it is the entire point, so each homing move clears the
+ * record as it goes. Left set, the next thing to look would report a switch that was hit on
+ * purpose several moves ago.
+ */
+MARLIN_TEST(homing_machine, homing_leaves_no_endstop_hit_outstanding) {
+  UnhomedMachine m;
+
+  host_sends("G28");
+
+  TEST_ASSERT_EQUAL_MESSAGE(0, endstops.trigger_state(),
+    "homing touches every switch on purpose and should leave none of them recorded as a hit");
+}
 
 #endif // __PLAT_TEST__ && HAS_BED_PROBE && Z_SAFE_HOMING

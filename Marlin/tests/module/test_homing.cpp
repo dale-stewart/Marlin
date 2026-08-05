@@ -285,6 +285,32 @@ MARLIN_TEST(homing, G28_bumps_the_switch_twice_with_a_backoff_between) {
 }
 
 /**
+ * Homing finds the switch from the far end of the axis.
+ *
+ * The seek move is a distance, not a target — the machine does not know where it is, so it
+ * drives far enough that the switch must be met whatever the truth was. "Far enough" has to
+ * be the whole axis and then some, or a carriage parked at the opposite end stops short and
+ * homing reports a failure on a machine that is working perfectly.
+ *
+ * Starting at the maximum is what makes this a test of the seek distance rather than of
+ * homing generally: every other test here starts partway along, where a much shorter seek
+ * would do.
+ */
+MARLIN_TEST(homing, homing_reaches_the_switch_from_the_far_end_of_the_axis) {
+  SimulatedMachine machine;
+  XRail x(0.0f, X_MAX_POS);
+  machine_is_at_x(X_MAX_POS);
+  motion.set_axis_never_homed(X_AXIS);
+
+  host_sends("G28 X");
+
+  TEST_ASSERT_FALSE_MESSAGE(motion.axis_should_home(X_AXIS),
+    "homing from the far end of the axis should still find the switch");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(X_MIN_POS, motion.position.x,
+    "and should re-reference the origin to it exactly as from anywhere else");
+}
+
+/**
  * Homing is idempotent: doing it again lands in the same place.
  *
  * The carriage is driven away from the switch in between, which is what a machine with

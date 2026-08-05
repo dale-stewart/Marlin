@@ -296,6 +296,16 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **Equivalence is often a property of the configuration, not of the code.** A comparison whose
+  operands can only take two values, a guard on a constant no build actually uses, a branch in
+  an arm the current options compile out — all produce mutants that no test can kill *here*,
+  while being perfectly killable in another configuration. That is a legitimate stopping point,
+  but it is a claim about this build and should be recorded as one.
+
+  Say which configuration made them equivalent. "All twelve comparison mutants collapse because
+  every axis homes to its minimum" is a fact a reader can act on: it names the variant that
+  would distinguish them, and it stops the next person re-deriving it. "Equivalent" alone does
+  not.
 - **A fixture must state every setting the behaviour under test depends on, not only the one
   it is varying.** Configuration that outlives the command that changed it — a scale factor, an
   override switch, a mode — is an *input* to the code being tested, and a test that does not
