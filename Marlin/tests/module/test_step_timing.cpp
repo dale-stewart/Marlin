@@ -183,6 +183,66 @@ namespace {
     set_acceleration(accel);
   }
 
+  /**
+   * A train of short collinear moves, all buffered before any of them runs.
+   *
+   * This is the shape of dense G-code — a curve rendered as many tiny segments — and it is
+   * the only way to reach the planner's buffer-depth arithmetic. Buffering is what sets the
+   * state that arithmetic reads: each move is planned while the ones before it are still
+   * waiting, so the queue depth it sees is its own position in the train.
+   *
+   * Collinear and in one direction so the planner carries speed straight through, which is
+   * what lets each block actually reach its own nominal rate instead of being limited by the
+   * ramp into it. A single short move cannot do this: it starts and ends at rest, so
+   * acceleration decides its duration and the nominal rate is never reached.
+   */
+  void buffer_train(const size_t moves, const float mm, const float feedrate) {
+    xyze_pos_t at = { 0 };
+    planner.set_position_mm(at);
+    for (size_t i = 1; i <= moves; i++) {
+      at.x = float(i) * mm;
+      TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, feedrate), "the train did not fit in the buffer");
+    }
+  }
+
+  // How long the nth move of such a train took, in microseconds, from a timeline of the
+  // whole run. Moves are equal length, so each occupies a known run of steps.
+  float move_us(const StepTimeline &line, const size_t n, const size_t steps_per_move) {
+    const size_t from = (n - 1) * steps_per_move, to = n * steps_per_move;
+    TEST_ASSERT_TRUE_MESSAGE(to < line.steps(), "the timeline is shorter than the move asked about");
+    return float(line.at[to] - line.at[from]) / 1000.0f;
+  }
+
+  /**
+   * A circle rendered as chords, buffered whole.
+   *
+   * A slicer emits curves this way, and it is the case the planner's small-segment junction
+   * handling exists for: each corner is a small direction change between two short moves, and
+   * taken naively the junction-deviation formula allows an absurd speed through it because
+   * the turn is so slight.
+   *
+   * The chord length and the turn angle both follow from the radius and the segment count, so
+   * a test can state the arc the machine is being asked to follow rather than a list of
+   * points.
+   */
+  void buffer_circle(const float radius, const size_t segments, const float feedrate) {
+    xyze_pos_t at = { 0 };
+    at.x = radius;
+    planner.set_position_mm(at);
+    for (size_t i = 1; i <= segments; i++) {
+      const float a = 2.0f * float(M_PI) * float(i) / float(segments);
+      at.x = radius * cosf(a);
+      at.y = radius * sinf(a);
+      TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, feedrate), "the circle did not fit in the buffer");
+    }
+  }
+
+  struct SavedMinSegmentTime {
+    uint32_t was;
+    SavedMinSegmentTime() : was(planner.settings.min_segment_time_us) {}
+    ~SavedMinSegmentTime() { planner.settings.min_segment_time_us = was; }
+  };
+
   // Ratio of two durations, largest first, for assertions written as "x times longer".
   float ratio(const uint64_t a, const uint64_t b) { return float(a) / float(b); }
 
@@ -801,3 +861,170 @@ MARLIN_TEST(step_timing, every_rung_of_the_ladder_waits_for_the_steps_it_deliver
 }
 
 #endif // __PLAT_TEST__
+
+//
+// ---- Slowing down for a draining buffer ----
+//
+
+/**
+ * When the buffer is nearly empty the planner stretches short moves to refill it.
+ *
+ * A machine fed segments faster than it can plan them empties its buffer and then stutters,
+ * because each stop-start is a full ramp. `SLOWDOWN` prevents that by slowing the moves down:
+ * a segment that would take less than `min_segment_time_us` is stretched, and stretched more
+ * the emptier the buffer is.
+ *
+ * The arithmetic has an exact case. With two moves queued the formula
+ * `segment + 2 * (minimum - segment) / queued` reduces to the minimum itself, so the third
+ * move of a freshly buffered train should take exactly `min_segment_time_us` — a prediction
+ * from the configuration, not a number read off a run.
+ *
+ * Nothing in the suite reached this before. A single short fast move never gets there: it
+ * starts and ends at rest, so acceleration decides its duration and the nominal rate the
+ * stretch modifies is never reached. It takes a train.
+ */
+MARLIN_TEST(step_timing, a_draining_buffer_stretches_a_short_move_to_the_minimum) {
+  SimulatedMachine machine;
+  SavedMinSegmentTime restore;
+  set_acceleration(3000.0f);
+
+  constexpr float MM = 0.5f, FEEDRATE = 300.0f;
+  const size_t steps_per_move = size_t(MM * SimulatedMachine::STEPS_PER_MM);
+  const float natural_us = 1.0e6f * MM / FEEDRATE;
+
+  planner.settings.min_segment_time_us = 20000;
+  TEST_ASSERT_TRUE_MESSAGE(natural_us < float(planner.settings.min_segment_time_us),
+    "these moves must be quicker than the minimum, or there is nothing to stretch");
+
+  StepTimeline line;
+  buffer_train(6, MM, FEEDRATE);
+  TEST_ASSERT_TRUE_MESSAGE(SimulatedMachine::run_until_idle(), "the train never finished");
+
+  // The third move is the one planned with exactly two ahead of it.
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(float(planner.settings.min_segment_time_us) * 0.15f,
+    float(planner.settings.min_segment_time_us), move_us(line, 3, steps_per_move),
+    "with two moves queued the stretch should reach exactly the minimum segment time");
+}
+
+/**
+ * The stretch shrinks as the buffer refills.
+ *
+ * The correction is `2 * (minimum - segment) / queued`, so it is halved when twice as much
+ * work is waiting — the planner intervenes hardest when the machine is closest to running
+ * dry and backs off as it recovers. Asserting one stretched move says only that some
+ * slowdown happened; asserting that later moves are stretched *less* says it is a response
+ * to the buffer depth.
+ */
+MARLIN_TEST(step_timing, the_stretch_eases_off_as_the_buffer_refills) {
+  SimulatedMachine machine;
+  SavedMinSegmentTime restore;
+  set_acceleration(3000.0f);
+
+  constexpr float MM = 0.5f, FEEDRATE = 300.0f;
+  const size_t steps_per_move = size_t(MM * SimulatedMachine::STEPS_PER_MM);
+  planner.settings.min_segment_time_us = 20000;
+
+  StepTimeline line;
+  buffer_train(7, MM, FEEDRATE);
+  TEST_ASSERT_TRUE_MESSAGE(SimulatedMachine::run_until_idle(), "the train never finished");
+
+  const float third = move_us(line, 3, steps_per_move),
+              fourth = move_us(line, 4, steps_per_move),
+              fifth = move_us(line, 5, steps_per_move);
+
+  TEST_ASSERT_TRUE_MESSAGE(third > fourth,
+    "the move planned with two ahead of it should be stretched more than the one with three");
+  TEST_ASSERT_TRUE_MESSAGE(fourth > fifth,
+    "and that one more than the next");
+}
+
+/**
+ * With no minimum set, nothing is stretched.
+ *
+ * The control for both tests above: the same train, the same buffer depths, and the only
+ * difference is the setting under test. `M205 B0` is how an operator turns this off, and a
+ * machine that slowed down anyway would be ignoring them.
+ */
+MARLIN_TEST(step_timing, no_minimum_segment_time_means_no_slowdown) {
+  SimulatedMachine machine;
+  SavedMinSegmentTime restore;
+  set_acceleration(3000.0f);
+
+  constexpr float MM = 0.5f, FEEDRATE = 300.0f;
+  const size_t steps_per_move = size_t(MM * SimulatedMachine::STEPS_PER_MM);
+
+  float stretched, unstretched;
+  {
+    planner.settings.min_segment_time_us = 20000;
+    StepTimeline line;
+    buffer_train(6, MM, FEEDRATE);
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+    stretched = move_us(line, 3, steps_per_move);
+  }
+  {
+    planner.settings.min_segment_time_us = 0;
+    StepTimeline line;
+    buffer_train(6, MM, FEEDRATE);
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+    unstretched = move_us(line, 3, steps_per_move);
+  }
+
+  TEST_ASSERT_TRUE_MESSAGE(stretched > unstretched * 2.0f,
+    "asking for no minimum segment time should leave the move far quicker than the stretched one");
+}
+
+//
+// ---- Cornering on a curve made of short segments ----
+//
+
+/**
+ * A curve made of short segments is cornered, not taken at the commanded feedrate.
+ *
+ * A slicer emits curves as chords, and each corner is a small direction change between two
+ * short moves. The planner limits the speed through them — otherwise a small circle would be
+ * attempted at whatever feedrate the file asked for and the machine would shake itself apart.
+ *
+ * What this does **not** test is the small-segment arc cap at `planner.cpp:2594`, which was
+ * the intention. That cap is reachable and it is masked: junction deviation depends only on
+ * the corner *angle*, and in this configuration its limit is the lower of the two for every
+ * radius the machine can actually get round. Compiling the branch out changes nothing
+ * measurable here — checked by hand, which is the only reason this comment is not claiming
+ * otherwise. See docs/defect-register.md #29.
+ */
+MARLIN_TEST(step_timing, a_small_circle_is_taken_at_the_speed_its_radius_allows) {
+  SimulatedMachine machine;
+  constexpr float ACCEL = 3000.0f;
+  set_acceleration(ACCEL);
+
+  // Fifteen chords is a 24° turn at each corner: well inside the 45° the small-segment
+  // handling applies to, and short enough at these radii to stay under a millimetre.
+  constexpr size_t SEGMENTS = 15;
+  constexpr float SMALL_R = 0.55f, LARGE_R = 4.0f * SMALL_R, FEEDRATE = 300.0f;
+
+  const float chord = 2.0f * LARGE_R * sinf(float(M_PI) / float(SEGMENTS));
+  TEST_ASSERT_TRUE_MESSAGE(chord < 1.0f,
+    "both circles must be made of segments under a millimetre to reach this path");
+
+  float slow, fast;
+  { StepTimeline line; buffer_circle(SMALL_R, SEGMENTS, FEEDRATE);
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+    slow = line.peak_mm_s(); }
+  { StepTimeline line; buffer_circle(LARGE_R, SEGMENTS, FEEDRATE);
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+    fast = line.peak_mm_s(); }
+
+  // Both must be limited by the corners rather than by the commanded feedrate, or this
+  // measures the feedrate twice.
+  TEST_ASSERT_TRUE_MESSAGE(fast < FEEDRATE * 0.8f,
+    "the corner limit should be what holds these circles back, not the feedrate");
+
+  // Neither is taken faster than an arc of its own radius would allow. That bound holds
+  // whichever of the two limits is binding, so it says the machine is cornering rather than
+  // which formula decided the number.
+  TEST_ASSERT_TRUE_MESSAGE(slow < sqrtf(ACCEL * SMALL_R) * 1.3f,
+    "the small circle should be held near the speed its own radius allows");
+  TEST_ASSERT_TRUE_MESSAGE(fast < sqrtf(ACCEL * LARGE_R) * 1.3f,
+    "and the large one near the speed its radius allows");
+  TEST_ASSERT_TRUE_MESSAGE(slow > 1.0f && fast > 1.0f,
+    "and neither should have stopped dead at every corner");
+}

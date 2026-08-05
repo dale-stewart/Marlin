@@ -296,6 +296,17 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **A value can be computed, correct, and then discarded.** Where two limits are combined by
+  taking the smaller — a clamp, a `min`, a cap applied on top of another — the losing one has
+  no effect at all. Its line is covered, its arithmetic runs, and every mutation of it survives
+  because nothing downstream can tell. This is not "unasserted": no assertion can reach it
+  while the other limit is lower.
+
+  Test for it directly. Compile the branch out, or force its result to something absurd, and
+  re-run the test you wrote for it. If the test still passes, it was never testing that code —
+  and the finding is that the value is masked, which is worth recording with the condition that
+  would unmask it. A test whose subject is a branch it does not depend on is worse than no test,
+  because it reads as coverage of exactly the thing nobody has checked.
 - **Some inputs cannot be supplied one at a time.** A survivor that needs the code to be in a
   particular *régime* — a buffer partly drained, a cache warm, a rate high enough to saturate
   something — is not reached by making one call with extreme arguments. Extreme arguments often
