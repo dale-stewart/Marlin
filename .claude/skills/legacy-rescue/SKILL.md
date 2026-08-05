@@ -296,6 +296,17 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **An assertion written to be independent of a convention is also blind to that convention
+  being wrong.** Comparing a case with itself — this input against its opposite, this run
+  against the same run with one setting changed — is the right way to avoid encoding a
+  configuration constant in a test. It also cannot see the whole thing being inverted,
+  reversed, or offset consistently, because both sides move together.
+
+  So pair every such comparison with one absolute claim, made against whatever independently
+  models the real world — a fixture, a physical quantity, a signed position. "Opposite inputs
+  give opposite outputs" and "a positive input gives a positive output" are different
+  statements, and mutation testing distinguishes them immediately: the sign-flip mutant
+  survives the first and dies to the second.
 - **A value can be computed, correct, and then discarded.** Where two limits are combined by
   taking the smaller — a clamp, a `min`, a cap applied on top of another — the losing one has
   no effect at all. Its line is covered, its arithmetic runs, and every mutation of it survives
