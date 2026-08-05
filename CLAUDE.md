@@ -77,6 +77,24 @@ test once asserted that the `M105` reply contained the formatted value of
 would have passed with the sensor pipeline delivering any value at all. Assert against
 `SimulatedSensors::hotend_would_read()`, which predicts independently of the pipeline.
 
+**"Assert the channel a message came out on."** A failed probe writes `Error:Probing Failed`
+via `SERIAL_ERROR_MSG`, and `LCD_MESSAGE(MSG_LCD_PROBING_FAILED)` puts the identical words on
+the status line, which this build echoes to the host. A test searching for `"Probing Failed"`
+passed with `probe.cpp:1100` deleted; `"Error:" STR_ERR_PROBING_FAILED` does not. The mutation
+run is what said so.
+
+**"When the only thing a branch changes is speed, time is the assertion."** `probe.cpp:833`
+drops the nozzle at `Z_PROBE_FEEDRATE_FAST` before probing whenever it starts above
+`Z_CLEARANCE_DEPLOY_PROBE + 5`. The measurement is identical either way, so 13 mutants of that
+threshold survived every assertion on the reading. Probing from a millimetre either side of it
+and subtracting locates it: `a_probe_from_high_up_covers_the_first_part_quickly` in
+`test_probe.cpp`. Under the test HAL a blocking move costs about 0.1 s of fixed overhead on top
+of its travel, which is why that test asserts bounds and not `1/fast + 1/slow`.
+
+**"A magnitude needs bracketing from both sides."** An untrusted Z gets exactly 10 mm more
+depth (`probe.cpp:812`). A test showing only that it reached further left `*1`, `*9`, `*11` and
+`%10` alive; probing with the limit 9.5 mm and 10.5 mm above the bed killed all four.
+
 **"Pin the build configuration."** Here that is `restore_configs`; see the gotchas below.
 
 **Delegating to subagents in this repo.** `.claude/agents/hal-debugger.md` and

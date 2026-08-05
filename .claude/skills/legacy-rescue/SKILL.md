@@ -296,6 +296,37 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **Assert the channel a message came out on, not only its words.** Diagnostic text is
+  often produced in more than one place — an error report and a status line, a log record and
+  a user-facing notice — and the same wording travels both. An assertion that searches for
+  the words alone then passes with the report it was written for **deleted**, because the
+  other producer still supplies the string. Mutation testing finds this immediately: the
+  mutant that removes the report survives a test that was written to pin it.
+
+  Assert on the severity marker, prefix, or stream that identifies the producer. That is the
+  part the caller actually depends on, and it is what makes the test falsifiable.
+- **When the only thing a branch changes is speed, time is the assertion.** Optimisations —
+  a fast path taken above a threshold, a cache, a shortcut for a common case — are written so
+  that the result does not change. Every assertion on the result therefore passes with the
+  branch removed, inverted, or its threshold moved anywhere at all, and the whole cluster
+  survives. What the branch was for is the cost, so the cost is what has to be asserted.
+
+  Measure a **difference between two inputs either side of the threshold**, not one absolute
+  duration. Everything the two runs share — setup, teardown, the work below the threshold —
+  cancels in the subtraction, so nothing has to be modelled except the gap between them. A
+  threshold shows up as a kink: above it the extra work is cheap, below it expensive, and two
+  inputs straddling it differ by one unit of each. That difference *locates* the threshold
+  rather than merely noticing one exists, which is what kills mutants that shift it.
+
+  State it as **bounds rather than an equality**. There is usually a fixed per-operation
+  overhead you have not modelled and should not have to: assert the difference falls strictly
+  between the two pure cases (all-cheap and all-expensive), which is true only if the
+  threshold lies between the inputs, and needs no constant at all.
+- **A magnitude needs bracketing from both sides.** "Further than before", "faster than
+  before", "more than the default" pins no number — every mutant that changes the size of an
+  allowance, a retry count, or a margin still satisfies it. Find the input that just succeeds
+  and the input that just fails, and assert both. One test, two calls, and the quantity is
+  specified instead of merely present.
 - **When a virtual call arrives somewhere impossible, dump the dispatch table.** Symptoms
   that no ordinary bug explains — a call landing in another class's method, cleanup emitted
   but never run, an object that is provably intact behaving as though it were not — are

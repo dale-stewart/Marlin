@@ -102,7 +102,7 @@ MARLIN_TEST(simulated_temperature, a_driven_adc_count_becomes_a_reading) {
 
   const uint16_t code = 600;
   SimulatedHardware::drive_adc(TEMP_0_PIN, code);
-  time_passes_ms(300);
+  the_sensors_catch_up();
 
   TEST_ASSERT_EQUAL(code * OVERSAMPLENR, thermalManager.rawHotendTemp(0));
   TEST_ASSERT_EQUAL_FLOAT(hotend_conversion_of(code), thermalManager.degHotend(0));
@@ -115,11 +115,11 @@ MARLIN_TEST(simulated_temperature, a_lower_count_reads_hotter) {
   SimulatedSensors sensors;
 
   SimulatedHardware::drive_adc(TEMP_0_PIN, 700);
-  time_passes_ms(300);
+  the_sensors_catch_up();
   const celsius_float_t cooler = thermalManager.degHotend(0);
 
   SimulatedHardware::drive_adc(TEMP_0_PIN, 400);
-  time_passes_ms(300);
+  the_sensors_catch_up();
   const celsius_float_t hotter = thermalManager.degHotend(0);
 
   TEST_ASSERT_TRUE(hotter > cooler);
@@ -137,14 +137,14 @@ MARLIN_TEST(simulated_temperature, a_new_count_is_not_read_until_time_advances) 
   SimulatedSensors sensors;
 
   SimulatedHardware::drive_adc(TEMP_0_PIN, 500);
-  time_passes_ms(300);
+  the_sensors_catch_up();
   const celsius_float_t before = thermalManager.degHotend(0);
 
   SimulatedHardware::drive_adc(TEMP_0_PIN, 900);
   thermalManager.task();                                   // no time has passed
   TEST_ASSERT_EQUAL_FLOAT(before, thermalManager.degHotend(0));
 
-  time_passes_ms(300);
+  the_sensors_catch_up();
   TEST_ASSERT_TRUE(thermalManager.degHotend(0) < before);
 }
 
