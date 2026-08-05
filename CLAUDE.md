@@ -95,6 +95,12 @@ of its travel, which is why that test asserts bounds and not `1/fast + 1/slow`.
 depth (`probe.cpp:812`). A test showing only that it reached further left `*1`, `*9`, `*11` and
 `%10` alive; probing with the limit 9.5 mm and 10.5 mm above the bed killed all four.
 
+**"A cluster that should have died and did not may mean the test is not there."** Editing
+`test_homing_the_machine.cpp` by replacing a span between two markers silently deleted
+`Z_is_homed_over_the_middle_of_the_bed`, which sat between them. The suite still passed with
+one fewer test, and the only thing that noticed was `G28.cpp:168` — the probe XY offset at the
+safe homing point — still showing four survivors after the test that killed them was written.
+
 **"Pin the build configuration."** Here that is `restore_configs`; see the gotchas below.
 
 **Delegating to subagents in this repo.** `.claude/agents/hal-debugger.md` and

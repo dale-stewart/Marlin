@@ -71,7 +71,8 @@ public:
                const float start_z_mm)
     : x_axis(x), y_axis(y), spm(steps_per_mm),
       height_at_origin(height_at_origin), tilt_x(tilt_x), tilt_y(tilt_y),
-      carriage_steps(int32_t(start_z_mm * steps_per_mm)) {
+      carriage_steps(int32_t(start_z_mm * steps_per_mm)),
+      highest_steps(int32_t(start_z_mm * steps_per_mm)) {
     Gpio::attachPeripheral(Z_STEP_PIN, this);
     settle();
   }
@@ -88,6 +89,7 @@ public:
     if (ev.pin_id != Z_STEP_PIN || ev.event != GpioEvent::RISE) return;
     const bool dir_high = Gpio::get(Z_DIR_PIN) != 0;
     carriage_steps += (dir_high != ENABLED(INVERT_Z_DIR)) ? +1 : -1;
+    if (carriage_steps > highest_steps) highest_steps = carriage_steps;
     settle();
   }
 
@@ -100,6 +102,15 @@ public:
   float height_here() const { return height_at(x_mm(), y_mm()); }
 
   float nozzle_mm() const { return float(carriage_steps) / spm; }
+
+  // The highest the nozzle has been since the fixture was made. A raise that happens partway
+  // through a sequence is over by the time the sequence ends, so the end position cannot see
+  // it; this can.
+  float highest_mm() const { return float(highest_steps) / spm; }
+
+  // Start watching again from where the nozzle is now, for a test interested in one phase of
+  // a sequence rather than the whole of it.
+  void forget_highest() { highest_steps = carriage_steps; }
   bool touching() const { return nozzle_mm() <= height_here(); }
 
   // Put the nozzle somewhere without stepping there. Rounded, not truncated: truncation
@@ -108,6 +119,7 @@ public:
   // boundary tests.
   void place_nozzle_at(const float z_mm) {
     carriage_steps = int32_t(lroundf(z_mm * spm));
+    highest_steps = carriage_steps;
     settle();
   }
 
@@ -127,7 +139,7 @@ private:
 
   const SimulatedAxisWithLimit &x_axis, &y_axis;
   const float spm, height_at_origin, tilt_x, tilt_y;
-  int32_t carriage_steps;
+  int32_t carriage_steps, highest_steps;
 };
 
 #endif // __PLAT_TEST__

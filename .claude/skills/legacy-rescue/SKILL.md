@@ -296,6 +296,16 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **A cluster that should have died and did not may mean the test is not there.** The obvious
+  reading of an unmoved survivor count is that the new test is too weak. Check the cheaper
+  explanation first: that the test is not running. Tests go missing silently — excluded by a
+  build guard whose condition is false in this configuration, dropped by an edit that replaced
+  a span of a file, filtered out by a name pattern, or never linked at all. None of those
+  report anything; the suite just gets smaller and still passes.
+
+  So confirm the test exists and ran before rewriting it, and hand-apply one survivor to see
+  the test fail. Used this way the mutation run is a check on the suite's *integrity* as well
+  as its strength — it is the only thing that notices a test that quietly stopped existing.
 - **A report is a grid, a list, or a table — assert its shape, not its spacing.** For code
   whose output *is* a structure, the properties worth pinning are how many rows it has, how
   many terms are in each, what those terms are, and whatever regularity makes it readable as a
