@@ -106,6 +106,31 @@ namespace {
       return mm_s(shortest_gap(), steps_per_mm);
     }
 
+    // Where the cruise plateau starts and ends: the first and last gaps within `factor` of
+    // the fastest. A trapezoid has a run of near-identical gaps in the middle, and
+    // `index_of_shortest_gap()` picks an arbitrary one of them — which is fine for a
+    // triangular move and useless for measuring the two ramps of a trapezoidal one.
+    size_t index_of_first_near_fastest(const float factor) const {
+      const float limit = float(shortest_gap()) * factor;
+      for (size_t i = 0; i < gaps(); i++) if (float(gap(i)) <= limit) return i;
+      return 0;
+    }
+
+    size_t index_of_last_near_fastest(const float factor) const {
+      const float limit = float(shortest_gap()) * factor;
+      size_t last = 0;
+      for (size_t i = 0; i < gaps(); i++) if (float(gap(i)) <= limit) last = i;
+      return last;
+    }
+
+    // Time spent getting up to the plateau, and time spent coming off it.
+    uint64_t time_up_to_the_plateau(const float factor) const {
+      return at[index_of_first_near_fastest(factor)] - at.front();
+    }
+    uint64_t time_down_from_the_plateau(const float factor) const {
+      return at.back() - at[index_of_last_near_fastest(factor) + 1];
+    }
+
     // How many gaps are within `factor` of the fastest — the cruise plateau, if there is
     // one, plus the shoulders either side of it.
     size_t gaps_near_the_fastest(const float factor) const {
@@ -416,6 +441,68 @@ MARLIN_TEST(step_timing, the_cruise_interval_does_not_drift) {
  * at 80 steps/mm, so there is no observable acceleration phase at all. Every gap but the
  * last — which absorbs the end of the block — is identical.
  */
+/**
+ * A move that cruises comes off the plateau as it went on.
+ *
+ * The two ramps of a trapezoid are the same ramp: same acceleration, same speed range, so
+ * the same duration. `acceleration_and_deceleration_take_the_same_time` says this of a
+ * *triangular* move, where the peak is a single point. A cruising move takes a different
+ * path through the interrupt — deceleration is set up during the cruise phase rather than
+ * carried straight over from acceleration, and its timer is seeded there — so the symmetry
+ * has to be asserted again on this side of that branch.
+ *
+ * The plateau is found by its gaps rather than by its single fastest one, because a
+ * trapezoid has a run of near-identical gaps and any of them could be the shortest.
+ */
+MARLIN_TEST(step_timing, a_cruising_move_comes_off_the_plateau_as_it_went_on) {
+  SimulatedMachine machine;
+  set_acceleration(3000.0f);
+
+  StepTimeline line;
+  move_x(line, 10.0f, 50.0f);
+
+  // Within 2% of the fastest gap is the plateau: the ramps either side of it change speed
+  // far faster than that between one step and the next.
+  constexpr float PLATEAU = 1.02f;
+  TEST_ASSERT_TRUE_MESSAGE(line.gaps_near_the_fastest(PLATEAU) > line.gaps() / 2,
+    "this move is meant to spend most of its length cruising");
+
+  const uint64_t up = line.time_up_to_the_plateau(PLATEAU),
+                 down = line.time_down_from_the_plateau(PLATEAU);
+
+  TEST_ASSERT_TRUE_MESSAGE(up > 0 && down > 0, "both ramps should take a measurable time");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.15f, 1.0f, ratio(up, down),
+    "the two ramps of a trapezoid are the same ramp and should take the same time");
+}
+
+/**
+ * A cruising move takes as long as its trapezoid says it should.
+ *
+ * Predicted from the acceleration and the feedrate, not from a previous run: two ramps of
+ * `v/a` seconds covering `v^2/a` millimetres between them, and the rest at `v`. Getting the
+ * deceleration phase started wrongly shows up here as a duration that no longer matches the
+ * shape, in a way that the symmetry above would not notice if both ramps were wrong together.
+ */
+MARLIN_TEST(step_timing, a_cruising_move_takes_as_long_as_its_trapezoid) {
+  SimulatedMachine machine;
+  constexpr float ACCEL = 3000.0f, FEEDRATE = 50.0f, DISTANCE = 10.0f;
+  set_acceleration(ACCEL);
+
+  StepTimeline line;
+  move_x(line, DISTANCE, FEEDRATE);
+
+  const float ramp_s = FEEDRATE / ACCEL,
+              ramp_mm = FEEDRATE * FEEDRATE / ACCEL,     // both ramps together
+              cruise_s = (DISTANCE - ramp_mm) / FEEDRATE;
+  TEST_ASSERT_TRUE_MESSAGE(cruise_s > 0.0f, "this move must be long enough to reach the feedrate");
+
+  const float predicted_s = 2.0f * ramp_s + cruise_s;
+  const float measured_s = float(line.span_ns()) / 1.0e9f;
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(predicted_s * 0.05f, predicted_s, measured_s,
+    "a trapezoidal move should take two ramps plus a cruise");
+}
+
 MARLIN_TEST(step_timing, a_slow_move_never_ramps) {
   SimulatedMachine machine;
   StepTimeline line;

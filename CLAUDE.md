@@ -60,16 +60,24 @@ as worked examples, not as additional rules.
 
 **"Assert derived relationships, not recorded outputs."** In this firmware the productive
 assertions are the physics: halving the acceleration stretches a move by √2; a triangular
-move peaks at its midpoint; acceleration and deceleration take equal time; the applied PID
-gains are the Ziegler-Nichols relations of the measured `Ku` and `Tu`; the autotune relay
-levels are a mirrored pair inside the power limits. Asserting a final step count instead
-is what left `stepper.cpp` at 87.8% line coverage and 28.8% mutation detection. See
-`Marlin/tests/module/test_step_timing.cpp` and `test_pid_autotune.cpp`.
+move peaks at its midpoint; acceleration and deceleration take equal time; a trapezoid comes
+off its plateau as it went on; the applied PID gains are the Ziegler-Nichols relations of the
+measured `Ku` and `Tu`; the autotune relay levels are a mirrored pair inside the power limits.
+Asserting a final step count instead is what once left `stepper.cpp` at 87.8% line coverage
+and 28.8% mutation detection; the physics assertions took it to **96% line, 68.9% mutation**
+(default config, 222 covered lines). See `Marlin/tests/module/test_step_timing.cpp` and
+`test_pid_autotune.cpp`.
 
 **"Separate needs-an-assertion from needs-an-input."** `MULTISTEPPING_LIMIT` is 16, so
 `stepper.cpp:2442` needs `steps_per_isr >= 16` — sixteen pulses inside one interrupt —
-before any assertion can touch it. Roughly 3200 steps/mm at 200 mm/s gets there; the
-current tests reach 2× or 4× and leave ~69 mutants alive that no assertion can kill.
+before any assertion can touch it. Roughly 3200 steps/mm at 200 mm/s gets there, and
+`with_resolution()`/`move_x_twice()` in `test_step_timing.cpp` now do: `steps_per_isr` is a
+ladder climbed when an interrupt overruns, so it takes two buffered moves rather than one fast
+one. What is left on those three lines is equivalent, and equivalent *because of this build*:
+`MULTISTEPPING_LIMIT` is a constant 16, so every mutation of the left operand
+(`>= 0`, `<= 16`, `== 16`, `(1==1)`) has the same value, and `steps_per_isr` only ever takes
+powers of two, so the `loops >= 15` and `loops == 2` near-misses are unreachable. A build with
+`MULTISTEPPING_LIMIT` of 4 would distinguish the first group.
 
 **"Watch for an assertion that is self-consistent rather than correct."** An acceptance
 test once asserted that the `M105` reply contained the formatted value of
@@ -208,6 +216,13 @@ is blocked by PEP 668 on this machine).
 
 ### Gotchas that have cost real time
 
+- **Never `git add -A` after a coverage or mutation run.** Both rewrite
+  `Marlin/Configuration.h`, `Configuration_adv.h` and `config.ini` for the suite they measure
+  and leave them rewritten. Cleaning them before the *test* run is not enough if a measurement
+  runs afterwards — this has now committed a generated bed-levelling config twice. The tell is
+  every configuration reporting the same test count as the one last measured, because
+  `restore_configs` restores to whatever is checked in. Re-run `git checkout --` on those four
+  paths immediately before `git add`.
 - **`restore_configs` reverts your config.** Every test target runs it before and after,
   which does `git checkout` on `Marlin/Configuration.h`, `Configuration_adv.h`,
   `Marlin/config.ini`, and `Marlin/src/pins/*/pins_*.h`. Uncommitted config work is
