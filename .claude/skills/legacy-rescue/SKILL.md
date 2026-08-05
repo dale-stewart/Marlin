@@ -296,6 +296,16 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **Some inputs cannot be supplied one at a time.** A survivor that needs the code to be in a
+  particular *régime* — a buffer partly drained, a cache warm, a rate high enough to saturate
+  something — is not reached by making one call with extreme arguments. Extreme arguments often
+  put the code in a different régime instead: ask for a single very fast, very short operation
+  and some other limit dominates, so the value under test is computed and then never used.
+
+  What reaches these is a *sequence*: several operations queued together, so the state the
+  branch reads is the state the earlier ones left. Budget for that — it is a fixture that
+  drives the system into a régime and holds it there, not another parameter on an existing
+  helper. Recognising it early saves a round of tests that look reasonable and kill nothing.
 - **Equivalence is often a property of the configuration, not of the code.** A comparison whose
   operands can only take two values, a guard on a constant no build actually uses, a branch in
   an arm the current options compile out — all produce mutants that no test can kill *here*,
