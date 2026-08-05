@@ -29,6 +29,7 @@
 #include "../test/unit_tests.h"
 #include "src/module/planner.h"
 #include "src/module/motion.h"
+#include "../support/simulated_machine.h"
 #include "src/gcode/gcode.h"
 #include "src/gcode/parser.h"
 
@@ -230,3 +231,117 @@ MARLIN_TEST(planner, flow_rate_and_volumetric_scaling_multiply) {
 }
 
 #endif // HAS_VOLUMETRIC_EXTRUSION
+
+//
+// ---- Holding back the first block ----
+//
+
+namespace {
+
+  // Start from an empty queue with the delivery delay armed, which is the state the planner
+  // is in whenever the machine has just run out of work.
+  //
+  // A `SimulatedMachine` is needed even though nothing here moves: the planner refuses to
+  // queue anything while the machine is not running, and says so by accepting the move and
+  // quietly producing no block.
+  void queue_moves(const size_t moves) {
+    planner.clear_block_buffer();
+    xyze_pos_t at = { 0 };
+    planner.set_position_mm(at);
+    for (size_t i = 1; i <= moves; i++) {
+      at.x = float(i);
+      TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, 10.0f), "the move was not accepted");
+    }
+  }
+
+  // How many times the stepper would have asked for work and been told to wait, up to a cap.
+  size_t refusals_before_a_block(const size_t give_up_after = 1000) {
+    for (size_t i = 0; i < give_up_after; i++)
+      if (planner.get_current_block()) return i;
+    return give_up_after;
+  }
+
+}
+
+/**
+ * A single queued move is not started straight away.
+ *
+ * A move delivered the instant it arrives has to be planned as if it were the last one — it
+ * must decelerate to a stop at its own end, because nothing is known about what follows. Hold
+ * it for a moment and the moves after it can be planned with it, and the machine runs through
+ * the join instead of stopping at it.
+ *
+ * So the queue going empty is not a reason to start immediately; it is a reason to wait.
+ */
+MARLIN_TEST(planner, a_lone_move_is_not_delivered_immediately) {
+  SimulatedMachine machine;
+  queue_moves(1);
+
+  TEST_ASSERT_NULL_MESSAGE(planner.get_current_block(),
+    "the first move after an empty queue should be held back, not started at once");
+
+  planner.clear_block_buffer();
+}
+
+/**
+ * Enough queued work is delivered at once.
+ *
+ * The hold exists to collect moves to plan together, so it has no purpose once there are
+ * some. A machine that waited anyway would stall for the delay at the start of every job,
+ * and again after every pause.
+ */
+MARLIN_TEST(planner, a_queue_with_enough_work_is_delivered_at_once) {
+  SimulatedMachine machine;
+  queue_moves(3);
+
+  TEST_ASSERT_NOT_NULL_MESSAGE(planner.get_current_block(),
+    "a queue with several moves in it has nothing to wait for");
+
+  planner.clear_block_buffer();
+}
+
+/**
+ * The hold ends when the work arrives, not when the clock runs out.
+ *
+ * There are two ways out of the wait and this is the one that matters: the counter is a
+ * fallback for a host that sends one move and stops, while the ordinary case is that more
+ * moves turn up and the machine should get on with it. Testing only the counter would leave
+ * "wait the full delay every time" indistinguishable from correct.
+ */
+MARLIN_TEST(planner, more_moves_arriving_release_the_held_block) {
+  SimulatedMachine machine;
+  queue_moves(1);
+
+  // Still waiting, and nowhere near the end of the fallback counter.
+  for (uint8_t i = 0; i < 5; i++)
+    TEST_ASSERT_NULL_MESSAGE(planner.get_current_block(), "the lone move should still be held");
+
+  // Two more arrive. Now there is something to plan with.
+  xyze_pos_t at = { 0 };
+  at.x = 2.0f; TEST_ASSERT_TRUE(planner.buffer_line(at, 10.0f));
+  at.x = 3.0f; TEST_ASSERT_TRUE(planner.buffer_line(at, 10.0f));
+
+  TEST_ASSERT_NOT_NULL_MESSAGE(planner.get_current_block(),
+    "the block should be released as soon as there is enough queued to plan with");
+
+  planner.clear_block_buffer();
+}
+
+/**
+ * The wait is a delay, not a deadlock.
+ *
+ * The fallback: a host that sends a single move and then goes quiet must still see it run.
+ * Asserting that it eventually arrives is what says the counter runs out rather than the
+ * machine waiting for a third move that is never coming.
+ */
+MARLIN_TEST(planner, a_lone_move_is_delivered_once_the_wait_expires) {
+  SimulatedMachine machine;
+  queue_moves(1);
+
+  const size_t refusals = refusals_before_a_block();
+  TEST_ASSERT_TRUE_MESSAGE(refusals > 0, "the lone move should have been held at least once");
+  TEST_ASSERT_TRUE_MESSAGE(refusals < 1000,
+    "a lone move must eventually run, or a host that sends one move would hang the machine");
+
+  planner.clear_block_buffer();
+}

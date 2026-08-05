@@ -216,6 +216,12 @@ is blocked by PEP 668 on this machine).
 
 ### Gotchas that have cost real time
 
+- **`planner.buffer_line()` returns true and queues nothing while the machine is not
+  running.** `marlin.state` is `MF_RUNNING` only because `SimulatedMachine` sets it, so a test
+  that plans moves without that fixture gets `true` from every `buffer_line` and
+  `movesplanned() == 0`. Nothing reports it. The tell is a queue-related assertion failing in a
+  way that makes no sense — a block never delivered, a buffer never filling — and the first
+  thing to print is `movesplanned()`.
 - **Never `git add -A` after a coverage or mutation run.** Both rewrite
   `Marlin/Configuration.h`, `Configuration_adv.h` and `config.ini` for the suite they measure
   and leave them rewritten. Cleaning them before the *test* run is not enough if a measurement
