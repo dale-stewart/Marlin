@@ -737,6 +737,51 @@ MARLIN_TEST(probe, probing_relative_to_the_probe_offsets_the_carriage) {
 }
 
 /**
+ * Clearance is made for whichever of the two hangs lower.
+ *
+ * A clearance height is asked for so that something clears the bed, and when the probe is
+ * deployed the thing that has to clear it is the *probe* — which, mounted below the nozzle,
+ * reaches the bed first. So a probe with a negative Z offset raises the nozzle further by
+ * exactly that offset, and a probe level with the nozzle changes nothing.
+ *
+ * Asserted as the difference between two runs on the same machine, so what is checked is the
+ * allowance itself rather than the height it was added to. The `with_probe` companion says
+ * the allowance is a decision about the probe rather than a constant: the same offset, with
+ * the caller stating that the probe is not what needs the room, has no effect.
+ */
+MARLIN_TEST(probe, a_probe_below_the_nozzle_gets_extra_clearance) {
+  SimulatedMachine machine;
+  XRail x(50.0f); YRail y(50.0f);
+  SimulatedBedSurface bed(x, y, SPM, 0.2f, 0.0f, 0.0f, 0.5f);
+  standing_at(50.0f, 50.0f, 0.5f);
+
+  constexpr float ASKED_FOR = 8.0f, OFFSET_Z = -2.0f;
+  const float was = probe.offset.z;
+
+  probe.offset.z = 0.0f;
+  motion.do_z_clearance(ASKED_FOR);
+  const float level_probe = motion.position.z;
+
+  standing_at(50.0f, 50.0f, 0.5f);
+  probe.offset.z = OFFSET_Z;
+  motion.do_z_clearance(ASKED_FOR);
+  const float low_probe = motion.position.z;
+
+  standing_at(50.0f, 50.0f, 0.5f);
+  motion.do_z_clearance(ASKED_FOR, /*with_probe*/ false);
+  const float not_for_the_probe = motion.position.z;
+
+  probe.offset.z = was;
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, ASKED_FOR, level_probe,
+    "a probe level with the nozzle needs no allowance");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, -OFFSET_Z, low_probe - level_probe,
+    "a probe two millimetres below the nozzle should be given two more millimetres");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, ASKED_FOR, not_for_the_probe,
+    "clearance that is not for the probe should not be padded for it");
+}
+
+/**
  * Deploying a probe that is already deployed does nothing at all.
  *
  * Deploy raises Z to make room for the mechanism, and every probe point in a levelling run

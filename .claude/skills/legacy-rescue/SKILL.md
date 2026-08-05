@@ -296,6 +296,16 @@ For each survivor, in descending order of risk:
   property survives reformatting and still fails when the numbers are wrong. Here one such
   test raised a target from 37% to 54% on its own, because a whole reporting path had been
   reachable but unasserted.
+- **A fixture must state every setting the behaviour under test depends on, not only the one
+  it is varying.** Configuration that outlives the command that changed it — a scale factor, an
+  override switch, a mode — is an *input* to the code being tested, and a test that does not
+  set it measures whatever the previous test left. The failure is order-dependent and often
+  appears only in one build variant, which makes it look like a difference between variants
+  rather than a leak.
+
+  The tell is a test that passes alone and fails in company, or passes in one configuration
+  and not another. Set the value in the fixture and restore it, the same way the fixture
+  already handles the value it is deliberately varying.
 - **A cluster that should have died and did not may mean the test is not there.** The obvious
   reading of an unmoved survivor count is that the new test is too weak. Check the cheaper
   explanation first: that the test is not running. Tests go missing silently — excluded by a
