@@ -109,6 +109,22 @@ depth (`probe.cpp:812`). A test showing only that it reached further left `*1`, 
 one fewer test, and the only thing that noticed was `G28.cpp:168` — the probe XY offset at the
 safe homing point — still showing four survivors after the test that killed them was written.
 
+**"A shortcut and the exact computation agree wherever the shortcut is valid."** `planner.cpp:2555`
+picks between normalising the junction vector across all of XYZE and scaling it by the
+already-computed `inverse_millimeters`, which is `1/`the XYZ length. For a travel move the two are
+the same vector, so 15 mutants of `esteps > 0` survived every corner test — every corner test used
+travel moves. An extruding corner distinguishes them, and the amount matters: with `e` mm of
+filament per 10 mm leg the planner sees `cos θ = -e²/(100 + e²)`, so a right angle becomes a 120°
+bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_widens_it` in
+`test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
+the return is "was it marginal", not "did it work".
+
+**"Equivalence is often a property of the type."** `esteps` is a `uint32_t`, so `esteps >= 0`,
+`esteps != 0` and `(1==1)` are all equivalent to `esteps > 0` on sight; `> 1` differs only for a
+single 1/500 mm step, which no assertion can separate from zero. That plus the two `ANY()`
+argument reorderings and the `IS_CORE` arm this build compiles out accounts for all 8 survivors
+left on that line.
+
 **"Pin the build configuration."** Here that is `restore_configs`; see the gotchas below.
 
 **Delegating to subagents in this repo.** `.claude/agents/hal-debugger.md` and

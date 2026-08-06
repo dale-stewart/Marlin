@@ -345,3 +345,141 @@ MARLIN_TEST(planner, a_lone_move_is_delivered_once_the_wait_expires) {
 
   planner.clear_block_buffer();
 }
+
+#if HAS_JUNCTION_DEVIATION && HAS_EXTRUDERS
+
+namespace {
+
+  // Long enough that the machine can reach the junction speed within one leg, so what is
+  // read back is the corner's own limit and not "as fast as it could get to here".
+  constexpr float LEG_MM = 10.0f;
+
+  struct Join {
+    float entry_speed_sqr;  // the limit the planner put on the speed through the join
+    float acceleration;     // the second block's own acceleration, in its own units
+  };
+
+  // Plan two moves meeting at `via`, and report what the planner decided about the join.
+  Join plan_corner(const xyze_pos_t &from, const xyze_pos_t &via, const xyze_pos_t &to,
+                   const float feedrate = 60.0f) {
+    planner.clear_block_buffer();
+    planner.set_position_mm(from);
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(via, feedrate), "the first leg was not accepted");
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(to, feedrate), "the second leg was not accepted");
+    TEST_ASSERT_EQUAL_MESSAGE(2, planner.movesplanned(), "both legs should still be queued");
+
+    const uint8_t last = (planner.block_buffer_head + BLOCK_BUFFER_SIZE - 1) % (BLOCK_BUFFER_SIZE);
+    const block_t &second = planner.block_buffer[last];
+    return { second.max_entry_speed_sqr, second.acceleration };
+  }
+
+  // Junction deviation: a corner of half-angle θ/2 is taken as if it were an arc that strays
+  // `junction_deviation_mm` from the true corner. Given the cosine of the angle between the
+  // two paths, this is the speed that allows.
+  float speed_sqr_for_cosine(const float accel, const float cos_theta) {
+    const float sin_half = sqrtf(0.5f * (1.0f - cos_theta));
+    return accel * planner.junction_deviation_mm * sin_half / (1.0f - sin_half);
+  }
+
+  // The cosine the planner should compute for a right-angle turn in XY with `e` millimetres
+  // of filament pushed along each leg. The extruder does not turn the corner — it runs
+  // straight through it — so in the four-dimensional space the planner works in, the two
+  // paths are not perpendicular at all: their dot product is the E term alone, and each
+  // leg's length is √(leg² + e²).
+  float cosine_of_a_right_angle_while_extruding(const float e) {
+    return -(e * e) / (LEG_MM * LEG_MM + e * e);
+  }
+
+  struct PlainExtrusion {
+    float was_e_factor;
+    PlainExtrusion() { was_e_factor = planner.e_factor[0]; planner.e_factor[0] = 1.0f; }
+    ~PlainExtrusion() { planner.e_factor[0] = was_e_factor; planner.clear_block_buffer(); }
+  };
+
+}
+
+/**
+ * A right-angle turn between two travel moves is a right-angle turn.
+ *
+ * The baseline for the two tests below, and the other arm of the branch they are about.
+ * With nothing being extruded the corner is what it looks like: the paths meet at 90°,
+ * their unit vectors are perpendicular, and the cosine between them is zero.
+ */
+MARLIN_TEST(planner, a_travel_corner_is_as_sharp_as_it_looks) {
+  SimulatedMachine machine;
+  PlainExtrusion plain;
+
+  xyze_pos_t from = { 0 }, via = { 0 }, to = { 0 };
+  via.x = LEG_MM;
+  to.x = LEG_MM; to.y = LEG_MM;
+
+  const Join join = plan_corner(from, via, to);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f * speed_sqr_for_cosine(join.acceleration, 0.0f),
+    speed_sqr_for_cosine(join.acceleration, 0.0f), join.entry_speed_sqr,
+    "a 90 degree travel corner should be planned as a 90 degree corner");
+}
+
+/**
+ * Extruding through a corner makes it a gentler corner.
+ *
+ * The extruder is a fourth direction, and it does not reverse at the join — filament keeps
+ * going the same way through it. So the angle the planner has to slow for is the angle
+ * between the two moves *including* E, which is always wider than the angle drawn on the
+ * bed. Pushing one millimetre of filament per millimetre of travel turns a right angle into
+ * a 120 degree bend, and the machine may take it faster.
+ *
+ * This only works if the junction vector is normalised across all four axes. Scaling it by
+ * the pre-calculated 1/XYZ-length instead leaves E oversized, and every extruding corner
+ * then looks like a straight line.
+ */
+MARLIN_TEST(planner, extruding_through_a_corner_widens_it) {
+  SimulatedMachine machine;
+  PlainExtrusion plain;
+
+  xyze_pos_t from = { 0 }, via = { 0 }, to = { 0 };
+  via.x = LEG_MM;            via.e = LEG_MM;
+  to.x = LEG_MM; to.y = LEG_MM; to.e = 2.0f * LEG_MM;
+
+  const Join join = plan_corner(from, via, to);
+
+  const float cos_theta = cosine_of_a_right_angle_while_extruding(LEG_MM);
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, -0.5f, cos_theta,
+    "one millimetre of filament per millimetre of travel should give a 120 degree bend");
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f * speed_sqr_for_cosine(join.acceleration, cos_theta),
+    speed_sqr_for_cosine(join.acceleration, cos_theta), join.entry_speed_sqr,
+    "the corner should be planned as the wider one the extruder makes it");
+}
+
+/**
+ * ...and how much gentler depends on how much filament.
+ *
+ * Half the extrusion is half the E component, so the same right angle is a narrower bend and
+ * a slower one. Two points on the curve rather than one: a single extruding corner would be
+ * satisfied by any rule that widens corners at all, including one that ignores the amount.
+ */
+MARLIN_TEST(planner, less_filament_through_the_same_corner_widens_it_less) {
+  SimulatedMachine machine;
+  PlainExtrusion plain;
+
+  const float e = LEG_MM / 2.0f;
+  xyze_pos_t from = { 0 }, via = { 0 }, to = { 0 };
+  via.x = LEG_MM;            via.e = e;
+  to.x = LEG_MM; to.y = LEG_MM; to.e = 2.0f * e;
+
+  const Join join = plan_corner(from, via, to);
+
+  const float cos_theta = cosine_of_a_right_angle_while_extruding(e);
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f * speed_sqr_for_cosine(join.acceleration, cos_theta),
+    speed_sqr_for_cosine(join.acceleration, cos_theta), join.entry_speed_sqr,
+    "half the filament should widen the corner by half as much");
+
+  // ...and slower than the fully-extruding corner, which is the direction the amount acts in.
+  TEST_ASSERT_TRUE_MESSAGE(
+    speed_sqr_for_cosine(join.acceleration, cos_theta)
+      < speed_sqr_for_cosine(join.acceleration, cosine_of_a_right_angle_while_extruding(LEG_MM)),
+    "less filament should mean a narrower bend and a lower speed through it");
+}
+
+#endif // HAS_JUNCTION_DEVIATION && HAS_EXTRUDERS

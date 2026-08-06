@@ -338,6 +338,23 @@ For each survivor, in descending order of risk:
   every axis homes to its minimum" is a fact a reader can act on: it names the variant that
   would distinguish them, and it stops the next person re-deriving it. "Equivalent" alone does
   not.
+
+  The *type* does this as often as the configuration. Half the relational mutants of a
+  comparison against zero are unkillable when the operand cannot be negative, and the same
+  goes for a range check on a value the type already bounds. Neither is a gap in the tests,
+  and neither is worth a second attempt once it has been named.
+- **A shortcut and the exact computation agree wherever the shortcut is valid — so test outside
+  its domain.** Code often chooses between a general calculation and a cheaper one that is only
+  correct under some condition: a term that can be neglected, a factor already computed
+  elsewhere, a case that collapses to a constant. The two arms then agree *by construction* on
+  every input the shortcut was written for, which is most of the inputs a test naturally
+  reaches for, so the choice between them survives everything.
+
+  What kills it is an input where the neglected quantity actually matters — and **non-zero is
+  not enough**. The neglected term has to be comparable in size to the ones that are kept, or
+  the two arms still agree to within any tolerance the test can reasonably use. Work out the
+  magnitude that moves the result before writing the test, not after watching it pass against
+  both arms.
 - **A fixture must state every setting the behaviour under test depends on, not only the one
   it is varying.** Configuration that outlives the command that changed it — a scale factor, an
   override switch, a mode — is an *input* to the code being tested, and a test that does not
