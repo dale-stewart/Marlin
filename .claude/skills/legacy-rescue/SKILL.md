@@ -343,6 +343,13 @@ For each survivor, in descending order of risk:
   comparison against zero are unkillable when the operand cannot be negative, and the same
   goes for a range check on a value the type already bounds. Neither is a gap in the tests,
   and neither is worth a second attempt once it has been named.
+- **When a value is folded over a collection, move the deciding element away from the end.**
+  "The tightest limit wins", "the earliest deadline wins", "the highest bidder wins" — the
+  natural example to reach for tends to put the winner last, because that is the order the
+  domain lists things in. A fold that simply keeps the most recent value passes every one of
+  those, and so does the correct one. Vary the winner's *position* as deliberately as its
+  value: one case with it first, one with it last. Otherwise `min` and `last` are the same
+  function as far as the suite is concerned.
 - **A shortcut and the exact computation agree wherever the shortcut is valid — so test outside
   its domain.** Code often chooses between a general calculation and a cheaper one that is only
   correct under some condition: a term that can be neglected, a factor already computed

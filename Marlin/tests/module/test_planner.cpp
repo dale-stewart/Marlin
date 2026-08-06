@@ -483,3 +483,179 @@ MARLIN_TEST(planner, less_filament_through_the_same_corner_widens_it_less) {
 }
 
 #endif // HAS_JUNCTION_DEVIATION && HAS_EXTRUDERS
+
+#if HAS_Z_AXIS
+
+namespace {
+
+  // Plan one move on an empty queue and hand back the block it produced. One move rather than
+  // several, because a queue with two or more in it is also being slowed by the buffer-drain
+  // rule, and that is a different limit.
+  const block_t& plan_one(const xyze_pos_t &to, const float feedrate) {
+    planner.clear_block_buffer();
+    xyze_pos_t origin = { 0 };
+    planner.set_position_mm(origin);
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(to, feedrate), "the move was not accepted");
+    TEST_ASSERT_EQUAL_MESSAGE(1, planner.movesplanned(), "exactly one move should be queued");
+    const uint8_t last = (planner.block_buffer_head + BLOCK_BUFFER_SIZE - 1) % (BLOCK_BUFFER_SIZE);
+    return planner.block_buffer[last];
+  }
+
+  // A fast pair of horizontal axes and a slow vertical one — the shape every cartesian machine
+  // has, and the reason the limit is per axis rather than on the feedrate. Stated here rather
+  // than inherited, because `SimulatedMachine` flattens all of them to 300 and the whole point
+  // of these tests is that they differ.
+  constexpr float FAST_MM_S = 300.0f, SLOW_MM_S = 5.0f;
+
+  struct MixedAxisSpeeds {
+    SimulatedMachine machine;
+    MixedAxisSpeeds() {
+      planner.settings.max_feedrate_mm_s[X_AXIS] = FAST_MM_S;
+      TERN_(HAS_Y_AXIS, planner.settings.max_feedrate_mm_s[Y_AXIS] = FAST_MM_S);
+      planner.settings.max_feedrate_mm_s[Z_AXIS] = SLOW_MM_S;
+    }
+    ~MixedAxisSpeeds() { planner.clear_block_buffer(); }
+  };
+
+  // The speed along the path at which `axis` is running at exactly `limit`. A move is a
+  // direction and a speed; each axis gets the fraction of that speed its share of the
+  // displacement calls for, so the path speed that puts one axis on its limit is that limit
+  // divided by the axis's share.
+  float path_speed_putting_axis_at(const float limit, const float axis_mm, const float path_mm) {
+    return limit * path_mm / axis_mm;
+  }
+
+}
+
+/**
+ * A move no faster than its axes allow is given the feedrate it asked for.
+ *
+ * The baseline, and the other arm of the correction below. Nothing about a diagonal in the
+ * horizontal plane troubles a machine whose horizontal axes are fast, so nothing should
+ * happen to it.
+ */
+MARLIN_TEST(planner, a_move_within_every_axis_limit_keeps_its_feedrate) {
+  MixedAxisSpeeds limits;
+
+  xyze_pos_t to = { 0 }; to.x = 10.0f; TERN_(HAS_Y_AXIS, to.y = 10.0f);
+  const block_t &block = plan_one(to, 100.0f);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, 100.0f, block.nominal_speed,
+    "a move inside every axis limit should run at the speed it was given");
+}
+
+/**
+ * One axis over its limit holds the whole move back.
+ *
+ * The machine cannot slow the offending axis alone: the others are tied to it by the shape of
+ * the move, and easing off one of four axes would bend the path. So the entire move is scaled
+ * until the worst axis is exactly at its limit, and the path is walked more slowly rather than
+ * differently.
+ *
+ * The assertion is that the slow axis ends up *exactly* on its limit — not merely that
+ * something was slowed down. A rule that halved the feedrate whenever any axis complained
+ * would also produce a slower move.
+ */
+MARLIN_TEST(planner, an_axis_over_its_limit_slows_the_whole_move) {
+  MixedAxisSpeeds limits;
+
+  xyze_pos_t to = { 0 }; to.x = 20.0f; to.z = 10.0f;
+  const float path_mm = sqrtf(20.0f * 20.0f + 10.0f * 10.0f);
+
+  // Asked for 100 mm/s along the path, Z alone would be doing 44.7 mm/s — nine times its limit.
+  const block_t &block = plan_one(to, 100.0f);
+
+  const float expected = path_speed_putting_axis_at(SLOW_MM_S, 10.0f, path_mm);
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, expected, block.nominal_speed,
+    "the move should be slowed until Z is exactly at its own limit");
+
+  // ...and X came down with it, in the same proportion, so the move still goes where it was
+  // pointed. Twice the displacement of Z, so twice the speed.
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, 2.0f * SLOW_MM_S, block.nominal_speed * 20.0f / path_mm,
+    "X should have been scaled by the same factor, leaving the direction of the move alone");
+}
+
+/**
+ * With two axes over their limits, the tighter one decides.
+ *
+ * A rule that took the first axis it found over the limit, or the last, would satisfy the test
+ * above. Here both X and Z are asked for more than they can do, and the two answers are three
+ * times apart: the move must come down to the lower of them, which leaves X comfortably inside
+ * its own limit rather than on it.
+ */
+MARLIN_TEST(planner, the_tightest_axis_limit_is_the_one_that_binds) {
+  MixedAxisSpeeds limits;
+
+  xyze_pos_t to = { 0 }; to.x = 200.0f; to.z = 10.0f;
+  const float path_mm = sqrtf(200.0f * 200.0f + 10.0f * 10.0f);
+
+  const float if_only_x_bound = path_speed_putting_axis_at(FAST_MM_S, 200.0f, path_mm),
+              if_only_z_bound = path_speed_putting_axis_at(SLOW_MM_S, 10.0f, path_mm);
+  TEST_ASSERT_TRUE_MESSAGE(if_only_z_bound < if_only_x_bound,
+    "this test needs Z to be the tighter of the two limits");
+
+  const block_t &block = plan_one(to, 400.0f);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-2f, if_only_z_bound, block.nominal_speed,
+    "the lower of the two limits should be the one that binds");
+  TEST_ASSERT_TRUE_MESSAGE(block.nominal_speed * 200.0f / path_mm < FAST_MM_S,
+    "X should be left inside its limit rather than on it");
+}
+
+/**
+ * ...and which axis that is depends on the move, not on the axis.
+ *
+ * The same two limits, and now the shallow climb makes X the binding one: a hundred
+ * millimetres across for one up asks far more of X than of Z. The pair matters — a test where
+ * the slow axis always wins would pass against an implementation that only ever looked at Z.
+ */
+MARLIN_TEST(planner, a_fast_axis_binds_when_the_move_asks_more_of_it) {
+  MixedAxisSpeeds limits;
+
+  xyze_pos_t to = { 0 }; to.x = 100.0f; to.z = 1.0f;
+  const float path_mm = sqrtf(100.0f * 100.0f + 1.0f);
+
+  const float if_only_x_bound = path_speed_putting_axis_at(FAST_MM_S, 100.0f, path_mm),
+              if_only_z_bound = path_speed_putting_axis_at(SLOW_MM_S, 1.0f, path_mm);
+  TEST_ASSERT_TRUE_MESSAGE(if_only_x_bound < if_only_z_bound,
+    "this test needs X to be the tighter of the two limits");
+
+  const block_t &block = plan_one(to, 400.0f);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-2f, if_only_x_bound, block.nominal_speed,
+    "X should be the axis that binds here");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, 3.0f, block.nominal_speed * 1.0f / path_mm,
+    "Z should be left well inside its limit, at three fifths of it");
+}
+
+#endif // HAS_Z_AXIS
+
+/**
+ * The tightest limit wins wherever in the order it happens to sit.
+ *
+ * The two tests above both have the binding axis last in the order the axes are checked, so a
+ * planner that simply took the last complaint would pass them. This one puts the tighter limit
+ * first: X and Z are both asked for more than they can do, and X — checked first — is the one
+ * that must decide. Half again as far apart as the answers, so nothing in the tolerance can
+ * confuse them.
+ */
+MARLIN_TEST(planner, the_order_the_axes_are_checked_in_does_not_decide) {
+  MixedAxisSpeeds limits;
+
+  constexpr float TIGHT_MM_S = 10.0f, LOOSE_MM_S = 20.0f;
+  planner.settings.max_feedrate_mm_s[X_AXIS] = TIGHT_MM_S;
+  planner.settings.max_feedrate_mm_s[Z_AXIS] = LOOSE_MM_S;
+
+  xyze_pos_t to = { 0 }; to.x = 10.0f; to.z = 10.0f;
+  const float path_mm = sqrtf(200.0f);
+
+  const float if_only_x_bound = path_speed_putting_axis_at(TIGHT_MM_S, 10.0f, path_mm),
+              if_only_z_bound = path_speed_putting_axis_at(LOOSE_MM_S, 10.0f, path_mm);
+  TEST_ASSERT_TRUE_MESSAGE(if_only_x_bound < if_only_z_bound,
+    "this test needs the first axis checked to be the tighter one");
+
+  const block_t &block = plan_one(to, 100.0f);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, if_only_x_bound, block.nominal_speed,
+    "the tightest limit should bind even when a looser one is found after it");
+}

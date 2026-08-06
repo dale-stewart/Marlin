@@ -119,6 +119,15 @@ bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_
 `test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
 the return is "was it marginal", not "did it work".
 
+**"When a value is folded over a collection, move the deciding element away from the end."**
+`planner.cpp` scales a whole move down until its worst axis is at its own feedrate limit, taking
+the minimum over `LOOP_NUM_AXES`. Z is both the slowest axis on a cartesian machine and the last
+one checked, so every natural test has the binding axis last, and replacing the `NOMORE` with a
+plain assignment passes all of them. `the_order_the_axes_are_checked_in_does_not_decide` in
+`test_planner.cpp` gives X the tighter limit instead; it is the only one of the five that fails.
+Note `SimulatedMachine` flattens every `NUM_AXES` feedrate to 300 and acceleration to 3000, so a
+test about per-axis limits has to state them itself.
+
 **"Equivalence is often a property of the type."** `esteps` is a `uint32_t`, so `esteps >= 0`,
 `esteps != 0` and `(1==1)` are all equivalent to `esteps > 0` on sight; `> 1` differs only for a
 single 1/500 mm step, which no assertion can separate from zero. That plus the two `ANY()`
