@@ -119,6 +119,21 @@ bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_
 `test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
 the return is "was it marginal", not "did it work".
 
+**"A source-level mutator edits text; check the text still means something different."**
+`planner.cpp:1223-1226` sets eight fans with eight hand-written `TERN_(HAS_FANn, FAN_SET(n))`
+pairs, and had 56 survivors. Thirty-eight of them are erased by the preprocessor:
+`TERN_(HAS_FAN-1, ...)` expands `HAS_FAN` to `1`, and `ENABLED()`'s token paste matches
+`_ISENA_1` before the `-1` is reached, so the guard is still enabled. `HAS_FAN(4+1)` goes the
+same way. The tell was that every remaining survivor mutated only the *guard* and none touched
+the `FAN_SET` argument. A throwaway `MARLIN_TEST` printing `TERN_(HAS_FAN-1, hits += 1)` settled
+it in one build; reading the `ENABLED` machinery would not have.
+
+**"Ask the build what it compiled."** In the same cluster I first classified 45 survivors as dead
+arms for fans this build lacks. It has **eight** — `FAN_COUNT` is 8 and `HAS_FAN1` is 1 — so every
+arm is live, and the hand-applied mutant that swapped `HAS_FAN0` for `HAS_FAN1` was not a mutant
+at all. `every_fan_is_driven_at_its_own_speed` in `test_planner.cpp` is what the line actually
+needed. Print the resolved constant; the default config is not the whole story.
+
 **"A guard that only avoids redundant work has no wrong answer."** The planner's forward pass is
 gated twice — `planner.cpp:1098` skips a block whose predecessor was not accelerating, and
 `:1167` skips one already at its optimised speed. Both are pure optimisations: when the guard is

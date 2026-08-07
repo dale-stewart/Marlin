@@ -343,6 +343,23 @@ For each survivor, in descending order of risk:
   comparison against zero are unkillable when the operand cannot be negative, and the same
   goes for a range check on a value the type already bounds. Neither is a gap in the tests,
   and neither is worth a second attempt once it has been named.
+- **A source-level mutator edits text; check the text still means something different.** Where
+  a language has a preprocessor, macro system, or code generator between the source and what
+  runs, a mutant can be erased before it reaches the compiler. Changing an argument that is
+  pasted into a token, or a constant that a generator normalises, produces a file that differs
+  on disk and compiles to the same program — so it survives every test that could ever exist.
+
+  These arrive in clusters on the generated-looking lines, and they are recognisable by what
+  the mutant edits: if every survivor on a line changes only the *inputs to a macro* and none
+  changes the operation, suspect expansion rather than a gap in the tests. Settle it by
+  expanding one — a throwaway test that runs the mutated expression and prints what it did
+  costs a minute. Do not infer it from reading the macro; the paste rules are exactly where
+  intuition fails.
+- **Ask the build what it compiled, do not read it off the configuration.** Related, and the
+  cheaper mistake to make: a conditional block that looks disabled in the settings file may be
+  enabled by a default, a dependency, or another option's side effect. Classifying survivors as
+  "dead arms of a disabled feature" on the strength of the settings is a claim about the build
+  that has not been checked, and it is wrong often enough to matter. Print the resolved constant.
 - **A guard that only avoids redundant work has no wrong answer, only a slow one.** "Skip if
   unchanged", "recompute only when dirty", "return early if already in order" — the block such
   a guard protects is idempotent, so running it when it was not needed produces the same state

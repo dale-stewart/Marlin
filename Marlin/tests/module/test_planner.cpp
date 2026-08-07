@@ -18,12 +18,16 @@
  */
 
 /**
- * Tests for the motion planner's settings and conversions.
+ * Tests for the motion planner.
  *
- * The planner turns millimetres into steps and enforces the machine's limits. Its
- * queue cannot be exercised here — filling it blocks on a stepper interrupt that does
- * not run — but the arithmetic and the limits are what a wrong value would corrupt,
- * and those are pure.
+ * The planner turns millimetres into steps, enforces the machine's limits, and decides how
+ * fast the machine may still be going when it reaches each join between two moves. The
+ * arithmetic and the limits are pure and can be asserted directly; the queue behaviour needs
+ * a `SimulatedMachine`, both because the planner accepts moves and silently queues nothing
+ * while the machine is not running, and because time only advances on request under this HAL.
+ *
+ * The housekeeping it does on the side — fans, axis activity — is here too, because it is
+ * driven from the block being executed rather than from the command that asked for it.
  */
 
 #include "../test/unit_tests.h"
@@ -761,4 +765,139 @@ MARLIN_TEST(planner, the_speed_a_run_up_reaches_grows_with_its_length) {
     "twice the run-up should give twice the square of the entry speed");
 
   planner.clear_block_buffer();
+}
+
+#if HAS_FAN && PIN_EXISTS(PART_COOLING_FAN0)
+
+namespace {
+
+  // Every fan's output pin, in order. Named individually because the pin macros are
+  // per-fan tokens rather than an array the firmware could be asked to index.
+  const pin_t FAN_PINS[] = {
+    PART_COOLING_FAN0_PIN, PART_COOLING_FAN1_PIN, PART_COOLING_FAN2_PIN, PART_COOLING_FAN3_PIN,
+    PART_COOLING_FAN4_PIN, PART_COOLING_FAN5_PIN, PART_COOLING_FAN6_PIN, PART_COOLING_FAN7_PIN
+  };
+
+  // What a fan is actually being driven at, as opposed to what was asked for.
+  uint16_t fan_output(const uint8_t f = 0) { return Gpio::get(FAN_PINS[f]); }
+
+  // `check_axes_activity()` is the housekeeping pass the main loop runs; the fan follows from
+  // it rather than from the command that set the speed.
+  void the_housekeeping_pass_runs() { planner.check_axes_activity(); }
+
+}
+
+/**
+ * With nothing to print, the fan follows the command.
+ *
+ * Two speeds rather than one, because a single speed is satisfied by a machine that drives the
+ * fan at that value whatever it was told.
+ */
+MARLIN_TEST(planner, an_idle_machine_drives_the_fan_at_the_speed_it_was_given) {
+  SimulatedMachine machine;
+
+  thermalManager.set_fan_speed(0, 200);
+  the_housekeeping_pass_runs();
+  TEST_ASSERT_EQUAL_MESSAGE(200, fan_output(), "an idle machine should apply the speed it was given");
+
+  thermalManager.set_fan_speed(0, 60);
+  the_housekeeping_pass_runs();
+  TEST_ASSERT_EQUAL_MESSAGE(60, fan_output(), "...and should follow it when it changes");
+
+  thermalManager.set_fan_speed(0, 0);
+  the_housekeeping_pass_runs();
+}
+
+/**
+ * While printing, the fan follows the moves rather than the commands.
+ *
+ * A slicer puts `M106` where it wants the fan to change — after the first layer, before an
+ * overhang — but by the time the firmware reads that line it has a second or two of moves
+ * already planned. Applying the new speed there and then would change the fan somewhere
+ * upstream of where it was asked for, and the faster the machine runs ahead of itself the
+ * further out it would be.
+ *
+ * So the speed is recorded into each block as the move is planned, and the housekeeping pass
+ * drives the fan from the block being executed. The command that arrives after a move is
+ * planned does not reach the fan until the queue drains to it.
+ *
+ * The three speeds are the point: the fan is at 30 before, the block carries 200, the command
+ * now says 60. Reading the block gives a different answer from reading the command *and* from
+ * leaving the output alone, so nothing else can produce it.
+ */
+MARLIN_TEST(planner, a_fan_change_waits_for_the_moves_already_planned) {
+  SimulatedMachine machine;
+
+  thermalManager.set_fan_speed(0, 30);
+  the_housekeeping_pass_runs();
+  TEST_ASSERT_EQUAL_MESSAGE(30, fan_output(), "this test starts from a fan that is already running");
+
+  // Plan a move while the fan is set to 200 — the block carries that speed with it.
+  thermalManager.set_fan_speed(0, 200);
+  xyze_pos_t to = { 0 }; to.x = 20.0f;
+  TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(to, 30.0f), "the move was not accepted");
+
+  // ...and only then does the host ask for something else.
+  thermalManager.set_fan_speed(0, 60);
+  the_housekeeping_pass_runs();
+
+  TEST_ASSERT_EQUAL_MESSAGE(200, fan_output(),
+    "the fan should be driven at the speed the move being executed was planned with");
+
+  // Once the queue drains there is no move to take a speed from, and the command applies.
+  TEST_ASSERT_TRUE_MESSAGE(SimulatedMachine::run_until_idle(), "the move never finished");
+  the_housekeeping_pass_runs();
+
+  TEST_ASSERT_EQUAL_MESSAGE(60, fan_output(),
+    "with the queue empty the fan should catch up with what was asked for");
+
+  thermalManager.set_fan_speed(0, 0);
+  the_housekeeping_pass_runs();
+}
+
+#endif // HAS_FAN && PIN_EXISTS(PART_COOLING_FAN0)
+
+/**
+ * Each fan is driven at its own speed.
+ *
+ * This build has eight of them, and nothing in the firmware indexes them — every fan is a
+ * separately named pin reached by a separately expanded macro, eight lines of near-identical
+ * code written out by hand. That is exactly the shape a copy-paste slip hides in: a fan that
+ * reads its neighbour's speed, or a line that sets the same fan twice and leaves one dark,
+ * costs a print and nothing else notices.
+ *
+ * Eight distinct speeds, so no fan can borrow another's answer and still look right.
+ */
+MARLIN_TEST(planner, every_fan_is_driven_at_its_own_speed) {
+  SimulatedMachine machine;
+
+  // A fan can only be told apart from its neighbours if it has its own pin to be told apart on.
+  for (uint8_t i = 0; i < FAN_COUNT; i++)
+    for (uint8_t j = uint8_t(i + 1); j < FAN_COUNT; j++)
+      TEST_ASSERT_TRUE_MESSAGE(FAN_PINS[i] != FAN_PINS[j], "two fans share an output pin");
+
+  // 20, 40, 60 ... spread far enough apart that an off-by-one in the index is unmistakable.
+  for (uint8_t f = 0; f < FAN_COUNT; f++) thermalManager.set_fan_speed(f, uint16_t(20 * (f + 1)));
+  the_housekeeping_pass_runs();
+
+  for (uint8_t f = 0; f < FAN_COUNT; f++) {
+    char why[64];
+    snprintf(why, sizeof(why), "fan %u should be driven at its own speed", unsigned(f));
+    TEST_ASSERT_EQUAL_MESSAGE(20 * (f + 1), fan_output(f), why);
+  }
+
+  // ...and again in the other direction, so "fan f gets 20(f+1)" cannot be a coincidence of
+  // one ascending ramp matching an index.
+  for (uint8_t f = 0; f < FAN_COUNT; f++)
+    thermalManager.set_fan_speed(f, uint16_t(20 * (FAN_COUNT - f)));
+  the_housekeeping_pass_runs();
+
+  for (uint8_t f = 0; f < FAN_COUNT; f++) {
+    char why[64];
+    snprintf(why, sizeof(why), "fan %u should follow its own speed downward too", unsigned(f));
+    TEST_ASSERT_EQUAL_MESSAGE(20 * (FAN_COUNT - f), fan_output(f), why);
+  }
+
+  for (uint8_t f = 0; f < FAN_COUNT; f++) thermalManager.set_fan_speed(f, 0);
+  the_housekeeping_pass_runs();
 }
