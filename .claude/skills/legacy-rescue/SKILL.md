@@ -343,6 +343,24 @@ For each survivor, in descending order of risk:
   comparison against zero are unkillable when the operand cannot be negative, and the same
   goes for a range check on a value the type already bounds. Neither is a gap in the tests,
   and neither is worth a second attempt once it has been named.
+- **A guard that only avoids redundant work has no wrong answer, only a slow one.** "Skip if
+  unchanged", "recompute only when dirty", "return early if already in order" — the block such
+  a guard protects is idempotent, so running it when it was not needed produces the same state
+  as skipping it. Every mutant that makes the guard *more* permissive is therefore equivalent,
+  and they are numerous: widening a comparison, deleting the condition, replacing it with true.
+  Only narrowing it changes an answer.
+
+  Recognise these by shape rather than by hunting for the input that separates them — ask what
+  the guarded block would do if it ran anyway, and if the answer is "the same thing", stop.
+  Killing them would take a test that measured *work done*, not results, and that is a
+  different kind of test with a different kind of flakiness.
+- **Do not state a precondition in terms of a value the code under test may have rewritten.**
+  A test that opens with "this input is only interesting if X" needs X read from something the
+  behaviour does not touch. Code that corrects a value often stamps the corrected answer back
+  into the field the correction was measured against — to mark the item as handled, to keep an
+  invariant, to stop a second pass repeating the work — and a precondition phrased against that
+  field then agrees with whatever happened. The failure is not silent, which is the good news:
+  it usually shows up as a precondition that cannot be satisfied at all.
 - **When a value is folded over a collection, move the deciding element away from the end.**
   "The tightest limit wins", "the earliest deadline wins", "the highest bidder wins" — the
   natural example to reach for tends to put the winner last, because that is the order the

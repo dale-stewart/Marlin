@@ -119,6 +119,23 @@ bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_
 `test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
 the return is "was it marginal", not "did it work".
 
+**"A guard that only avoids redundant work has no wrong answer."** The planner's forward pass is
+gated twice — `planner.cpp:1098` skips a block whose predecessor was not accelerating, and
+`:1167` skips one already at its optimised speed. Both are pure optimisations: when the guard is
+false the kernel's own `new_exit_speed_sqr < entry_speed_sqr` cannot hold, so running it anyway
+changes nothing. All nine remaining survivors on those two lines widen the guard (`<=`, `!=`,
+`>=`, deleted, `(1==1)`), and the same goes for the `NOLESS` at `:1106` and the write at `:1109`
+that `:1113` overwrites a line later. The three that *narrow* it were killed by
+`a_move_cannot_enter_faster_than_the_run_up_allows`.
+
+**"Do not state a precondition in terms of a value the code under test may have rewritten."**
+That test first said "this run-up is only interesting if it falls short of
+`second.max_entry_speed_sqr`" — and `planner.cpp:1109` writes the corrected speed back into
+`max_entry_speed_sqr` precisely so a second pass will not redo the work, so the precondition
+could never hold. It reads `sq(second.nominal_speed)` now. Also worth knowing: the first block of
+a plan enters at `minimum_planner_speed_sqr` (18.75 here), not zero, so the assertion is
+`v² = u² + 2as` with the block's own `entry_speed_sqr` for `u²` — `2as` alone is out by that much.
+
 **"When a value is folded over a collection, move the deciding element away from the end."**
 `planner.cpp` scales a whole move down until its worst axis is at its own feedrate limit, taking
 the minimum over `LOOP_NUM_AXES`. Z is both the slowest axis on a cartesian machine and the last

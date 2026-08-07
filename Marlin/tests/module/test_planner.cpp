@@ -659,3 +659,106 @@ MARLIN_TEST(planner, the_order_the_axes_are_checked_in_does_not_decide) {
   TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, if_only_x_bound, block.nominal_speed,
     "the tightest limit should bind even when a looser one is found after it");
 }
+
+namespace {
+
+  // Two moves in a straight line, the first `run_up_mm` long and the second long enough that
+  // nothing about stopping at the end of it reaches back. Reports the second block.
+  const block_t& plan_a_run_up(const float run_up_mm, const float feedrate = 60.0f) {
+    planner.clear_block_buffer();
+    xyze_pos_t at = { 0 };
+    planner.set_position_mm(at);
+    at.x = run_up_mm;
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, feedrate), "the run-up was not accepted");
+    at.x = run_up_mm + 50.0f;
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, feedrate), "the second move was not accepted");
+    TEST_ASSERT_EQUAL_MESSAGE(2, planner.movesplanned(), "both moves should still be queued");
+    const uint8_t last = (planner.block_buffer_head + BLOCK_BUFFER_SIZE - 1) % (BLOCK_BUFFER_SIZE);
+    return planner.block_buffer[last];
+  }
+
+  const block_t& the_block_before(const block_t &b) {
+    const uint8_t here = uint8_t(&b - planner.block_buffer);
+    return planner.block_buffer[(here + BLOCK_BUFFER_SIZE - 1) % (BLOCK_BUFFER_SIZE)];
+  }
+
+  // v² = u² + 2as, over the whole of a block.
+  float speed_sqr_reachable_across(const block_t &b) {
+    return b.entry_speed_sqr + 2.0f * b.acceleration * b.millimeters;
+  }
+
+}
+
+/**
+ * A move cannot start faster than the one before it managed to reach.
+ *
+ * The corner between two collinear moves permits any speed at all, and the second move here is
+ * long enough to stop from comfortably. What holds it back is behind it: the first move is half
+ * a millimetre of runway, and from a standstill that is not enough room to reach the commanded
+ * feedrate. The planner's forward pass is what notices — it walks the queue from the front
+ * carrying "the fastest we can be by now" and pulls each entry speed down to it.
+ *
+ * Asserted as v² = u² + 2as across the first block, which is the whole of the claim.
+ */
+MARLIN_TEST(planner, a_move_cannot_enter_faster_than_the_run_up_allows) {
+  SimulatedMachine machine;
+
+  const block_t &second = plan_a_run_up(0.5f);
+  const block_t &first = the_block_before(second);
+
+  // Stated against the commanded feedrate and not against `max_entry_speed_sqr`: the forward
+  // pass writes its answer back into that field as well, to mark the block as already dealt
+  // with, so by the time a test can read it it agrees with whatever happened.
+  TEST_ASSERT_TRUE_MESSAGE(speed_sqr_reachable_across(first) < sq(second.nominal_speed),
+    "this test needs a run-up too short to reach the speed that was asked for");
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f * speed_sqr_reachable_across(first),
+    speed_sqr_reachable_across(first), second.entry_speed_sqr,
+    "the second move should enter at exactly the speed the first one could reach");
+
+  planner.clear_block_buffer();
+}
+
+/**
+ * Given room to get up to speed, the move before decides nothing.
+ *
+ * The other arm. Fifty millimetres of runway is more than enough at this feedrate, so the
+ * forward pass finds nothing to correct and the entry speed is whatever the corner and the
+ * commanded feedrate already allowed. Without this, "always enter as slowly as the run-up
+ * permits" and "enter as fast as everything permits" are the same rule.
+ */
+MARLIN_TEST(planner, a_long_enough_run_up_holds_nothing_back) {
+  SimulatedMachine machine;
+
+  const block_t &second = plan_a_run_up(50.0f);
+  const block_t &first = the_block_before(second);
+
+  TEST_ASSERT_TRUE_MESSAGE(speed_sqr_reachable_across(first) > sq(second.nominal_speed),
+    "this test needs a run-up long enough to reach the speed that was asked for");
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f * second.max_entry_speed_sqr,
+    second.max_entry_speed_sqr, second.entry_speed_sqr,
+    "with room to get up to speed the second move should enter as fast as it is allowed to");
+
+  planner.clear_block_buffer();
+}
+
+/**
+ * Twice the runway is twice the square of the speed.
+ *
+ * The relation rather than a pair of numbers: v² = 2as is linear in the distance, so doubling
+ * the run-up doubles the square of the speed reached — a factor of √2 on the speed itself.
+ * A rule that clamped a short first move to some fixed fraction of the feedrate would satisfy
+ * both tests above and neither of these two points together.
+ */
+MARLIN_TEST(planner, the_speed_a_run_up_reaches_grows_with_its_length) {
+  SimulatedMachine machine;
+
+  const float short_run = plan_a_run_up(0.25f).entry_speed_sqr;
+  const float long_run = plan_a_run_up(0.5f).entry_speed_sqr;
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f * short_run, short_run, long_run / 2.0f,
+    "twice the run-up should give twice the square of the entry speed");
+
+  planner.clear_block_buffer();
+}
