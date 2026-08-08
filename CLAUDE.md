@@ -119,6 +119,17 @@ bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_
 `test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
 the return is "was it marginal", not "did it work".
 
+**`planner.cpp` is closed at 60.5% raw / 73.2% killable** (612/1012; 176 of the 400 survivors
+are equivalent). The reason categories, all checked rather than inferred: 76 masked by the
+junction-deviation cap (register #29), 47 erased by the preprocessor (the fan guards and the
+`TERN0(FTM_CONSTANT_JOLT, …)` at `:1777`, which never evaluates true here), 19 outside their
+variable's reachable range — `:834`'s `accel` was measured across the whole suite and spans
+120000..640000000, so every relational mutant of `!= 0` agrees with it — 15 direction pins for
+axes that are not moving, 11 guards that only skip redundant work, and 8 at `:2432`, where the
+integer and floating-point acceleration limits are two forms of one formula and **both arms
+run** (209 and 40 times), so the split is a shortcut, not dead code. What is left has no cluster
+larger than seven.
+
 **"A source-level mutator edits text; check the text still means something different."**
 `planner.cpp:1223-1226` sets eight fans with eight hand-written `TERN_(HAS_FANn, FAN_SET(n))`
 pairs, and had 56 survivors. Thirty-eight of them are erased by the preprocessor:
@@ -273,6 +284,18 @@ is blocked by PEP 668 on this machine).
 
 ### Gotchas that have cost real time
 
+- **A cold nozzle makes the *planner* drop the E part of a move, silently.**
+  `planner.cpp:1850` — `tooColdToExtrude()` sets `position.e = target.e` and zeroes
+  `steps_dist.e`, so the firmware's idea of the filament position advances as though the
+  extrusion happened. A test asserting on E steps then sees a machine that never moved, with no
+  complaint on any channel and `buffer_line()` still returning true. This is separate from the
+  guard in `prepare_line_to_destination()`, so calling `buffer_line` directly does *not* avoid
+  it. Whether it bites depends on `thermalManager.allow_cold_extrude`, which is machine state
+  another test's `M302` may have left either way — which is exactly how the E-direction tests
+  passed in the default configuration and failed under bed levelling. Any test about E must say
+  which side of that guard it wants: see `PlainExtrusion` in `test_simulated_motion.cpp`.
+  Related: `MIN_STEPS_PER_SEGMENT` is 6, so a move of one E step is dropped before it becomes a
+  block at all and has to ride along with a travel long enough to survive.
 - **`planner.buffer_line()` returns true and queues nothing while the machine is not
   running.** `marlin.state` is `MF_RUNNING` only because `SimulatedMachine` sets it, so a test
   that plans moves without that fixture gets `true` from every `buffer_line` and

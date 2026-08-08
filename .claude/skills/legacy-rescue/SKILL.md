@@ -601,6 +601,20 @@ without testing behavior. Reject any test that
 Exit gate: ≥95% line coverage on the target **and** a mutation score the team
 accepts, with survivors accounted for.
 
+**Stop when the survivor distribution flattens, not when the score hits a number.** Through
+most of a rescue the survivors arrive in clusters, and each cluster is one missing input class
+— which is what makes the work tractable, because one fixture buys twenty mutants. The signal
+that a target is done is that the clusters are gone: the largest remaining group is a handful,
+spread across unrelated lines, each needing its own bespoke test for its own single mutant.
+Past that point the cost per mutant has jumped by an order of magnitude and the yield has not.
+
+**Report the killable score alongside the raw one.** Once survivors have been triaged, the raw
+percentage understates the suite by however many mutants no test could ever kill — and that
+share grows as the real gaps close, so the number gets *less* informative exactly as the work
+gets better. Quote both, with the equivalent count and the reason categories behind it, so a
+reader can see which is which. A raw score falling while the killable score rises is a normal
+and healthy thing to happen; a single number cannot show it.
+
 ## Step 6 — Extract Gherkin scenarios and build acceptance tests
 
 Now that behavior is pinned, describe it in the domain's language.

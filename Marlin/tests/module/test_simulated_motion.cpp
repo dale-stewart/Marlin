@@ -27,6 +27,7 @@
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
+#include "src/module/temperature.h"
 
 MARLIN_TEST(simulated_motion, a_planned_move_steps_the_motor) {
   SimulatedMachine machine;
@@ -243,3 +244,127 @@ MARLIN_TEST(simulated_motion, each_motor_takes_its_direction_from_its_own_axis) 
 }
 
 #endif // HAS_Y_AXIS && HAS_Z_AXIS
+
+#if HAS_EXTRUDERS
+
+namespace {
+
+  // The extruder's direction pin after a move that feeds `de` millimetres of filament.
+  // E is not one of the axes `direction_after` covers: it has no simulated carriage, no
+  // limit switch and no position to home to, so it is driven and read on its own.
+  uint16_t e_direction_after(const float de) {
+    xyze_pos_t origin = { 0 };
+    planner.set_position_mm(origin);
+    xyze_pos_t target = { 0 };
+    target.e = de;
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(target, 5.0f), "the move was not accepted");
+    TEST_ASSERT_TRUE_MESSAGE(SimulatedMachine::run_until_idle(), "the move never finished");
+    return Gpio::get(E0_DIR_PIN);
+  }
+
+  // Everything an extruding move depends on besides its own direction.
+  //
+  // The cold-extrusion guard is the one that matters and it is not obvious: a nozzle below
+  // `EXTRUDE_MINTEMP` makes the *planner* drop the E part of a move and advance its idea of the
+  // filament position as though it had happened, so a test asserting on E steps sees a machine
+  // that never moved and no complaint anywhere. Whether the guard is on is machine state some
+  // other test's `M302` may have left either way, which is why these passed in one
+  // configuration and not another. These tests are about which way the motor turns, so the
+  // guard is switched off rather than a temperature simulated.
+  //
+  // Flow rate is the same kind of thing: it scales every extrusion and outlives the command
+  // that set it, so a test that asks for one step of filament has to say what a step is.
+  struct PlainExtrusion {
+    float was_factor;
+    #if ENABLED(PREVENT_COLD_EXTRUSION)
+      bool was_allowed;
+    #endif
+    PlainExtrusion() : was_factor(planner.e_factor[0]) {
+      planner.e_factor[0] = 1.0f;
+      #if ENABLED(PREVENT_COLD_EXTRUSION)
+        was_allowed = thermalManager.allow_cold_extrude;
+        thermalManager.allow_cold_extrude = true;
+      #endif
+    }
+    ~PlainExtrusion() {
+      planner.e_factor[0] = was_factor;
+      TERN_(PREVENT_COLD_EXTRUSION, thermalManager.allow_cold_extrude = was_allowed);
+    }
+  };
+
+}
+
+/**
+ * The extruder turns the other way to retract.
+ *
+ * Nothing else on the machine reverses as often: every travel move between two islands is
+ * bracketed by a retract and a prime, so an extruder that ignored the sign would unspool
+ * filament onto the bed at each one. As with the other axes this compares E only against
+ * itself, so it says nothing about which level means forwards here.
+ */
+MARLIN_TEST(simulated_motion, the_extruder_reverses_to_retract) {
+  SimulatedMachine machine;
+  PlainExtrusion plain;
+
+  TEST_ASSERT_TRUE_MESSAGE(e_direction_after(2.0f) != e_direction_after(-2.0f),
+    "the extruder should drive its direction pin oppositely to retract");
+}
+
+/**
+ * ...and forwards means more filament out, not less.
+ *
+ * The other half, for the same reason Z needs it: an extruder inverted *consistently* passes
+ * the test above, and prints nothing while steadily pulling filament back out of the hot end
+ * until the drive gear grinds a flat on it.
+ */
+MARLIN_TEST(simulated_motion, extruding_pushes_filament_out) {
+  SimulatedMachine machine;
+  PlainExtrusion plain;
+
+  xyze_pos_t origin = { 0 };
+  planner.set_position_mm(origin);
+
+  xyze_pos_t target = { 0 }; target.e = 2.0f;
+  TEST_ASSERT_TRUE(planner.buffer_line(target, 5.0f));
+  TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+
+  const int32_t steps = int32_t(2.0f * SimulatedMachine::STEPS_PER_MM);
+  TEST_ASSERT_EQUAL_MESSAGE(steps, stepper.position(E_AXIS),
+    "asking for filament should have fed filament, not pulled it back");
+
+  TEST_ASSERT_TRUE(planner.buffer_line(origin, 5.0f));
+  TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+  TEST_ASSERT_EQUAL_MESSAGE(0, stepper.position(E_AXIS), "the retract should have undone it");
+}
+
+/**
+ * The smallest extrusion there is still goes forwards.
+ *
+ * The sign test is a comparison against zero, and the failure it hides is an off-by-one: a
+ * rule that only calls an extrusion forward once it is more than one step sends the very
+ * smallest ones backwards. That is a thin line of under-extrusion rather than a broken print,
+ * which is why it needs asking for on purpose.
+ *
+ * It cannot be asked for on its own. `MIN_STEPS_PER_SEGMENT` is 6, so a move of one step is
+ * dropped before it reaches a block at all — the extrusion has to ride along with a travel
+ * long enough to survive that, which makes this an input the machine can only be given in
+ * combination.
+ */
+MARLIN_TEST(simulated_motion, the_smallest_extrusion_still_goes_forwards) {
+  SimulatedMachine machine;
+  PlainExtrusion plain;
+
+  xyze_pos_t origin = { 0 };
+  planner.set_position_mm(origin);
+
+  xyze_pos_t target = { 0 };
+  target.x = 20.0f;                                  // enough steps to keep the segment
+  target.e = 1.0f / SimulatedMachine::STEPS_PER_MM;   // one step of filament, and no more
+  TEST_ASSERT_TRUE(planner.buffer_line(target, 5.0f));
+  TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+
+  TEST_ASSERT_EQUAL_MESSAGE(1, stepper.position(E_AXIS),
+    "one step of filament should be fed forwards, not back");
+}
+
+#endif // HAS_EXTRUDERS

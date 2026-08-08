@@ -901,3 +901,114 @@ MARLIN_TEST(planner, every_fan_is_driven_at_its_own_speed) {
   for (uint8_t f = 0; f < FAN_COUNT; f++) thermalManager.set_fan_speed(f, 0);
   the_housekeeping_pass_runs();
 }
+
+#if ENABLED(SLOWDOWN)
+
+namespace {
+
+  #ifndef SLOWDOWN_DIVISOR
+    #define SLOWDOWN_DIVISOR 2
+  #endif
+
+  constexpr uint8_t SLOWDOWN_FROM = 2,
+                    SLOWDOWN_UNTIL = (BLOCK_BUFFER_SIZE) / (SLOWDOWN_DIVISOR) - 1;
+
+  constexpr float PROBE_MM = 0.1f, PROBE_MM_S = 60.0f, FILLER_MM = 5.0f;
+
+  // Both settings the slowdown depends on, stated rather than inherited: `M205 B` outlives the
+  // command that set it, and a suite that had left it at zero would find nothing slowed at any
+  // depth and report the bracket as untestable rather than wrong.
+  struct StatedSegmentTime {
+    SimulatedMachine machine;
+    uint32_t was;
+    StatedSegmentTime() : was(planner.settings.min_segment_time_us) {
+      planner.settings.min_segment_time_us = 20000;
+    }
+    ~StatedSegmentTime() {
+      planner.settings.min_segment_time_us = was;
+      planner.clear_block_buffer();
+    }
+  };
+
+  // Put `depth` moves in the queue, then plan one short fast move on top and report the speed
+  // it was given. Nothing consumes the queue, so `depth` is exactly what the planner sees.
+  float speed_of_a_short_move_behind(const uint8_t depth) {
+    planner.clear_block_buffer();
+    xyze_pos_t at = { 0 };
+    planner.set_position_mm(at);
+
+    for (uint8_t i = 0; i < depth; i++) {
+      at.x += FILLER_MM;
+      TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, 100.0f), "a filler move was not accepted");
+    }
+    TEST_ASSERT_EQUAL_MESSAGE(depth, planner.movesplanned(), "the queue is not at the depth asked for");
+
+    at.x += PROBE_MM;
+    TEST_ASSERT_TRUE_MESSAGE(planner.buffer_line(at, PROBE_MM_S), "the short move was not accepted");
+
+    const uint8_t last = (planner.block_buffer_head + BLOCK_BUFFER_SIZE - 1) % (BLOCK_BUFFER_SIZE);
+    return planner.block_buffer[last].nominal_speed;
+  }
+
+  bool was_slowed(const uint8_t depth) {
+    return speed_of_a_short_move_behind(depth) < PROBE_MM_S * 0.99f;
+  }
+
+}
+
+/**
+ * A short move is stretched only while the queue is shallow enough to be worth helping.
+ *
+ * A queue of very short segments drains faster than the host can refill it, and when it runs
+ * dry the machine stops dead mid-curve. So the planner spends time it has: while the queue is
+ * shallow it stretches each short segment out towards `min_segment_time_us`, buying the host
+ * long enough to catch up.
+ *
+ * Both ends of that bracket are load-bearing and neither is obvious. Below it — a single move
+ * queued — there is nothing to protect: the machine is not printing a curve, it is doing one
+ * thing, and slowing it down would just be slow. Above it the queue is healthy and stretching
+ * moves would cap the machine's speed for no reason at all.
+ *
+ * Four depths, one either side of each end, which is what says where the bracket is rather
+ * than that some bracket exists.
+ */
+MARLIN_TEST(planner, a_short_move_is_stretched_only_while_the_queue_is_shallow) {
+  StatedSegmentTime stated;
+
+  TEST_ASSERT_FALSE_MESSAGE(was_slowed(SLOWDOWN_FROM - 1),
+    "one move on its own is not a draining queue and should not be slowed");
+  TEST_ASSERT_TRUE_MESSAGE(was_slowed(SLOWDOWN_FROM),
+    "a queue at the shallow end of the bracket should be helped");
+  TEST_ASSERT_TRUE_MESSAGE(was_slowed(SLOWDOWN_UNTIL),
+    "and still at the deep end of it");
+  TEST_ASSERT_FALSE_MESSAGE(was_slowed(SLOWDOWN_UNTIL + 1),
+    "a queue past the bracket is keeping up and should be left alone");
+}
+
+/**
+ * The deeper the queue, the less it is helped.
+ *
+ * The stretch is not a flat penalty: the time added is shared out by how many moves are
+ * already queued, so a queue one move from empty is stretched hardest and the help tails off
+ * as the host catches up. Without this, "slow down inside the bracket" and "slow down by the
+ * right amount" are the same claim, and the machine would jolt back to full speed at the edge
+ * of the bracket instead of easing off to meet it.
+ *
+ * Asserted as the relation — twice the depth, half the help — rather than as two speeds.
+ */
+MARLIN_TEST(planner, a_deeper_queue_is_stretched_less) {
+  StatedSegmentTime stated;
+
+  // Time taken, rather than speed, because it is the time the stretch is added to.
+  const float at_2 = PROBE_MM / speed_of_a_short_move_behind(2),
+              at_4 = PROBE_MM / speed_of_a_short_move_behind(4),
+              unhelped = PROBE_MM / PROBE_MM_S;
+
+  const float help_at_2 = at_2 - unhelped, help_at_4 = at_4 - unhelped;
+
+  TEST_ASSERT_TRUE_MESSAGE(help_at_4 > 0.0f, "both depths should be inside the bracket");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.02f * help_at_4, help_at_4, help_at_2 / 2.0f,
+    "twice as many moves queued should get half as much added");
+}
+
+#endif // SLOWDOWN
