@@ -371,3 +371,78 @@ MARLIN_TEST(motion, the_stepper_position_can_be_set_and_read) {
   stepper.set_axis_position(X_AXIS, 0);
   TEST_ASSERT_EQUAL(0, stepper.position(X_AXIS));
 }
+
+// ---------------------------------------------------------------------------
+// Feedrate handling for the firmware's own moves
+// ---------------------------------------------------------------------------
+
+/**
+ * The firmware's own moves ignore the user's speed override.
+ *
+ * `M220 S50` is a request to run *the print* at half speed. Probing, homing and tool changes
+ * are not the print — they have feedrates chosen so the machine measures accurately and stops
+ * safely, and halving those makes probing slow and doubling them makes it inaccurate. So the
+ * firmware turns scaling off around its own moves, and this is the pair that does it.
+ *
+ * The override has to be *restored* afterwards, and to the value the user asked for rather than
+ * to a default — a probe in the middle of a job must not leave the rest of it running at full
+ * speed. Two different percentages, because restoring to a constant would satisfy one.
+ */
+MARLIN_TEST(motion, the_firmwares_own_moves_are_not_scaled_by_the_users_override) {
+  const int16_t was_pct = motion.feedrate_percentage;
+  const float was_fr = motion.feedrate_mm_s;
+
+  for (const int16_t user_asked_for : { 50, 175 }) {
+    motion.feedrate_percentage = user_asked_for;
+    motion.feedrate_mm_s = 12.5f;
+
+    motion.remember_feedrate_scaling_off();
+    TEST_ASSERT_EQUAL_MESSAGE(100, motion.feedrate_percentage,
+      "the firmware's own moves should run unscaled, whatever the user asked for");
+
+    motion.restore_feedrate_and_scaling();
+    TEST_ASSERT_EQUAL_MESSAGE(user_asked_for, motion.feedrate_percentage,
+      "and the user's override should come back afterwards, not a default");
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(12.5f, motion.feedrate_mm_s,
+      "along with the feedrate that was in force");
+  }
+
+  motion.feedrate_percentage = was_pct;
+  motion.feedrate_mm_s = was_fr;
+}
+
+#if HAS_WORKSPACE_OFFSET && HAS_HOME_OFFSET
+
+/**
+ * Homing an axis discards the workspace offset on it.
+ *
+ * A workspace offset is the difference between the coordinates the user is working in and the
+ * machine's own. Homing re-establishes where the machine physically is, so whatever shift was
+ * in force before is no longer meaningful — keeping it would silently move the user's origin
+ * by that much and every coordinate afterwards would be wrong by a constant.
+ *
+ * Asserted as the two coordinate systems agreeing, which is what a zero offset *means*, rather
+ * than by reading the offset back: an offset of zero and a conversion that ignores the offset
+ * are different claims, and only the first is wanted here.
+ */
+MARLIN_TEST(motion, homing_an_axis_discards_the_workspace_offset) {
+  SavedOffsets restore;
+
+  // A home offset, applied the way `M206` applies it.
+  motion.home_offset.x = 10.0f;
+  motion.workspace_offset.x = 4.0f;
+  TEST_ASSERT_TRUE_MESSAGE(motion.native_to_logical(0.0f, X_AXIS) != 0.0f,
+    "this test needs the two coordinate systems to disagree to begin with");
+
+  motion.set_axis_is_at_home(X_AXIS);
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(motion.position.x, motion.native_to_logical(motion.position.x, X_AXIS),
+    "after homing, the user's coordinates and the machine's should be the same again");
+
+  // ...and the home offset still applies, so the two are not the same thing: the axis is at
+  // its base home position shifted by the offset the user set.
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(motion.base_home_pos(X_AXIS) + 10.0f, motion.position.x,
+    "the home offset should still move where home is");
+}
+
+#endif // HAS_WORKSPACE_OFFSET && HAS_HOME_OFFSET

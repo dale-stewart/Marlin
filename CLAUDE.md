@@ -119,6 +119,16 @@ bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_
 `test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
 the return is "was it marginal", not "did it work".
 
+**`motion.cpp` is closed at 57.8% raw / 75.3% killable** (204/353; 82 of 149 survivors are
+equivalent), 76% line coverage. Reason categories, all checked: 24 preprocessor-erased because
+this build has no probe, 23 outside their variable's reachable range (`axis_home_dir` is always
+`-1`, and no `HOMING_BUMP_DIVISOR` entry is below 1), 14 where an early-return shortcut agrees
+with the general formula it skips — `get_move_distance` returns `ABS(diff.z)` for a Z-only move
+and `SQRT(sq(dx)+sq(dy)+sq(dz))` gives the same — 12 masked by the duplicated extrusion guard
+(register #30), 5 zero-length moves filtered by `MIN_STEPS_PER_SEGMENT`, and 4 on
+`final_approach`, which is read only inside a `HOMING_Z_WITH_PROBE` block. The remaining 67 are
+spread across 44 lines with **no cluster larger than three**, which is the signal to stop.
+
 **`planner.cpp` is closed at 60.5% raw / 73.2% killable** (612/1012; 176 of the 400 survivors
 are equivalent). The reason categories, all checked rather than inferred: 76 masked by the
 junction-deviation cap (register #29), 47 erased by the preprocessor (the fan guards and the
