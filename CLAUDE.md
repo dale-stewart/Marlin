@@ -155,6 +155,20 @@ arm is live, and the hand-applied mutant that swapped `HAS_FAN0` for `HAS_FAN1` 
 at all. `every_fan_is_driven_at_its_own_speed` in `test_planner.cpp` is what the line actually
 needed. Print the resolved constant; the default config is not the whole story.
 
+**`tool_change.cpp` is at 97% line / 41.2% mutation (47/114) — measured against
+`extruders_3_runout`, not the default config**, where it is not compiled at all. It read 0% for
+a long time for exactly that reason. `gcode/control/T.cpp` went 0% → 75% in the same pass. Quote
+the configuration with any figure for these two or it means nothing.
+
+**"A counter the system re-bases cannot measure the movement it re-bases."** A tool change calls
+`sync_plan_position()`, which re-references the firmware's step counters to the shifted
+coordinate *without the carriage moving* — then moves the carriage back by the same amount. So
+`stepper.position(X_AXIS)` reads identical before and after, and an assertion built on it reports
+that nothing moved. Measure the physical carriage with a `SimulatedAxisWithLimit`, which counts
+pulses on the pin and is not re-referenced by anything. This is the second instance of the same
+trap; `simulated_endstops.h` documents the first, which is why the bed surface is driven from the
+simulated rails rather than from `stepper.position()`.
+
 **"A survivor may mean the test exists but not in the build you measured."** `motion.cpp:2271`'s
 `is_home_dir` had 21 survivors and the test that kills them was already written —
 `homing_leaves_no_endstop_hit_outstanding` in `test_homing_the_machine.cpp`, whose whole file is

@@ -360,6 +360,17 @@ For each survivor, in descending order of risk:
   enabled by a default, a dependency, or another option's side effect. Classifying survivors as
   "dead arms of a disabled feature" on the strength of the settings is a claim about the build
   that has not been checked, and it is wrong often enough to matter. Print the resolved constant.
+- **A counter the system re-bases cannot measure the movement it re-bases.** Plenty of code
+  keeps its own bookkeeping — a position, an offset, a sequence number, a running total — and
+  resets or re-references it partway through an operation, precisely so the rest of the
+  operation can be expressed in the new frame. Reading that bookkeeping afterwards tells you
+  where the system *thinks* it is, which is exactly what you wanted to verify and therefore
+  exactly what you cannot use as evidence.
+
+  The tell is an assertion that reports no change when you can see work happening: the counter
+  was moved forward by the re-base and back by the operation, and the two cancel. The instrument
+  has to be something outside the system's control that only accumulates — an observer counting
+  the events themselves rather than reading a total the code is free to rewrite.
 - **A survivor may mean the test exists but not in the build you measured.** Where a suite is
   compiled per configuration, a test excluded by a build guard does not fail, does not appear,
   and does not run — so its subject shows up in the report as unasserted. The mutation score is
