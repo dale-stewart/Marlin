@@ -430,10 +430,22 @@ Both agent definitions now carry the corresponding rule. The pattern behind both
 is most dangerous where it is most confident**, and both errors were in claims nothing
 downstream would normally re-check.
 
-**Delegating to subagents in this repo.** `.claude/agents/harness-validator.md`,
-`mutant-killer.md` and `hal-debugger.md` exist for the three recurring roles. The first
-two are stack-neutral and lift with the skill; `hal-debugger` is specific to this
-firmware's HAL. Each states a **return contract** — an agent that hands back its raw
+**Delegating to subagents in this repo.** One agent per step of the skill:
+`rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
+`acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
+stack-neutral and lift with the skill; `hal-debugger` is specific to this firmware's HAL.
+Step 8 is deliberately not delegated.
+
+`rescue-surveyor` exists because of this fork's most repeated mistake: a file reading 0%
+because nothing compiles it looks exactly like a file nobody tested. `tool_change.cpp`,
+`temperature.cpp` and `settings.cpp` each cost a wrong claim before that was understood,
+so the surveyor must classify a low figure as untested / not-compiled / not-host-buildable
+/ not-linked, and say whether it measured or inferred it.
+
+`acceptance-author` grep-checks its own scenarios for implementation symbols rather than
+asserting they are clean — the property that makes `keeping_its_settings.feature` and
+`moving_the_tool.feature` able to hold still through the `planner.settings` migration,
+and one an agent can violate while believing it has not. Each states a **return contract** — an agent that hands back its raw
 output has saved no context, only relocated it, so the contract is the point rather than
 the prose. Give any agent that builds its own
 worktree — all PlatformIO environments share `.pio/build/<env>`, so two agents building

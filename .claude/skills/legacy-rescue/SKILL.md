@@ -42,15 +42,27 @@ Each agent reads its own reference files, so that detail never enters this conte
 
 | Step | Agent | Returns |
 |---|---|---|
-| 0-2 | `rescue-surveyor` | per-file coverage, covered-line count, one-line reason each is low |
+| 0-2 | `rescue-surveyor` | ranked candidates, each classified untested / not-compiled / not-host-buildable / not-linked, and whether that was measured or inferred |
 | 3 | `harness-validator` | `TRUSTWORTHY` / `NOT TRUSTWORTHY`, the evidence, the command |
 | 4-5 | `mutant-killer` | killed / equivalent-with-reason / surviving-with-what-would-reach-it, largest remaining cluster, tests added |
-| 6-7 | `acceptance-author` | scenario titles, coverage the suite reaches alone, any implementation symbol that leaked into a step |
+| 6-7 | `acceptance-author` | scenario titles, the acceptance-only coverage, and the vocabulary grep with its hit count |
 
 An agent that hands back its raw output has saved nothing. Each agent definition
 states a narrow return shape, and that contract is what makes delegation pay rather
 than merely relocate the tokens. Where no agent exists for the stack at hand, run the
 step directly and read the reference file yourself.
+
+**Where a property matters, have the agent show it rather than assess it.** An agent
+asked whether its own work has a property will usually say yes, and will believe it. A
+grep with a hit count, a re-run with its output, an artifact on disk — these are checkable
+by the caller and the self-assessment is not. Prefer a contract that returns evidence over
+one that returns a verdict, wherever the difference is affordable.
+
+**An agent is most dangerous where it is most confident.** The claims worth re-checking are
+not the hedged ones; they are the ones stated as established fact in passing — an
+equivalence used as a control, a suite reported green, a constant asserted from a
+configuration file. Each is load-bearing for everything after it and none of them announce
+themselves as claims.
 
 **Two things are not delegated.** Step 8 stays with the orchestrator: the migration is
 where the judgement is highest and the evidence subtlest, and deciding to *stop* is the
