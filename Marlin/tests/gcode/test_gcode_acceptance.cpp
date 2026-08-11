@@ -46,6 +46,7 @@
 #include "src/module/motion.h"
 #include "src/module/planner.h"
 #include "src/module/temperature.h"
+#include "../support/test_clock.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -327,6 +328,47 @@ namespace {
   void the_carriage_really_is_along_x(const HomedPrinter &printer, const float mm) {
     TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.2f, mm, printer.x_mm(),
       "where the carriage physically ended up");
+  }
+
+  //
+  // ---- Steps for: Timing a print job ----
+  //
+  // Everything here goes through M75/M76/M77 to change the clock and M31 to read it back,
+  // exactly what a host does. Nothing reaches into the timer's internal state directly, so
+  // these scenarios hold still while whatever implements it is refactored underneath them.
+  //
+
+  // Kept as a name the scenarios read well with; the mechanism differs per HAL (see
+  // support/test_clock.h) and is a no-op under the test HAL, where time is an exact counter.
+  struct AcceleratedClock {
+    TestClock scope;
+    static void advance_seconds(const uint32_t s) { TestClock::advance_seconds(s); }
+  };
+
+  void the_host_starts_the_print_job_timer() { the_host_sends("M75"); }
+  void the_host_pauses_the_print_job_timer() { the_host_sends("M76"); }
+  void the_host_stops_the_print_job_timer() { the_host_sends("M77"); }
+
+  // M31's reply is "Print time: <formatted duration>" — under a minute that formats as
+  // plain seconds, e.g. "5s", so reading the number straight off it is exact for what these
+  // scenarios ask for.
+  double the_reported_job_duration() {
+    const std::string reply = the_reply_to("M31");
+    size_t from = 0;
+    double got = 0;
+    TEST_ASSERT_TRUE_MESSAGE(reported::next_number(reply, "Print time: ", from, got),
+      "the print time report should give an elapsed time");
+    return got;
+  }
+
+  void the_job_is_reported_to_have_been_running_for_about(const double expected_seconds) {
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1.5f, float(expected_seconds), float(the_reported_job_duration()),
+      "reported job duration");
+  }
+
+  void the_job_is_reported_to_have_been_running_for_at_least(const double expected_seconds) {
+    TEST_ASSERT_TRUE_MESSAGE(the_reported_job_duration() >= expected_seconds,
+      "reported job duration should be at least the expected number of seconds");
   }
 
 }
@@ -667,4 +709,70 @@ MARLIN_TEST(moving_the_tool, a_coordinate_off_the_end_of_the_bed_is_not_attempte
 
   TEST_ASSERT_TRUE_MESSAGE(printer.x_mm() <= float(X_MAX_POS) + 0.5f,
     "the carriage should have stopped at the end of its travel, not gone where it was told");
+}
+
+//
+// ======== Feature: Timing a print job ========
+//
+
+MARLIN_TEST(timing_the_job, starting_a_job_begins_timing_it) {
+  ConnectedPrinter connected;
+  [[maybe_unused]] AcceleratedClock clock;
+  the_host_starts_the_print_job_timer();
+  the_job_is_reported_to_have_been_running_for_about(0);
+  the_host_stops_the_print_job_timer();
+}
+
+MARLIN_TEST(timing_the_job, the_clock_keeps_time_while_the_job_runs) {
+  ConnectedPrinter connected;
+  [[maybe_unused]] AcceleratedClock clock;
+  the_host_starts_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_job_is_reported_to_have_been_running_for_at_least(4);
+  the_host_stops_the_print_job_timer();
+}
+
+MARLIN_TEST(timing_the_job, pausing_the_job_holds_the_elapsed_time) {
+  ConnectedPrinter connected;
+  [[maybe_unused]] AcceleratedClock clock;
+  the_host_starts_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_host_pauses_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_job_is_reported_to_have_been_running_for_about(5);
+  the_host_stops_the_print_job_timer();
+}
+
+// M75 is also what resumes a paused job — there is no separate command for it.
+MARLIN_TEST(timing_the_job, resuming_a_paused_job_carries_on_from_where_it_left_off) {
+  ConnectedPrinter connected;
+  [[maybe_unused]] AcceleratedClock clock;
+  the_host_starts_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_host_pauses_the_print_job_timer();
+  the_host_starts_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_job_is_reported_to_have_been_running_for_at_least(9);
+  the_host_stops_the_print_job_timer();
+}
+
+MARLIN_TEST(timing_the_job, stopping_the_job_ends_the_timer_for_good) {
+  ConnectedPrinter connected;
+  [[maybe_unused]] AcceleratedClock clock;
+  the_host_starts_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_host_stops_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_job_is_reported_to_have_been_running_for_about(5);
+}
+
+// Restarting a job that never stopped must not throw away the time already banked.
+MARLIN_TEST(timing_the_job, starting_an_already_running_job_does_not_lose_the_time_so_far) {
+  ConnectedPrinter connected;
+  [[maybe_unused]] AcceleratedClock clock;
+  the_host_starts_the_print_job_timer();
+  AcceleratedClock::advance_seconds(5);
+  the_host_starts_the_print_job_timer();
+  the_job_is_reported_to_have_been_running_for_at_least(5);
+  the_host_stops_the_print_job_timer();
 }

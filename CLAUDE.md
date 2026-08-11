@@ -430,6 +430,30 @@ Both agent definitions now carry the corresponding rule. The pattern behind both
 is most dangerous where it is most confident**, and both errors were in claims nothing
 downstream would normally re-check.
 
+**`acceptance-author` validated by a refactor drill (2026-08-11).** A grep proves the
+scenarios do not *name* the implementation; it cannot prove they do not *depend* on it. So
+the check was empirical: it wrote `timing_the_job.feature` for the print job timer, and then
+`Stopwatch` → `ElapsedClock` and `print_job_timer` → `job_elapsed_clock` were renamed across
+**41 production files**, with the feature file and step definitions untouched.
+
+The acceptance suite built and passed, 34/34. The unit tests did not compile —
+`test_stopwatch.cpp`, `test_thermal_limits.cpp`, `test_media_commands.cpp` and
+`test_powerloss.cpp` all failed on the renamed symbols. That contrast is the whole argument
+for Steps 6-7 in one run: the same rename that a net must survive is the one that edits every
+unit test naming it, and a net that moves with the code is not a net.
+
+What made it work is visible in the steps — every one goes through `the_host_sends("M75")`
+and `the_reply_to("M31")`. The only non-G-code call is the test HAL's clock, which is the
+harness rather than the target, and renaming the target could not reach it. The four
+`duration` hits its own grep reported are the English word, in prose and assertion messages.
+Acceptance-only coverage verified rather than relayed: `M31.cpp` 100%, `M75-M78.cpp` 100%,
+`stopwatch.cpp` 83%, all 0% before.
+
+The drill is the reusable part. `acceptance_native_test` compiles exactly one test source
+besides the framework and `tests/support`, so renaming a target's public surface in
+`Marlin/src` and rebuilding *that env alone* is a cheap, honest test of whether a scenario
+suite is really at the boundary — and `git checkout -- Marlin/src` puts it back.
+
 **`rescue-surveyor` validated against `Marlin/src/feature/` (2026-08-11).** Chosen because
 the directory is the four-way classification in concentrated form: 41 of 42 `.cpp` files sit
 at 0% and *none* of them wants tests written. It led with the denominator rather than the
@@ -475,13 +499,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 553,
-`acceptance_native_test` 18 — each measured with `pio run -t marlin_default -e <env>`, i.e.
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 559,
+`acceptance_native_test` 34 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eight** configs in `test/`, reporting **553, 554, 561, 618, 624, 562, 559, 558**. The counts above vary
+**eight** configs in `test/`, reporting **559, 560, 567, 624, 630, 568, 565, 564**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
