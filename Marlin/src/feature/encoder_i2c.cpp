@@ -422,8 +422,11 @@ void I2CPositionEncoder::calibrate_steps_mm(const uint8_t iter) {
     SERIAL_ECHOLNPGM("Old steps/mm: ", old_steps_mm);
     SERIAL_ECHOLNPGM("New steps/mm: ", new_steps_mm);
 
-    // Save new value
-    planner.settings.axis_steps_per_mm[encoderAxis] = new_steps_mm;
+    // Save new value. Through the planner rather than into the array: `mm_per_step` is the
+    // reciprocal and the stepper's counts are in steps, so both are invalidated by a change of
+    // resolution. Assigning directly left them stale, and a calibration that leaves the machine
+    // converting with the figure it has just proved wrong is worse than not calibrating at all.
+    planner.set_steps_per_mm(encoderAxis, new_steps_mm);
 
     if (iter > 1) {
       total += new_steps_mm;

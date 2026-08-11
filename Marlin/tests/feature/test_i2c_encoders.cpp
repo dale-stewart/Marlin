@@ -172,4 +172,58 @@ MARLIN_TEST(i2c_encoders, an_encoder_that_has_lost_its_strip_fails_its_test) {
     "an encoder reporting a bad field should fail its test");
 }
 
+/**
+ * Calibration converges on what the encoder measures.
+ *
+ * This is what closed-loop feedback buys: the machine finds its own resolution instead of the
+ * user measuring a printed cube. It commands a known distance, asks the encoder how far the
+ * carriage really went, and scales its steps-per-millimetre by the ratio.
+ *
+ * The test models a machine that is wrong: it believes 80 steps to the millimetre while the
+ * carriage really needs 100. Commanding 160 mm therefore moves it 128, the encoder says so, and
+ * the calibration should land on 100 — the truth — rather than merely somewhere different from
+ * where it started.
+ */
+MARLIN_TEST(i2c_encoders, calibration_converges_on_what_the_encoder_measures) {
+  SimulatedMachine machine;
+  SimulatedAxisWithLimit rail(X_STEP_PIN, X_DIR_PIN, ENABLED(INVERT_X_DIR),
+                              X_MIN_PIN, X_MIN_ENDSTOP_HIT_STATE, 0, 0);
+
+  // The encoder measures the truth: the carriage really needs TRUE_SPM steps per millimetre,
+  // while the planner has been told the machine's (wrong) figure.
+  constexpr float TRUE_SPM = 100.0f;
+  SimulatedI2CEncoder encoder(I2CPE_ENC_1_ADDR, rail, TRUE_SPM, I2CPE_ENC_1_TICKS_UNIT);
+  ConfiguredEncoder configured;
+
+  TEST_ASSERT_TRUE_MESSAGE(ConfiguredEncoder::passes_its_test(), "the encoder should be healthy");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, SimulatedMachine::STEPS_PER_MM,
+    planner.steps_per_mm(X_AXIS), "the machine should start out believing its own figure");
+
+  I2CPEM.encoders[0].calibrate_steps_mm(1);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1.0f, TRUE_SPM, planner.steps_per_mm(X_AXIS),
+    "calibration should land on the resolution the encoder measured");
+}
+
+/**
+ * ...and what is derived from that resolution moves with it.
+ *
+ * `mm_per_step` is the reciprocal, and the planner uses it for every conversion afterwards.
+ * A calibration that changed one and not the other would leave the machine converting with the
+ * figure it has just proved wrong — silently, since nothing reports the reciprocal.
+ */
+MARLIN_TEST(i2c_encoders, calibration_leaves_the_reciprocal_agreeing_with_the_resolution) {
+  SimulatedMachine machine;
+  SimulatedAxisWithLimit rail(X_STEP_PIN, X_DIR_PIN, ENABLED(INVERT_X_DIR),
+                              X_MIN_PIN, X_MIN_ENDSTOP_HIT_STATE, 0, 0);
+  SimulatedI2CEncoder encoder(I2CPE_ENC_1_ADDR, rail, 100.0f, I2CPE_ENC_1_TICKS_UNIT);
+  ConfiguredEncoder configured;
+
+  I2CPEM.encoders[0].calibrate_steps_mm(1);
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, 1.0f / planner.steps_per_mm(X_AXIS),
+    planner.mm_per_step[X_AXIS],
+    "the reciprocal should agree with the resolution calibration just chose");
+}
+
 #endif // __PLAT_TEST__ && I2C_POSITION_ENCODERS
