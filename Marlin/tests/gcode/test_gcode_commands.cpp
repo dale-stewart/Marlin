@@ -217,6 +217,121 @@ MARLIN_TEST(gcode_commands, M92_sets_steps_per_mm) {
   planner.settings.axis_steps_per_mm[Y_AXIS] = was_y;
 }
 
+#if HAS_EXTRUDERS
+
+namespace {
+
+  // Everything `M92 E` disturbs, put back afterwards. All three outlive the command, and the
+  // E limits in particular are read by every extruding move the rest of the suite makes.
+  struct SavedExtruderSteps {
+    float was_spm, was_fr;
+    uint32_t was_accel_steps;
+    SavedExtruderSteps()
+      : was_spm(planner.settings.axis_steps_per_mm[E_AXIS]),
+        was_fr(planner.settings.max_feedrate_mm_s[E_AXIS]),
+        was_accel_steps(planner.max_acceleration_steps_per_s2[E_AXIS]) {}
+    ~SavedExtruderSteps() {
+      planner.settings.axis_steps_per_mm[E_AXIS] = was_spm;
+      planner.settings.max_feedrate_mm_s[E_AXIS] = was_fr;
+      planner.refresh_positioning();
+    }
+  };
+
+  // The extruder's speed limit expressed in steps per second — what the motor and the driver
+  // actually care about. `max_feedrate_mm_s` is millimetres of *filament*, which means something
+  // different for every resolution.
+  float e_speed_limit_in_steps_per_s() {
+    return planner.settings.max_feedrate_mm_s[E_AXIS] * planner.settings.axis_steps_per_mm[E_AXIS];
+  }
+
+}
+
+/**
+ * A suspiciously low `M92 E` is taken as a change of units, not a change of speed.
+ *
+ * Some slicers emit `M92 E14` for a geared extruder whose real resolution is in the hundreds.
+ * Taken at face value that makes the extruder's limits — which are stated in millimetres of
+ * filament — mean something wildly different, and the motor would be asked to run far outside
+ * what it can do. So below a threshold of 20 the firmware treats the change as a rescaling and
+ * moves the speed limit with it.
+ *
+ * Asserted as the limit in *steps per second* being unchanged, which is the quantity the
+ * compensation exists to preserve and the only one that does not depend on the resolution being
+ * redefined. A pair of recorded millimetre figures would say nothing about why.
+ */
+MARLIN_TEST(gcode_commands, a_very_low_M92_E_keeps_the_extruder_speed_limit_in_steps) {
+  SavedExtruderSteps restore;
+
+  planner.settings.axis_steps_per_mm[E_AXIS] = 500.0f;
+  planner.settings.max_feedrate_mm_s[E_AXIS] = 25.0f;
+  planner.refresh_positioning();
+  const float before = e_speed_limit_in_steps_per_s();
+
+  host_sends("M92 E10");            // ten is well under the threshold
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(10.0f, planner.settings.axis_steps_per_mm[E_AXIS],
+    "the new resolution should have been taken");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(before * 1e-4f, before, e_speed_limit_in_steps_per_s(),
+    "the extruder's speed limit in steps per second should not have moved");
+}
+
+/**
+ * An ordinary `M92 E` is taken at face value.
+ *
+ * The other side of the threshold, and what stops the rule above being satisfied by a firmware
+ * that rescales every time. A real resolution change — a different extruder, a different
+ * microstepping — is not a change of units, and the configured millimetre limits still mean what
+ * they say, so the limit in steps per second is *expected* to move here.
+ */
+MARLIN_TEST(gcode_commands, an_ordinary_M92_E_leaves_the_speed_limit_alone) {
+  SavedExtruderSteps restore;
+
+  planner.settings.axis_steps_per_mm[E_AXIS] = 500.0f;
+  planner.settings.max_feedrate_mm_s[E_AXIS] = 25.0f;
+  planner.refresh_positioning();
+
+  host_sends("M92 E25");            // just over the threshold
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(25.0f, planner.settings.axis_steps_per_mm[E_AXIS],
+    "the new resolution should have been taken");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(25.0f, planner.settings.max_feedrate_mm_s[E_AXIS],
+    "an ordinary resolution change should leave the millimetre limit exactly as configured");
+}
+
+/**
+ * LEGACY-BEHAVIOR: defect register #31 — the acceleration half of that compensation is discarded.
+ *
+ * `M92.cpp:67` scales `max_acceleration_steps_per_s2` by the same factor as the feedrate, and
+ * then `planner.refresh_positioning()` two lines later calls `refresh_acceleration_rates()`,
+ * which recomputes that array from `max_acceleration_mm_per_s2 * axis_steps_per_mm` for every
+ * axis unconditionally. The write is overwritten before anything can read it.
+ *
+ * So the acceleration limit in millimetres is left exactly as configured, and the limit in steps
+ * follows the new resolution — which is what would happen if the line were not there at all.
+ * Recorded rather than fixed: what the line intends is unclear (the factor it applies preserves
+ * neither the millimetre nor the step figure), and the current outcome is the defensible one.
+ */
+MARLIN_TEST(gcode_commands, the_low_M92_E_acceleration_compensation_is_discarded) {
+  SavedExtruderSteps restore;
+
+  planner.settings.axis_steps_per_mm[E_AXIS] = 500.0f;
+  planner.settings.max_feedrate_mm_s[E_AXIS] = 25.0f;
+  planner.refresh_positioning();
+
+  const float configured_mm_s2 = planner.settings.max_acceleration_mm_per_s2[E_AXIS];
+
+  host_sends("M92 E10");
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(configured_mm_s2, planner.settings.max_acceleration_mm_per_s2[E_AXIS],
+    "the configured acceleration in mm/s^2 is not touched by M92");
+  TEST_ASSERT_EQUAL_MESSAGE(uint32_t(configured_mm_s2 * 10.0f),
+    planner.max_acceleration_steps_per_s2[E_AXIS],
+    "the step-rate acceleration simply follows the new resolution: the scaling M92 applied to it "
+    "was overwritten by refresh_positioning()");
+}
+
+#endif // HAS_EXTRUDERS
+
 MARLIN_TEST(gcode_commands, M203_sets_max_feedrate) {
   const float was = planner.settings.max_feedrate_mm_s[X_AXIS];
 
