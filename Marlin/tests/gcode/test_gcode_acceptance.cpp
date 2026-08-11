@@ -218,6 +218,30 @@ namespace {
   }
 
   //
+  // ---- Steps for: Keeping the host informed while it works through commands ----
+  //
+  // A command the host sends is either carried out or refused with a reason — never just
+  // dropped — and a host debugging its connection can ask the printer to echo back what
+  // it receives. Both go out over the same wire a host reads, so nothing here needs to
+  // know how the dispatcher decided.
+  //
+
+  void the_host_has_asked_the_printer_to_echo_back_the_commands_it_receives() {
+    the_host_sends("M111 S1");
+  }
+
+  void the_printer_says_it_does_not_understand(const char * const line) {
+    const std::string reply = the_reply_to(line);
+    the_reply_mentions(reply, "nknown command");
+    the_reply_mentions(reply, line);
+  }
+
+  void the_printer_echoes_back(const std::string &reply, const char * const line) {
+    the_reply_mentions(reply, "echo:");
+    the_reply_mentions(reply, line);
+  }
+
+  //
   // ---- Steps for: Keeping the settings the machine was tuned with ----
   //
   // Every one of these goes over the wire as G-code and reads the answer out of a report.
@@ -435,6 +459,27 @@ MARLIN_TEST(receiving_a_job, lines_that_carry_no_command_are_ignored) {
     the_host_sends(line);
     the_printer_carries_out_nothing();
   }
+}
+
+//
+// ======== Feature: Keeping the host informed while it works through commands ========
+//
+
+MARLIN_TEST(talking_to_the_host, a_bad_letter_is_refused_not_silently_dropped) {
+  ConnectedPrinter printer;
+  the_printer_says_it_does_not_understand("Q1");
+}
+
+MARLIN_TEST(talking_to_the_host, an_unimplemented_code_is_refused_not_silently_dropped) {
+  ConnectedPrinter printer;
+  the_printer_says_it_does_not_understand("M973");
+}
+
+MARLIN_TEST(talking_to_the_host, asked_to_show_its_working_the_printer_echoes_back_what_it_is_told) {
+  ConnectedPrinter printer;
+  the_host_has_asked_the_printer_to_echo_back_the_commands_it_receives();
+  const std::string reply = the_reply_to("M220 S45");
+  the_printer_echoes_back(reply, "M220 S45");
 }
 
 //

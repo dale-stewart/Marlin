@@ -486,6 +486,26 @@ a null `FSTR_P` that would segfault natively; `KEEPALIVE_STATE(IN_HANDLER)` is o
 mid-call. Each needs a production seam, so each belongs behind the frontier rather than in a
 test.
 
+**The `GCodeParser` correction now has a net, and the net was tested (2026-08-11).**
+Steps 6-7 for `gcode.cpp` were not bookkeeping: **239 references across 22 test files name the
+`parser.` surface**, twice the `planner.settings` figure, so the unit tests would be edited by
+the very refactor they are meant to protect. The acceptance step file names it **zero** times.
+
+Proven rather than argued, by the same drill used on the print job timer: `codenum` →
+`command_number`, `string_arg` → `command_text`, `codebits` → `seen_bits` across **20
+production files**, feature files and steps untouched. The acceptance suite built and passed
+37/37; the unit-test build failed to compile. That is the migration's safety net demonstrated
+against the migration itself.
+
+Acceptance-only coverage of `gcode.cpp` is 47% (was 43%), `parser.cpp` 79%, `queue.cpp` 58%.
+
+Two spans are **unreachable from outside** and are not coverage gaps: `host_keepalive()`'s
+reporting branches and `process_subcommands_now()`. Both need a handler that loops on
+`marlin.idle()` past the keepalive interval while simulated time advances — the same state
+`dwell()` needs and cannot get, because nothing drives the virtual clock while a handler spins
+on `idle()`. That is a production seam, and it is the one thing standing between the acceptance
+suite and the dispatcher's reporting paths.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -515,13 +535,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 576,
-`acceptance_native_test` 34 — each measured with `pio run -t marlin_default -e <env>`, i.e.
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 579,
+`acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eight** configs in `test/`, reporting **576, 577, 584, 641, 647, 585, 582, 581**. The counts above vary
+**eight** configs in `test/`, reporting **579, 580, 587, 644, 650, 588, 585, 584**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
