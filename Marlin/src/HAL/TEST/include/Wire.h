@@ -30,12 +30,11 @@
  * them. That makes "there is no device at that address" the default answer, which is the
  * honest one and the state a board is in with nothing plugged into the header.
  *
- * A test that wants a device answering should attach one rather than teach this class to
- * pretend. The pattern for that is `tests/support/simulated_endstops.h` and its relatives:
- * a peripheral with its own state, attached to the bus, whose replies are derived from the
- * simulated machine rather than recorded. Faking the replies here instead would mean encoding
- * one device's register map into the bus itself, which is the wrong layer and only ever
- * describes one device.
+ * A test that wants a device answering attaches one, rather than teaching this class to pretend.
+ * `I2CDevice` below is the seam for that, and the pattern is the same as `Gpio::attachPeripheral`:
+ * the device holds its own state and derives its replies from the simulated machine. Encoding a
+ * device's register map into the bus itself would be the wrong layer and would only ever describe
+ * one device.
  */
 
 #ifdef __PLAT_TEST__
@@ -43,8 +42,33 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/**
+ * Something answering at an address.
+ *
+ * `respond()` fills the bytes a controller asked for; `receive()` takes the bytes it sent. A
+ * device that only ever gets read need not implement the second.
+ */
+class I2CDevice {
+public:
+  virtual ~I2CDevice() {}
+  virtual void respond(uint8_t *buffer, const uint8_t count) = 0;
+  virtual void receive(const uint8_t) {}
+};
+
 class TestTwoWire {
 public:
+
+  // Attach a device at an address, or pass nullptr to remove one. Attaching in a fixture's
+  // constructor and detaching in its destructor matters for the same reason it does for GPIO
+  // peripherals: a dangling device is written through after it has been destroyed.
+  void attach(const uint8_t address, I2CDevice * const device) {
+    for (uint8_t i = 0; i < MAX_DEVICES; i++)
+      if (!devices[i] || addresses[i] == address) {
+        addresses[i] = address; devices[i] = device;
+        return;
+      }
+  }
+
   void begin() {}
   void begin(uint8_t) {}
   void end() {}
@@ -52,20 +76,47 @@ public:
 
   void beginTransmission(uint8_t address) { addressed = address; }
 
-  // 2 = "address send, NACK received", which is what a bus with nothing on it reports.
-  uint8_t endTransmission(uint8_t = 1) { return 2; }
+  // 0 = acknowledged, 2 = "address sent, NACK received" — which is what an empty bus reports.
+  uint8_t endTransmission(uint8_t = 1) { return find(addressed) ? 0 : 2; }
 
-  size_t write(uint8_t) { return 1; }
-  size_t write(const uint8_t *, size_t n) { return n; }
+  size_t write(uint8_t b) {
+    if (I2CDevice * const d = find(addressed)) d->receive(b);
+    return 1;
+  }
+  size_t write(const uint8_t *b, size_t n) {
+    for (size_t i = 0; i < n; i++) write(b[i]);
+    return n;
+  }
 
-  uint8_t requestFrom(uint8_t, uint8_t, uint8_t = 1) { return 0; }   // nobody answered
+  uint8_t requestFrom(uint8_t address, uint8_t count, uint8_t = 1) {
+    pending = 0; next = 0;
+    I2CDevice * const d = find(address);
+    if (!d) return 0;                       // nobody answered
+    if (count > sizeof(buffer)) count = sizeof(buffer);
+    d->respond(buffer, count);
+    pending = count;
+    return count;
+  }
 
-  int available() { return 0; }
-  int read() { return 0xFF; }   // SDA idles high: no device is driving the line
-  int peek() { return 0xFF; }
+  int available() { return int(pending - next); }
+  // SDA idles high, so a read past what was sent is 0xFF rather than a stale byte.
+  int read() { return next < pending ? buffer[next++] : 0xFF; }
+  int peek() { return next < pending ? buffer[next] : 0xFF; }
 
 private:
+  static constexpr uint8_t MAX_DEVICES = 8;
+  uint8_t addresses[MAX_DEVICES] = { 0 };
+  I2CDevice *devices[MAX_DEVICES] = { nullptr };
+
+  I2CDevice* find(const uint8_t address) {
+    for (uint8_t i = 0; i < MAX_DEVICES; i++)
+      if (devices[i] && addresses[i] == address) return devices[i];
+    return nullptr;
+  }
+
   uint8_t addressed = 0;
+  uint8_t buffer[32] = { 0 };
+  uint8_t pending = 0, next = 0;
 };
 
 extern TestTwoWire Wire;

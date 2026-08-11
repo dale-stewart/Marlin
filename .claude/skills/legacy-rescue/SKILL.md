@@ -779,6 +779,20 @@ a singleton, replacing a leaky type that appears in a thousand signatures — a
 5. Change the surface when the last consumer is ready, or introduce the new API
    alongside the old and retire the old as consumers arrive.
 
+**A stub that models an absent device gets code compiling; a simulated device gets it tested.**
+Where a dependency is a peripheral or an external service, the cheap shim — nothing attached,
+every call fails politely — is the right first move: it makes the code build, and "nothing is
+there" is a real state worth pinning, because handling it badly is a common defect. But it only
+reaches the error paths. The behaviour the code exists for needs something that answers.
+
+Build the answering version as a *device behind the same seam*, deriving its replies from the
+simulated system rather than from recorded traffic, and attach it per test. Two things follow
+that are easy to get wrong: give the bus a way to attach devices rather than teaching the bus to
+impersonate one, or you encode a single device's protocol into shared infrastructure; and check
+what the code caches, because a status field refreshed by one call and read by another will
+answer "never seen" to a test that never made the first call — which passes for exactly the
+wrong reason when the expected answer is a failure.
+
 **A migration can stall on consumers that cannot be built, not merely untested ones.** The
 sequenced migration assumes every consumer can eventually be brought under test. Some cannot:
 code that only compiles for one target, that needs hardware or a framework the test environment

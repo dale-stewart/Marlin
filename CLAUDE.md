@@ -192,10 +192,18 @@ checked rather than assumed:
 - `EXTENSIBLE_UI` compiles and will not link — `ui_api.cpp` is a library that resolves only
   against a concrete UI supplying some twenty `ExtUI::on*` callbacks, which a test would have to
   invent wholesale.
-- `I2C_POSITION_ENCODERS` **is now buildable** — it needed `<Wire.h>` (a stub bus, on the same
-  footing as `HAL/TEST/spi.cpp`) and Arduino's legacy `Bxxxxxxxx` binary-literal macros, both now
-  in `HAL/TEST/include/`. Config `007-i2c_encoders`. This was the cheapest of the five and the
-  approach generalises; the two display drivers need more, and one of them needs LVGL.
+- `I2C_POSITION_ENCODERS` **is now buildable and tested** — it needed `<Wire.h>` (a stub bus, on
+  the same footing as `HAL/TEST/spi.cpp`) and Arduino's legacy `Bxxxxxxxx` binary-literal macros,
+  both now in `HAL/TEST/include/`. Config `007-i2c_encoders`. The bus grew an `I2CDevice`
+  attachment seam and `tests/support/simulated_i2c_encoder.h` answers on it, reading its count
+  from a `SimulatedAxisWithLimit` — the carriage, not `stepper.position()`, because an encoder
+  driven by the firmware's own belief could never disagree with it, which is the one thing an
+  encoder is for. 2% → 13%.
+
+  Note `passes_test()` reports the field strength recorded by the last `get_raw_count()` and does
+  not fetch one itself. A test that asks without reading gets "never seen" whatever is on the bus,
+  which is how the first version of the bad-field test here passed against a perfectly healthy
+  encoder. `ConfiguredEncoder::passes_its_test()` in `test_i2c_encoders.cpp` reads first.
 
 Worth knowing before picking the next one: **effort and value are anti-correlated here.** The
 cheapest to make buildable — `extui/ui_api.cpp` — is the one that already gets the refresh right.
