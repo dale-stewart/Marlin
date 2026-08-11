@@ -619,18 +619,79 @@ MARLIN_TEST(gcode_commands, M118_flags_are_not_part_of_the_message) {
 
 #endif
 
-// Settings can be reset to the configured defaults and reported back.
+/**
+ * `M502` puts back the values the firmware was configured with.
+ *
+ * This is the command a user reaches for when a machine is behaving strangely and they want a
+ * known state — so "different from what I set" is not good enough. It has to be *the configured
+ * value*, and this asserts against the configuration macros rather than against a recorded
+ * number, so the test says where the value is supposed to come from.
+ *
+ * Every axis rather than X alone: the defaults are a table, and a reset that restored one entry
+ * or the same entry to every axis would satisfy a single-axis check.
+ */
 MARLIN_TEST(gcode_commands, M502_restores_the_configured_defaults) {
-  const float was = planner.settings.axis_steps_per_mm[X_AXIS];
+  const planner_settings_t was = planner.settings;
 
-  host_sends("M92 X999");
-  TEST_ASSERT_EQUAL_FLOAT(999.0f, planner.settings.axis_steps_per_mm[X_AXIS]);
+  constexpr float configured_steps[] = DEFAULT_AXIS_STEPS_PER_UNIT;
+  constexpr float configured_feedrate[] = DEFAULT_MAX_FEEDRATE;
+
+  // Perturb every axis to a different wrong value, so nothing can be restored by accident.
+  LOOP_DISTINCT_AXES(i) {
+    planner.settings.axis_steps_per_mm[i] = 999.0f + i;
+    planner.settings.max_feedrate_mm_s[i] = 777.0f + i;
+  }
+  planner.settings.acceleration = 12345.0f;
 
   host_sends("M502");
-  TEST_ASSERT_NOT_EQUAL(999.0f, planner.settings.axis_steps_per_mm[X_AXIS]);
 
-  planner.settings.axis_steps_per_mm[X_AXIS] = was;
+  LOOP_DISTINCT_AXES(i) {
+    char why[72];
+    snprintf(why, sizeof(why), "axis %u steps/mm should be back to the configured value", unsigned(i));
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(configured_steps[i], planner.settings.axis_steps_per_mm[i], why);
+    snprintf(why, sizeof(why), "axis %u max feedrate should be back to the configured value", unsigned(i));
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(configured_feedrate[i], planner.settings.max_feedrate_mm_s[i], why);
+  }
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(DEFAULT_ACCELERATION, planner.settings.acceleration,
+    "the printing acceleration should be back to the configured value");
+
+  planner.settings = was;
+  planner.refresh_positioning();
 }
+
+#if HAS_VOLUMETRIC_EXTRUSION
+
+/**
+ * ...including the ones that decide what an `E` value means.
+ *
+ * Volumetric mode and the filament diameter are the settings a stale value hurts most quietly:
+ * they do not stop the machine, they silently scale every extrusion by the ratio of two
+ * cross-sections. So a reset has to put both back, and `M502` leaving the mode on while
+ * restoring the diameter — or the reverse — would be worse than leaving both alone.
+ *
+ * Asserted against `VOLUMETRIC_DEFAULT_ON` and `DEFAULT_NOMINAL_FILAMENT_DIA`, which is where
+ * `settings.reset()` is supposed to be reading them from.
+ */
+MARLIN_TEST(gcode_commands, M502_restores_what_an_E_value_means) {
+  const bool was_enabled = parser.volumetric_enabled;
+  const float was_size = planner.filament_size[0];
+
+  parser.volumetric_enabled = DISABLED(VOLUMETRIC_DEFAULT_ON);   // the wrong way round
+  planner.filament_size[0] = DEFAULT_NOMINAL_FILAMENT_DIA + 1.0f;
+
+  host_sends("M502");
+
+  TEST_ASSERT_EQUAL_MESSAGE(ENABLED(VOLUMETRIC_DEFAULT_ON), parser.volumetric_enabled,
+    "volumetric mode should be back to how the firmware was configured");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(DEFAULT_NOMINAL_FILAMENT_DIA, planner.filament_size[0],
+    "and the filament diameter with it");
+
+  parser.volumetric_enabled = was_enabled;
+  planner.filament_size[0] = was_size;
+  planner.calculate_volumetric_multipliers();
+}
+
+#endif // HAS_VOLUMETRIC_EXTRUSION
 
 MARLIN_TEST(gcode_commands, M503_reports_the_settings) {
   SerialCapture capture;

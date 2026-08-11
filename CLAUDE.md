@@ -119,6 +119,32 @@ bend at `e = 10` but barely moves at `e = 0.1`. See `extruding_through_a_corner_
 `test_planner.cpp`. Note `normalize_junction_vector()` returns **false** when it normalised —
 the return is "was it marginal", not "did it work".
 
+### State of the `planner.settings` seam
+
+The blocked correction in `planner.h` — removing the public `settings`/`mm_per_step` and the raw
+`block_buffer` — needs its *callers* covered first. Measured against the default build (word
+boundaries; a prefix grep wrongly puts `marlinui.cpp` in this list, because its only reference is
+the `block_buffer_runtime()` accessor):
+
+| caller | line | mutation | note |
+|---|---|---|---|
+| `module/tool_change.cpp` | 97% | 41.2% | measured under `extruders_3_runout`; not compiled by default |
+| `gcode/config/M92.cpp` | 100% | 66.1% | |
+| `gcode/config/M200-M205.cpp` | 94% | 57.6% | |
+| `module/stepper.cpp` | 96% | 68.9% | |
+| `gcode/calibrate/G28.cpp` | 91% | 66.4% | |
+| `gcode/motion/G2_G3.cpp` | 91% | 58.4% | |
+| `module/settings.cpp` | 91% | **32.3%** | the weak one |
+| `module/motion.cpp` | 76% | 57.8% raw / 75.3% killable | |
+| `module/temperature.cpp` | — | — | **not a blocker**: its three references are inside `MPCTEMP`, which is off here |
+
+`settings.cpp` is the reason the seam is still shut. 91% of it executes and a third of its
+mutants die — the signature of code that runs without being asserted, which is exactly what a
+coverage-only gate waves through. It is also the file that persists `planner.settings`, so
+changing that structure with it unasserted is the specific risk the ordering rule exists to
+prevent. `EEPROM_SETTINGS` is disabled in every config in `test/`, so `M500`/`M501` are not
+reachable at all and only `reset()` is measurable; a save/load round trip needs a new config.
+
 **`motion.cpp` is closed at 57.8% raw / 75.3% killable** (204/353; 82 of 149 survivors are
 equivalent), 76% line coverage. Reason categories, all checked: 24 preprocessor-erased because
 this build has no probe, 23 outside their variable's reachable range (`axis_home_dir` is always
