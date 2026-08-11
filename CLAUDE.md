@@ -145,6 +145,23 @@ arm is live, and the hand-applied mutant that swapped `HAS_FAN0` for `HAS_FAN1` 
 at all. `every_fan_is_driven_at_its_own_speed` in `test_planner.cpp` is what the line actually
 needed. Print the resolved constant; the default config is not the whole story.
 
+**"When the only thing a branch changes is the order, the sequence is the assertion."**
+`motion.cpp:1001` and `:1010` raise Z before crossing the bed and lower it only after arriving,
+so the nozzle passes over a printed part rather than through it. Both orderings end at identical
+coordinates, so nothing about the final position separates them.
+`Marlin/tests/support/step_order.h` records the first and last rising edge per axis step pin,
+which makes the assertion `StepOrder::finished_before(order.z, order.x)` — a relation between
+two spans, not a timestamp. Note it reports false for an axis that never moved, so that an
+ordering assertion cannot pass against a machine standing still.
+
+**"A negative assertion is satisfied by every cause of nothing."** `do_z_clearance` returns
+early when `zdest == position.z`, and `asking_for_the_height_it_is_already_at_moves_nothing`
+passes with that guard deleted: without it the machine issues a zero-length move, which
+`MIN_STEPS_PER_SEGMENT` (6) discards before it becomes a block, so no steps are taken either
+way. All five survivors left on `:1001`, `:1010` and `:1091` are this — every one widens a
+guard to include the equal case, and the equal case is a zero-length move that gets filtered
+downstream. The test is kept and its docstring says what it does not test.
+
 **"A guard that only avoids redundant work has no wrong answer."** The planner's forward pass is
 gated twice — `planner.cpp:1098` skips a block whose predecessor was not accelerating, and
 `:1167` skips one already at its optimised speed. Both are pure optimisations: when the guard is

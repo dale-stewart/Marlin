@@ -360,6 +360,28 @@ For each survivor, in descending order of risk:
   enabled by a default, a dependency, or another option's side effect. Classifying survivors as
   "dead arms of a disabled feature" on the strength of the settings is a claim about the build
   that has not been checked, and it is wrong often enough to matter. Print the resolved constant.
+- **When the only thing a branch changes is the order, the sequence is the assertion.** Some
+  branches decide *when* work happens rather than whether or what: do this part first, defer
+  that until after, handle these in priority order. Every ordering finishes in the same final
+  state, so every assertion about the result passes against all of them — and the ordering is
+  usually the whole point, because it is what holds while the operation is only half done.
+
+  That needs an instrument that records the sequence, not the outcome: a log of which
+  subsystem acted when, keyed on something each step already emits. Build it once and it
+  serves every ordering question in the codebase. The assertion to reach for is a *relation*
+  between two spans — "A had finished before B began" — rather than any absolute time, because
+  the durations move with unrelated settings and the ordering does not.
+- **A negative assertion is satisfied by every cause of nothing.** "No work was done", "nothing
+  was sent", "the collection is still empty" — these are true whenever *any* of several
+  mechanisms produced that outcome: the guard you meant to test skipped the work, a downstream
+  filter discarded it, a precondition was never met, or the operation failed silently. Only one
+  of those is your subject, and the assertion cannot tell you which one is holding.
+
+  So before writing "and nothing happened", enumerate what else in the path would swallow the
+  work, and check whether the branch under test is even reachable past it. Where something
+  downstream discards degenerate input — a zero-length item, an empty batch, a no-op update —
+  the guard upstream of it is unobservable by construction, and asserting emptiness pins the
+  filter rather than the guard. Say so in the test, or the next reader will trust it.
 - **A guard that only avoids redundant work has no wrong answer, only a slow one.** "Skip if
   unchanged", "recompute only when dirty", "return early if already in order" — the block such
   a guard protects is idempotent, so running it when it was not needed produces the same state
