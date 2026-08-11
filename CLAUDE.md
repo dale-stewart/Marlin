@@ -156,6 +156,30 @@ refused — checksum, version, and a stored value that is not a number. Each fai
 be *reported* as well as refused, because a machine that quietly forgets its calibration is worse
 than one that says so.
 
+### Where the `planner.settings` migration stopped, and why
+
+Every write to `axis_steps_per_mm`, `max_acceleration_mm_per_s2` and `max_feedrate_mm_s` in this
+build now goes through `Planner`, single-axis or bulk. Reads too, for resolution. What stops the
+fields becoming private is two things, and only one of them is about coverage.
+
+**Consumers outside every test configuration.** Four LCD drivers and the I2C position encoder
+assign these arrays and are compiled by no configuration under `test/`. Two of them are already
+suspected wrong (register #33). Covering them needs configurations that build them, which is the
+same problem `006-eeprom` solved for `settings.cpp` and the same solution.
+
+**The setters conflate two different operations.** `set_max_acceleration(axis, v)` and
+`set_max_feedrate(axis, v)` clamp the value and warn about it under `LIMITED_MAX_*_EDITING`. That
+is right for *a user naming a limit* and wrong for *the firmware restating one*: `G28`'s
+`begin_slow_homing()` forces acceleration to 100 and must not be clamped or announced, and `M92`'s
+low-`E` compensation restates an existing feedrate limit in new units and has to land wherever
+the arithmetic puts it. Both therefore assign the array directly — correctly, and with the
+derived figure refreshed by hand where one exists.
+
+So the remaining raw writes in compiled code are not laziness; they are the API missing a
+distinction. Until "set, as a user" and "override, as the firmware" are separate operations,
+privatising the fields would either break those two call sites or silently start clamping them.
+That is the next design step, and it is a design question rather than a coverage one.
+
 **Migration in progress — slice 1 of the `planner.settings` correction is done.**
 `Planner::steps_per_mm(axis)` and `Planner::set_steps_per_mm(axis, value)` now exist alongside
 the public array, and `M92` uses them. The defect being corrected is a public mutable field with

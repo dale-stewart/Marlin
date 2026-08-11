@@ -3256,6 +3256,15 @@ void Planner::refresh_acceleration_rates() {
  * Recalculate 'position' and 'mm_per_step'.
  * Must be called whenever settings.axis_steps_per_mm changes!
  */
+void Planner::set_max_acceleration(const uint32_t (&values)[DISTINCT_AXES]) {
+  LOOP_DISTINCT_AXES(i) settings.max_acceleration_mm_per_s2[i] = values[i];
+  refresh_acceleration_rates();
+}
+
+void Planner::set_max_feedrate(const feedRate_t (&values)[DISTINCT_AXES]) {
+  LOOP_DISTINCT_AXES(i) settings.max_feedrate_mm_s[i] = values[i];
+}
+
 #if ENABLED(EDITABLE_STEPS_PER_UNIT)
   void Planner::set_steps_per_mm(const uint8_t axis, const float value) {
     settings.axis_steps_per_mm[axis] = value;

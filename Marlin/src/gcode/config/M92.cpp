@@ -75,6 +75,11 @@ void GcodeSuite::M92() {
             #if ALL(CLASSIC_JERK, HAS_CLASSIC_E_JERK)
               planner.max_jerk.e *= factor;
             #endif
+            // Assigned rather than set through `planner.set_max_feedrate()` on purpose. That
+            // setter clamps and warns under `LIMITED_MAX_FR_EDITING`, which is right for a user
+            // naming a limit and wrong here: this is the firmware restating an existing limit in
+            // new units, and it has to land wherever the arithmetic puts it. Feedrate has no
+            // derived cache, so there is nothing owed afterwards.
             planner.settings.max_feedrate_mm_s[e] *= factor;
           }
           planner.set_steps_per_mm(e, value);
@@ -112,21 +117,21 @@ void GcodeSuite::M92_report(const bool forReplay/*=true*/, const int8_t e/*=-1*/
   #if NUM_AXES
     #define PRINT_EOL
     SERIAL_ECHOPGM_P(NUM_AXIS_PAIRED_LIST(
-      PSTR("  M92 X"), LINEAR_UNIT(planner.settings.axis_steps_per_mm[X_AXIS]),
-      SP_Y_STR, LINEAR_UNIT(planner.settings.axis_steps_per_mm[Y_AXIS]),
-      SP_Z_STR, LINEAR_UNIT(planner.settings.axis_steps_per_mm[Z_AXIS]),
-      SP_I_STR, I_AXIS_UNIT(planner.settings.axis_steps_per_mm[I_AXIS]),
-      SP_J_STR, J_AXIS_UNIT(planner.settings.axis_steps_per_mm[J_AXIS]),
-      SP_K_STR, K_AXIS_UNIT(planner.settings.axis_steps_per_mm[K_AXIS]),
-      SP_U_STR, U_AXIS_UNIT(planner.settings.axis_steps_per_mm[U_AXIS]),
-      SP_V_STR, V_AXIS_UNIT(planner.settings.axis_steps_per_mm[V_AXIS]),
-      SP_W_STR, W_AXIS_UNIT(planner.settings.axis_steps_per_mm[W_AXIS])
+      PSTR("  M92 X"), LINEAR_UNIT(planner.steps_per_mm(X_AXIS)),
+      SP_Y_STR, LINEAR_UNIT(planner.steps_per_mm(Y_AXIS)),
+      SP_Z_STR, LINEAR_UNIT(planner.steps_per_mm(Z_AXIS)),
+      SP_I_STR, I_AXIS_UNIT(planner.steps_per_mm(I_AXIS)),
+      SP_J_STR, J_AXIS_UNIT(planner.steps_per_mm(J_AXIS)),
+      SP_K_STR, K_AXIS_UNIT(planner.steps_per_mm(K_AXIS)),
+      SP_U_STR, U_AXIS_UNIT(planner.steps_per_mm(U_AXIS)),
+      SP_V_STR, V_AXIS_UNIT(planner.steps_per_mm(V_AXIS)),
+      SP_W_STR, W_AXIS_UNIT(planner.steps_per_mm(W_AXIS))
     ));
   #endif
 
   #if HAS_EXTRUDERS && DISABLED(DISTINCT_E_FACTORS)
     #define PRINT_EOL
-    SERIAL_ECHOPGM_P(SP_E_STR, VOLUMETRIC_UNIT(planner.settings.axis_steps_per_mm[E_AXIS]));
+    SERIAL_ECHOPGM_P(SP_E_STR, VOLUMETRIC_UNIT(planner.steps_per_mm(E_AXIS)));
   #endif
 
   if (ENABLED(PRINT_EOL)) SERIAL_EOL();
@@ -137,7 +142,7 @@ void GcodeSuite::M92_report(const bool forReplay/*=true*/, const int8_t e/*=-1*/
       report_echo_start(forReplay);
       SERIAL_ECHOLNPGM_P(
         PSTR("  M92 T"), i,
-        SP_E_STR, VOLUMETRIC_UNIT(planner.settings.axis_steps_per_mm[E_AXIS_N(i)])
+        SP_E_STR, VOLUMETRIC_UNIT(planner.steps_per_mm(E_AXIS_N(i)))
       );
     }
   #else

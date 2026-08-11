@@ -752,6 +752,22 @@ class Planner {
     // For an axis set the Maximum Feedrate in mm/s
     static void set_max_feedrate(const AxisEnum axis, float inMaxFeedrateMMS);
 
+    /**
+     * @brief   Restore a whole set of axis limits at once.
+     * @details The bulk counterparts of the two setters above, for restoring a stored block or
+     *          the configured defaults. `max_acceleration_steps_per_s2` is derived from the
+     *          acceleration limits and the resolutions, so it has the same hazard as
+     *          `mm_per_step`: assign the array and the derived figure is stale until somebody
+     *          remembers.
+     *
+     *          Unlike the per-axis setters these do **not** clamp or warn. A per-axis set is a
+     *          user asking for a value and being told if it is out of range; a bulk restore is
+     *          the machine putting back what it already had, and warning about each axis every
+     *          time it starts up would be noise, not information.
+     */
+    static void set_max_acceleration(const uint32_t (&values)[DISTINCT_AXES]);
+    static void set_max_feedrate(const feedRate_t (&values)[DISTINCT_AXES]);
+
     // For an axis set the Maximum Jerk (instant change) in mm/s
     #if ENABLED(CLASSIC_JERK)
       static void set_max_jerk(const AxisEnum axis, float inMaxJerkMMS);
