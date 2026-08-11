@@ -156,6 +156,31 @@ refused — checksum, version, and a stored value that is not a number. Each fai
 be *reported* as well as refused, because a machine that quietly forgets its calibration is worse
 than one that says so.
 
+**What the acceptance suite protects on its own (Step 7).** Measured with the unit tests
+excluded, `pio run -t marlin_eeprom -e acceptance_native_coverage`:
+
+| consumer of `planner.settings` | acceptance-only line coverage |
+|---|---|
+| `module/settings.cpp` | 90% |
+| `gcode/config/M92.cpp` | 68% |
+| `gcode/config/M200-M205.cpp` | 50% |
+| `module/stepper.cpp` | 13% |
+| `module/motion.cpp` | 5% |
+| `gcode/calibrate/G28.cpp` | 0% |
+| `gcode/motion/G2_G3.cpp` | 0% |
+
+So the scenarios describe the printer's *conversation with the host* — configuration,
+persistence, reporting — and say almost nothing about its *movement*. Homing, probing and
+arcs are behaviour a user would certainly notice, and no scenario mentions them: by the Step 7
+reading that is a missing feature file, not something to backfill with unit tests.
+
+The practical consequence for the migration: `settings.cpp`, `M92` and `M200-M205` can have
+their call sites moved with a behavioural net underneath them. The motion-side consumers cannot
+yet, because their only tests are the unit tests that name `planner.settings` — 117 references
+across five files, every one of which the migration would have to edit. A net that moves with
+the code is not a net. `Marlin/tests/gcode/features/keeping_its_settings.feature` and its steps
+name no C++ symbol for exactly this reason, teardown included.
+
 **`motion.cpp` is closed at 57.8% raw / 75.3% killable** (204/353; 82 of 149 survivors are
 equivalent), 76% line coverage. Reason categories, all checked: 24 preprocessor-erased because
 this build has no probe, 23 outside their variable's reachable range (`axis_home_dir` is always

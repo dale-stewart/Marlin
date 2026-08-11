@@ -747,6 +747,19 @@ Only once step 7 passes. The acceptance suite is the safety net; keep it green a
 unmodified throughout — if a refactor requires changing a scenario, the refactor
 changed behavior.
 
+**The net must not be written in the vocabulary you are about to change.** This is the
+concrete reason the acceptance suite comes first, and it is easy to miss: a unit test
+that names the API under restructure has to be *edited by the very change it is meant to
+be checking*. A test you rewrite as part of a refactor cannot be evidence the refactor
+preserved anything — it moved with the code. Count the references before you start; if
+the tests you were relying on mention the symbol you are about to remove, they are not
+your net, and you need scenarios at a boundary the change does not cross before you can
+begin.
+
+The same applies to test fixtures and helpers, not only assertions. Restore state the
+way a user would, through the public interface, or teardown becomes another thing the
+migration has to edit.
+
 ### The test frontier bounds the blast radius
 
 **Refactor freely inside the target. Do not change its public surface until the code

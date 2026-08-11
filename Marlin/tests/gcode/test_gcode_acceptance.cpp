@@ -75,6 +75,32 @@ namespace {
     }
   };
 
+  /**
+   * Leaves the machine — and its storage — back at the configured defaults.
+   *
+   * Settings outlive the scenario that changed them, and under `006-eeprom` so does the stored
+   * block, so without this a scenario would hand its calibration to whatever ran next.
+   *
+   * It puts things back the way a *user* would, with `M502` and `M500`, rather than by saving
+   * and restoring the C++ structure. That is the same rule as the steps: this feature is the net
+   * for a change to `planner.settings`, and infrastructure that named it would have to be edited
+   * by the migration alongside the code, which is exactly what stops a test being evidence.
+   */
+  struct RestoredSettings {
+    ~RestoredSettings() {
+      for (const char *p = "M502"; *p; p++) MYSERIAL1.receive_buffer.write(uint8_t(*p));
+      MYSERIAL1.receive_buffer.write(uint8_t('\n'));
+      queue.get_available_commands();
+      for (uint8_t g = 0; g < 64 && queue.has_commands_queued(); g++) queue.advance();
+      #if ENABLED(EEPROM_SETTINGS)
+        for (const char *p = "M500"; *p; p++) MYSERIAL1.receive_buffer.write(uint8_t(*p));
+        MYSERIAL1.receive_buffer.write(uint8_t('\n'));
+        queue.get_available_commands();
+        for (uint8_t g = 0; g < 64 && queue.has_commands_queued(); g++) queue.advance();
+      #endif
+    }
+  };
+
   // Returns the reading the sensor actually achieved, which is the nearest one it can
   // express — see as_reported() below.
   celsius_float_t the_hotend_is_already_at(const celsius_float_t c) {
@@ -185,6 +211,54 @@ namespace {
 
   void the_reply_mentions(const std::string &reply, const std::string &text) {
     TEST_ASSERT_TRUE(reply.find(text) != std::string::npos);
+  }
+
+  //
+  // ---- Steps for: Keeping the settings the machine was tuned with ----
+  //
+  // Every one of these goes over the wire as G-code and reads the answer out of a report.
+  // That is deliberate and load-bearing: these scenarios exist to hold still while the C++
+  // surface behind `planner.settings` is rewritten, and a step that named that surface would
+  // have to be edited by the very change it is supposed to be checking.
+  //
+
+  void the_host_sets_the_x_steps_per_mm_to(const char * const value) {
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "M92 X%s", value);
+    the_host_sends(cmd);
+  }
+
+  void the_host_sets_the_max_y_feedrate_to(const char * const value) {
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "M203 Y%s", value);
+    the_host_sends(cmd);
+  }
+
+  void the_host_restores_the_factory_settings() { the_host_sends("M502"); }
+
+  #if ENABLED(EEPROM_SETTINGS)
+    void the_host_saves_the_settings() { the_host_sends("M500"); }
+
+    // A restart is a power cycle: the machine comes up and reads whatever is in storage. `M501`
+    // is what the firmware itself does at boot, so this is the same path a real restart takes
+    // without needing the process to end.
+    void the_printer_is_restarted() { the_host_sends("M501"); }
+  #endif
+
+  std::string the_settings_report() { return the_reply_to("M503"); }
+
+  void the_settings_report_gives(const char * const field, const char * const value) {
+    char expected[48];
+    snprintf(expected, sizeof(expected), "%s%s", field, value);
+    const std::string report = the_settings_report();
+    TEST_ASSERT_TRUE_MESSAGE(report.find(expected) != std::string::npos, expected);
+  }
+
+  void the_settings_report_no_longer_gives(const char * const field, const char * const value) {
+    char unwanted[48];
+    snprintf(unwanted, sizeof(unwanted), "%s%s", field, value);
+    const std::string report = the_settings_report();
+    TEST_ASSERT_TRUE_MESSAGE(report.find(unwanted) == std::string::npos, unwanted);
   }
 
 }
@@ -350,3 +424,90 @@ MARLIN_TEST(reporting_status, reporting_what_the_firmware_can_do) {
   ConnectedPrinter printer;
   the_reply_mentions(the_reply_to("M115"), "Marlin");
 }
+
+//
+// ======== Feature: Keeping the settings the machine was tuned with ========
+//
+// The safety net for the `planner.settings` migration. Nothing here names a C++ symbol that
+// the migration touches, so the whole feature can stay green and unedited while the surface
+// underneath it is replaced — which is the only way a test can be evidence that a refactor
+// preserved behaviour.
+//
+
+// `M92 X` is the calibration that decides whether a 20 mm cube measures 20 mm.
+MARLIN_TEST(keeping_its_settings, changing_a_setting_and_seeing_it_take) {
+  ConnectedPrinter printer;
+  RestoredSettings settings;
+
+  the_host_sets_the_x_steps_per_mm_to("123.25");
+
+  the_settings_report_gives("M92 X", "123.25");
+}
+
+// A machine that lost an unrelated setting every time one was changed would be untunable.
+MARLIN_TEST(keeping_its_settings, changing_one_setting_leaves_the_others_alone) {
+  ConnectedPrinter printer;
+  RestoredSettings settings;
+
+  the_host_sets_the_x_steps_per_mm_to("123.25");
+  the_host_sets_the_max_y_feedrate_to("137.5");
+
+  the_settings_report_gives("M92 X", "123.25");
+  the_settings_report_gives("M203 X300.00 Y", "137.50");
+}
+
+// The way back to a known state when a machine is behaving oddly.
+MARLIN_TEST(keeping_its_settings, going_back_to_how_the_firmware_was_built) {
+  ConnectedPrinter printer;
+  RestoredSettings settings;
+
+  the_host_sets_the_x_steps_per_mm_to("123.25");
+  the_host_restores_the_factory_settings();
+
+  the_settings_report_no_longer_gives("M92 X", "123.25");
+}
+
+#if ENABLED(EEPROM_SETTINGS)
+
+// The whole point of saving: the calibration is still there next time the printer is on.
+MARLIN_TEST(keeping_its_settings, settings_kept_across_a_power_cycle) {
+  ConnectedPrinter printer;
+  RestoredSettings settings;
+
+  the_host_sets_the_x_steps_per_mm_to("123.25");
+  the_host_saves_the_settings();
+  the_printer_is_restarted();
+
+  the_settings_report_gives("M92 X", "123.25");
+}
+
+// ...and the other arm: a change that was never saved does not survive, or nobody could try
+// a setting out without committing to it.
+MARLIN_TEST(keeping_its_settings, a_machine_that_was_never_saved_comes_up_as_it_was_built) {
+  ConnectedPrinter printer;
+  RestoredSettings settings;
+
+  the_host_restores_the_factory_settings();
+  the_host_saves_the_settings();               // a known starting point in storage
+
+  the_host_sets_the_x_steps_per_mm_to("123.25");
+  the_printer_is_restarted();
+
+  the_settings_report_no_longer_gives("M92 X", "123.25");
+}
+
+// `M502` and `M500` are separate commands so that trying the defaults is reversible.
+MARLIN_TEST(keeping_its_settings, restoring_the_factory_settings_does_not_discard_what_was_saved) {
+  ConnectedPrinter printer;
+  RestoredSettings settings;
+
+  the_host_sets_the_x_steps_per_mm_to("123.25");
+  the_host_saves_the_settings();
+
+  the_host_restores_the_factory_settings();
+  the_printer_is_restarted();
+
+  the_settings_report_gives("M92 X", "123.25");
+}
+
+#endif // EEPROM_SETTINGS
