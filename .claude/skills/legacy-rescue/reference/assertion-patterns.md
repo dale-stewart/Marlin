@@ -1,0 +1,154 @@
+# Assertion patterns — how to make a test say something
+
+Loaded from `legacy-rescue` Step 4. Read this once the survivor is confirmed killable
+(see `survivor-taxonomy.md`).
+
+The governing idea is the first rule below: assert what the domain guarantees, not what
+the code happened to return. Everything after it is a way that an assertion can look
+substantial and say nothing.
+
+- **Assert derived relationships, not recorded outputs.** The highest-yield tests state
+  something that follows from the domain and would be hard to satisfy by accident: a
+  known invariant, a conservation law, a scaling relation ("doubling the input doubles
+  the elapsed time"), a round-trip that must return the original, an ordering that must
+  hold. A test that records what the code currently returns passes for *any*
+  implementation returning the same thing — including a wrong one — so it kills almost
+  nothing.
+
+  The symptom is **high line coverage with a low mutation score**, with survivors
+  concentrated in code that computes *how* rather than *what*: intermediate values,
+  timing, iteration counts, and the steps between a call and its result. That code runs —
+  hence the coverage — but only its endpoint is observed. Ask what the code computes on
+  the way, and assert a relationship the domain guarantees about it.
+- **Read the diagnostic output the code already produces — for its properties, not its
+  layout.** Code that reports on itself often computes exactly the quantity a test needs and
+  then prints it: residuals, deviations, coefficients, counts. Those are the terms the
+  domain is stated in, and they are already there. Asserting a *property* of them — every
+  residual is zero, the reported coefficients equal the inputs the fixture was built from —
+  is a derived assertion that costs one test and reaches code no ordinary path does.
+
+  It matters that it is the property and not the format. Pinning the layout of a diagnostic
+  freezes something nobody depends on and breaks on every cosmetic change; pinning the
+  property survives reformatting and still fails when the numbers are wrong. Here one such
+  test raised a target from 37% to 54% on its own, because a whole reporting path had been
+  reachable but unasserted.
+- **An assertion written to be independent of a convention is also blind to that convention
+  being wrong.** Comparing a case with itself — this input against its opposite, this run
+  against the same run with one setting changed — is the right way to avoid encoding a
+  configuration constant in a test. It also cannot see the whole thing being inverted,
+  reversed, or offset consistently, because both sides move together.
+
+  So pair every such comparison with one absolute claim, made against whatever independently
+  models the real world — a fixture, a physical quantity, a signed position. "Opposite inputs
+  give opposite outputs" and "a positive input gives a positive output" are different
+  statements, and mutation testing distinguishes them immediately: the sign-flip mutant
+  survives the first and dies to the second.
+- **Some inputs cannot be supplied one at a time.** A survivor that needs the code to be in a
+  particular *régime* — a buffer partly drained, a cache warm, a rate high enough to saturate
+  something — is not reached by making one call with extreme arguments. Extreme arguments often
+  put the code in a different régime instead: ask for a single very fast, very short operation
+  and some other limit dominates, so the value under test is computed and then never used.
+
+  What reaches these is a *sequence*: several operations queued together, so the state the
+  branch reads is the state the earlier ones left. Budget for that — it is a fixture that
+  drives the system into a régime and holds it there, not another parameter on an existing
+  helper. Recognising it early saves a round of tests that look reasonable and kill nothing.
+- **A counter the system re-bases cannot measure the movement it re-bases.** Plenty of code
+  keeps its own bookkeeping — a position, an offset, a sequence number, a running total — and
+  resets or re-references it partway through an operation, precisely so the rest of the
+  operation can be expressed in the new frame. Reading that bookkeeping afterwards tells you
+  where the system *thinks* it is, which is exactly what you wanted to verify and therefore
+  exactly what you cannot use as evidence.
+
+  The tell is an assertion that reports no change when you can see work happening: the counter
+  was moved forward by the re-base and back by the operation, and the two cancel. The instrument
+  has to be something outside the system's control that only accumulates — an observer counting
+  the events themselves rather than reading a total the code is free to rewrite.
+- **When the only thing a branch changes is the order, the sequence is the assertion.** Some
+  branches decide *when* work happens rather than whether or what: do this part first, defer
+  that until after, handle these in priority order. Every ordering finishes in the same final
+  state, so every assertion about the result passes against all of them — and the ordering is
+  usually the whole point, because it is what holds while the operation is only half done.
+
+  That needs an instrument that records the sequence, not the outcome: a log of which
+  subsystem acted when, keyed on something each step already emits. Build it once and it
+  serves every ordering question in the codebase. The assertion to reach for is a *relation*
+  between two spans — "A had finished before B began" — rather than any absolute time, because
+  the durations move with unrelated settings and the ordering does not.
+- **A negative assertion is satisfied by every cause of nothing.** "No work was done", "nothing
+  was sent", "the collection is still empty" — these are true whenever *any* of several
+  mechanisms produced that outcome: the guard you meant to test skipped the work, a downstream
+  filter discarded it, a precondition was never met, or the operation failed silently. Only one
+  of those is your subject, and the assertion cannot tell you which one is holding.
+
+  So before writing "and nothing happened", enumerate what else in the path would swallow the
+  work, and check whether the branch under test is even reachable past it. Where something
+  downstream discards degenerate input — a zero-length item, an empty batch, a no-op update —
+  the guard upstream of it is unobservable by construction, and asserting emptiness pins the
+  filter rather than the guard. Say so in the test, or the next reader will trust it.
+- **Do not state a precondition in terms of a value the code under test may have rewritten.**
+  A test that opens with "this input is only interesting if X" needs X read from something the
+  behaviour does not touch. Code that corrects a value often stamps the corrected answer back
+  into the field the correction was measured against — to mark the item as handled, to keep an
+  invariant, to stop a second pass repeating the work — and a precondition phrased against that
+  field then agrees with whatever happened. The failure is not silent, which is the good news:
+  it usually shows up as a precondition that cannot be satisfied at all.
+- **When a value is folded over a collection, move the deciding element away from the end.**
+  "The tightest limit wins", "the earliest deadline wins", "the highest bidder wins" — the
+  natural example to reach for tends to put the winner last, because that is the order the
+  domain lists things in. A fold that simply keeps the most recent value passes every one of
+  those, and so does the correct one. Vary the winner's *position* as deliberately as its
+  value: one case with it first, one with it last. Otherwise `min` and `last` are the same
+  function as far as the suite is concerned.
+- **A fixture must state every setting the behaviour under test depends on, not only the one
+  it is varying.** Configuration that outlives the command that changed it — a scale factor, an
+  override switch, a mode — is an *input* to the code being tested, and a test that does not
+  set it measures whatever the previous test left. The failure is order-dependent and often
+  appears only in one build variant, which makes it look like a difference between variants
+  rather than a leak.
+
+  The tell is a test that passes alone and fails in company, or passes in one configuration
+  and not another. Set the value in the fixture and restore it, the same way the fixture
+  already handles the value it is deliberately varying.
+- **A report is a grid, a list, or a table — assert its shape, not its spacing.** For code
+  whose output *is* a structure, the properties worth pinning are how many rows it has, how
+  many terms are in each, what those terms are, and whatever regularity makes it readable as a
+  structure at all — a sign on every term so columns align, a fixed field per record, one entry
+  per input. Those are what a reader depends on and what the printing loop can get wrong;
+  mutants that change a loop bound, read the wrong element, or drop a separator all fail such
+  assertions, while reformatting does not.
+
+  Reach for the degenerate input to test the regularity itself. Alignment rules usually only
+  bite on the value that would otherwise be printed short — a zero, an empty field, a missing
+  record — so the case that exercises them is the boring one nobody writes a test for.
+- **Assert the channel a message came out on, not only its words.** Diagnostic text is
+  often produced in more than one place — an error report and a status line, a log record and
+  a user-facing notice — and the same wording travels both. An assertion that searches for
+  the words alone then passes with the report it was written for **deleted**, because the
+  other producer still supplies the string. Mutation testing finds this immediately: the
+  mutant that removes the report survives a test that was written to pin it.
+
+  Assert on the severity marker, prefix, or stream that identifies the producer. That is the
+  part the caller actually depends on, and it is what makes the test falsifiable.
+- **When the only thing a branch changes is speed, time is the assertion.** Optimisations —
+  a fast path taken above a threshold, a cache, a shortcut for a common case — are written so
+  that the result does not change. Every assertion on the result therefore passes with the
+  branch removed, inverted, or its threshold moved anywhere at all, and the whole cluster
+  survives. What the branch was for is the cost, so the cost is what has to be asserted.
+
+  Measure a **difference between two inputs either side of the threshold**, not one absolute
+  duration. Everything the two runs share — setup, teardown, the work below the threshold —
+  cancels in the subtraction, so nothing has to be modelled except the gap between them. A
+  threshold shows up as a kink: above it the extra work is cheap, below it expensive, and two
+  inputs straddling it differ by one unit of each. That difference *locates* the threshold
+  rather than merely noticing one exists, which is what kills mutants that shift it.
+
+  State it as **bounds rather than an equality**. There is usually a fixed per-operation
+  overhead you have not modelled and should not have to: assert the difference falls strictly
+  between the two pure cases (all-cheap and all-expensive), which is true only if the
+  threshold lies between the inputs, and needs no constant at all.
+- **A magnitude needs bracketing from both sides.** "Further than before", "faster than
+  before", "more than the default" pins no number — every mutant that changes the size of an
+  allowance, a retry count, or a margin still satisfies it. Find the input that just succeeds
+  and the input that just fails, and assert both. One test, two calls, and the quantity is
+  specified instead of merely present.

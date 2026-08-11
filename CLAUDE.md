@@ -405,8 +405,12 @@ left on that line.
 
 **"Pin the build configuration."** Here that is `restore_configs`; see the gotchas below.
 
-**Delegating to subagents in this repo.** `.claude/agents/hal-debugger.md` and
-`mutant-killer.md` exist for the two recurring roles. Give any agent that builds its own
+**Delegating to subagents in this repo.** `.claude/agents/harness-validator.md`,
+`mutant-killer.md` and `hal-debugger.md` exist for the three recurring roles. The first
+two are stack-neutral and lift with the skill; `hal-debugger` is specific to this
+firmware's HAL. Each states a **return contract** — an agent that hands back its raw
+output has saved no context, only relocated it, so the contract is the point rather than
+the prose. Give any agent that builds its own
 worktree — all PlatformIO environments share `.pio/build/<env>`, so two agents building
 concurrently overwrite each other's binary and interleave `restore_configs`, and an agent
 measuring a flake over hundreds of runs will silently measure someone else's build.
