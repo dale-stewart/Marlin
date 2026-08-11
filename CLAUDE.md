@@ -134,16 +134,14 @@ the `block_buffer_runtime()` accessor):
 | `module/stepper.cpp` | 96% | 68.9% | |
 | `gcode/calibrate/G28.cpp` | 91% | 66.4% | |
 | `gcode/motion/G2_G3.cpp` | 91% | 58.4% | |
-| `module/settings.cpp` | 91% | **32.3%** | the weak one |
+| `module/settings.cpp` | 93% | **34.2%** | measured under `006-eeprom`; 51 covered lines become 298 |
 | `module/motion.cpp` | 76% | 57.8% raw / 75.3% killable | |
 | `module/temperature.cpp` | — | — | **not a blocker**: its three references are inside `MPCTEMP`, which is off here |
 
-`settings.cpp` is the reason the seam is still shut. 91% of it executes and a third of its
-mutants die — the signature of code that runs without being asserted, which is exactly what a
-coverage-only gate waves through. It is also the file that persists `planner.settings`, so
-changing that structure with it unasserted is the specific risk the ordering rule exists to
-prevent. `EEPROM_SETTINGS` is disabled in every config in `test/`, so `M500`/`M501` are not
-reachable at all and only `reset()` is measurable; a save/load round trip needs a new config.
+`settings.cpp` is the reason the seam is still shut. A third of its mutants die — the signature
+of code that runs without being asserted, which is exactly what a coverage-only gate waves
+through. It is also the file that persists `planner.settings`, so changing that structure with it
+unasserted is the specific risk the ordering rule exists to prevent.
 
 **`motion.cpp` is closed at 57.8% raw / 75.3% killable** (204/353; 82 of 149 survivors are
 equivalent), 76% line coverage. Reason categories, all checked: 24 preprocessor-erased because
@@ -294,15 +292,20 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 464,
-`linux_native_test` 377, `acceptance_native_test` 18 — each measured with
-`pio run -t marlin_default -e <env>`, i.e. against the **default config only**.
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 538,
+`acceptance_native_test` 18 — each measured with `pio run -t marlin_default -e <env>`, i.e.
+against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-three configs in `test/`, reporting **464, 465, 465**. The counts above vary the *env* and
-hold the config fixed. Give an agent a bare number as a baseline without saying which, and
-a correct tree reports a mismatch.
+**six** configs in `test/`, reporting **538, 539, 546, 603, 609, 542**. The counts above vary
+the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
+which, and a correct tree reports a mismatch.
+
+The sixth config, `006-eeprom.ini`, exists because `EEPROM_SETTINGS` is off everywhere else, so
+`M500`/`M501` are not compiled and `settings.cpp` showed 51 covered lines instead of 298. A file
+that is only reachable under an optional feature is a file whose common path nobody is checking;
+adding the configuration was cheaper than any test.
 
 ## Which HAL the tests run against
 
@@ -380,6 +383,16 @@ Environments added by this fork, in `ini/native.ini`:
 | `acceptance_native_coverage` | the same, with coverage |
 | `testhal_native_test` | **the default suite** — unit tests against `HAL/TEST`, time advances only on request |
 | `testhal_native_coverage` | the same, with coverage; the only env that measures motion and blocking commands |
+
+Configurations in `test/`:
+
+| Config | Why it exists |
+|---|---|
+| `001-default` | the baseline every figure is quoted against unless another is named |
+| `002-extruders_1_runout`, `003-extruders_3_runout` | filament runout; 003 is the only build with `tool_change.cpp` in it |
+| `004-sd_powerloss` | media and power-loss recovery |
+| `005-bed_leveling` | probing, `Z_SAFE_HOMING`, and the whole of `test_homing_the_machine.cpp` |
+| `006-eeprom` | `EEPROM_SETTINGS`, so `M500`/`M501` and most of `settings.cpp` are compiled at all |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).

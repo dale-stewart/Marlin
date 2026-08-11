@@ -26,44 +26,42 @@
 #if ENABLED(EEPROM_SETTINGS)
 
 #include "../shared/eeprom_api.h"
-#include <stdio.h>
+#include <string.h>
 
 #ifndef MARLIN_EEPROM_SIZE
   #define MARLIN_EEPROM_SIZE 0x1000 // 4KB of Emulated EEPROM
 #endif
 
-uint8_t buffer[MARLIN_EEPROM_SIZE];
-char filename[] = "eeprom.dat";
+/**
+ * The store lives in memory and nowhere else.
+ *
+ * The LINUX HAL backs this with `eeprom.dat` so the simulator keeps its settings between runs,
+ * which is a feature there. Here it is a hazard: the file sits in the working directory, is
+ * shared by every process that runs from it, and outlives the run. `mutation_test.py` executes
+ * its mutant binaries with `cwd=REPO` and up to one worker per core, so a file-backed store puts
+ * thirty-odd processes on one file at once — and a test suite that reads state left behind by a
+ * previous run is not reproducible even on its own.
+ *
+ * A test process wants the opposite of persistence: the same starting state every time. So the
+ * buffer is process-local and starts erased, which is what a board with never-written EEPROM
+ * reads as. Nothing under test can tell the difference — `settings.cpp` sees the same bytes
+ * through the same API — and the suite gains isolation between processes for free.
+ *
+ * See defect register #32.
+ */
+static uint8_t buffer[MARLIN_EEPROM_SIZE];
+static bool erased = false;
+
+constexpr uint8_t EEPROM_ERASE_VALUE = 0xFF;
 
 size_t PersistentStore::capacity() { return MARLIN_EEPROM_SIZE - eeprom_exclude_size; }
 
 bool PersistentStore::access_start() {
-  const char eeprom_erase_value = 0xFF;
-  FILE * eeprom_file = fopen(filename, "rb");
-  if (!eeprom_file) return false;
-
-  fseek(eeprom_file, 0L, SEEK_END);
-  std::size_t file_size = ftell(eeprom_file);
-
-  if (file_size < long(MARLIN_EEPROM_SIZE)) {
-    memset(buffer + file_size, eeprom_erase_value, MARLIN_EEPROM_SIZE - file_size);
-  }
-  else {
-    fseek(eeprom_file, 0L, SEEK_SET);
-    fread(buffer, sizeof(uint8_t), sizeof(buffer), eeprom_file);
-  }
-
-  fclose(eeprom_file);
+  if (!erased) { memset(buffer, EEPROM_ERASE_VALUE, MARLIN_EEPROM_SIZE); erased = true; }
   return true;
 }
 
-bool PersistentStore::access_finish() {
-  FILE * eeprom_file = fopen(filename, "wb");
-  if (!eeprom_file) return false;
-  fwrite(buffer, sizeof(uint8_t), sizeof(buffer), eeprom_file);
-  fclose(eeprom_file);
-  return true;
-}
+bool PersistentStore::access_finish() { return true; }
 
 bool PersistentStore::write_data(int &pos, const uint8_t *value, size_t size, uint16_t *crc) {
   std::size_t bytes_written = 0;

@@ -38,20 +38,29 @@ char filename[] = "eeprom.dat";
 size_t PersistentStore::capacity() { return MARLIN_EEPROM_SIZE - eeprom_exclude_size; }
 
 bool PersistentStore::access_start() {
-  const char eeprom_erase_value = 0xFF;
+  constexpr uint8_t eeprom_erase_value = 0xFF;
+
+  // A board whose EEPROM has never been written reads as erased, not as unavailable — so a
+  // missing backing file is an empty store, not a failure. Returning false here made the first
+  // `M500` of a run silently do nothing on a clean checkout, and the suite pass only from the
+  // second run onwards, once an earlier run had left the file behind. See defect register #32.
   FILE * eeprom_file = fopen(filename, "rb");
-  if (!eeprom_file) return false;
+  if (!eeprom_file) {
+    memset(buffer, eeprom_erase_value, MARLIN_EEPROM_SIZE);
+    return true;
+  }
 
   fseek(eeprom_file, 0L, SEEK_END);
-  std::size_t file_size = ftell(eeprom_file);
+  const std::size_t file_size = std::size_t(ftell(eeprom_file)),
+                    to_read = _MIN(file_size, std::size_t(MARLIN_EEPROM_SIZE));
 
-  if (file_size < long(MARLIN_EEPROM_SIZE)) {
-    memset(buffer + file_size, eeprom_erase_value, MARLIN_EEPROM_SIZE - file_size);
-  }
-  else {
-    fseek(eeprom_file, 0L, SEEK_SET);
-    fread(buffer, sizeof(uint8_t), sizeof(buffer), eeprom_file);
-  }
+  // A short file is a partly-written store: read what is there and treat the rest as erased.
+  // The previous form memset from `file_size` onward without ever reading the part that existed,
+  // so a short file left the low bytes as whatever was in the buffer already.
+  fseek(eeprom_file, 0L, SEEK_SET);
+  if (to_read) fread(buffer, sizeof(uint8_t), to_read, eeprom_file);
+  if (to_read < MARLIN_EEPROM_SIZE)
+    memset(buffer + to_read, eeprom_erase_value, MARLIN_EEPROM_SIZE - to_read);
 
   fclose(eeprom_file);
   return true;
