@@ -551,24 +551,22 @@ namespace ExtUI {
   //
 
   float getAxisSteps_per_mm(const axis_t axis) {
-    return planner.settings.axis_steps_per_mm[axis];
+    return planner.steps_per_mm(axis);
   }
 
   float getAxisSteps_per_mm(const extruder_t extruder) {
     UNUSED(extruder);
-    return planner.settings.axis_steps_per_mm[E_AXIS_N(extruder - E0)];
+    return planner.steps_per_mm(E_AXIS_N(extruder - E0));
   }
 
   #if ENABLED(EDITABLE_STEPS_PER_UNIT)
     void setAxisSteps_per_mm(const float value, const axis_t axis) {
-      planner.settings.axis_steps_per_mm[axis] = value;
-      planner.refresh_positioning();
+      planner.set_steps_per_mm(axis, value);
     }
 
     void setAxisSteps_per_mm(const float value, const extruder_t extruder) {
       UNUSED(extruder);
-      planner.settings.axis_steps_per_mm[E_AXIS_N(extruder - E0)] = value;
-      planner.refresh_positioning();
+      planner.set_steps_per_mm(E_AXIS_N(extruder - E0), value);
     }
   #endif
 

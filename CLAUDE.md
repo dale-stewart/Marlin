@@ -189,9 +189,19 @@ checked rather than assumed:
 
 - `SOVOL_SV06_RTS` fails to compile: it wants Arduino's `String`, and its `sendData(int, …)` and
   `sendData(int32_t, …)` overloads are the same signature on a 64-bit target.
-- `EXTENSIBLE_UI` compiles and will not link — `ui_api.cpp` is a library that resolves only
-  against a concrete UI supplying some twenty `ExtUI::on*` callbacks, which a test would have to
-  invent wholesale.
+- `EXTENSIBLE_UI` **is now buildable**. `ui_api.cpp` links only against a concrete UI supplying
+  twenty-two `ExtUI::on*` callbacks; `tests/support/stub_extui.cpp` is the smallest one that
+  satisfies the linker, and it *records* rather than discards — empty bodies would compile just as
+  well and would make the interesting half untestable, since the contract of ExtUI is that the
+  firmware tells the display when things happen and silence is the failure that matters. Config
+  `008-extui`.
+
+  Note the two directions need different tests. Homing, resets and status messages are the
+  firmware calling *out*, and those live at the firmware's call sites, not in `ui_api.cpp` — three
+  scenarios of that left the file at 0%. `ui_api.cpp` is what a display calls *in*, so covering it
+  means a test standing in for the display. Only the migrated setters are covered here (2%);
+  covering the rest of that 226-line API is a separate and much larger job with no defect behind
+  it.
 - `I2C_POSITION_ENCODERS` **is now buildable and tested** — it needed `<Wire.h>` (a stub bus, on
   the same footing as `HAL/TEST/spi.cpp`) and Arduino's legacy `Bxxxxxxxx` binary-literal macros,
   both now in `HAL/TEST/include/`. Config `007-i2c_encoders`. The bus grew an `I2CDevice`
@@ -414,7 +424,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**seven** configs in `test/`, reporting **547, 548, 555, 612, 618, 556, 549**. The counts above vary
+**eight** configs in `test/`, reporting **547, 548, 555, 612, 618, 556, 553, 552**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -510,6 +520,7 @@ Configurations in `test/`:
 | `005-bed_leveling` | probing, `Z_SAFE_HOMING`, and the whole of `test_homing_the_machine.cpp` |
 | `006-eeprom` | `EEPROM_SETTINGS`, so `M500`/`M501` and most of `settings.cpp` are compiled at all |
 | `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, the first consumer of `planner.settings` from outside the build to be made buildable |
+| `008-extui` | `EXTENSIBLE_UI`, which links only against a concrete display — `tests/support/stub_extui.cpp` is that display, and it records rather than discards |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
