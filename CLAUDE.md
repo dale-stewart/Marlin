@@ -405,6 +405,31 @@ left on that line.
 
 **"Pin the build configuration."** Here that is `restore_configs`; see the gotchas below.
 
+**What validating the agents taught (2026-08-11).** The split skill and its two agents were
+tested before being trusted, control first: `harness-validator` was run once against the
+correct apparatus and once with `.pio/build/testhal_native_coverage` moved aside — the
+documented fault where the runner warns and mutates every line. It returned `TRUSTWORTHY`
+and `NOT TRUSTWORTHY` respectively, named the missing coverage build as the cause, and
+refused to compare its unrestricted 16.8% against the restricted 71.9%. Its numbers on the
+good run reproduced exactly when re-run here (41/16/50 of 528, 21 covered lines).
+
+Two things it got wrong are worth more than the passes:
+
+- **A false equivalence inside the evidence for a pass.** It certified the harness partly on
+  a "control" pair of mutants it called equivalent because `target_extruder` is "always 0".
+  It is not: `get_target_extruder_from_command()` returns **-1** for a `T` the build does not
+  have (`gcode.cpp:138`), so `> 0` is killable and only `!= 0` is genuinely equivalent. No
+  existing test took that path, which is why it looked unreachable. The next agent killed it.
+- **"The suite passed" meant one config of eight.** `mutant-killer` measured against
+  `001-default` as instructed and reported green truthfully; its new test used the literal
+  `T1`, which is out of range with `EXTRUDERS` 1 and an ordinary request with `EXTRUDERS` 3.
+  It failed immediately under `003-extruders_3_runout`. Fixed by deriving the index from
+  `EXTRUDERS` itself, so the test states "the first extruder this build does not have".
+
+Both agent definitions now carry the corresponding rule. The pattern behind both: **an agent
+is most dangerous where it is most confident**, and both errors were in claims nothing
+downstream would normally re-check.
+
 **Delegating to subagents in this repo.** `.claude/agents/harness-validator.md`,
 `mutant-killer.md` and `hal-debugger.md` exist for the three recurring roles. The first
 two are stack-neutral and lift with the skill; `hal-debugger` is specific to this
@@ -422,13 +447,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 538,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 553,
 `acceptance_native_test` 18 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eight** configs in `test/`, reporting **547, 548, 555, 612, 618, 556, 553, 552**. The counts above vary
+**eight** configs in `test/`, reporting **553, 554, 561, 618, 624, 562, 559, 558**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

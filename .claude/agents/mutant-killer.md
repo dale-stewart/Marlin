@@ -54,6 +54,15 @@ killed. Verify against a known result before believing a number. If you suspect 
 apparatus rather than the tests, stop and say so: that is `harness-validator`'s job, and
 continuing to write tests against a broken instrument produces confident nonsense.
 
+**A new test is a claim about every configuration, not the one you measured in.** You
+will be given one build to measure against, and a test that passes there can be false
+elsewhere — an input that is out of range in the measured configuration may be perfectly
+valid in another, so the test then asserts the system ignores a legitimate request. Run
+the whole suite across every configuration the project builds before reporting, and name
+which ones you ran. Where a test genuinely belongs to one configuration, derive its
+inputs from the build's own constants rather than writing a literal, so it stays true
+wherever it is compiled.
+
 **Stop when the distribution flattens.** When the largest remaining cluster is a handful
 of unrelated single mutants, the cost per mutant has jumped by an order of magnitude and
 the yield has not. Report and stop rather than grinding — a clean stop with an accounted
@@ -68,6 +77,7 @@ whoever wants their text can read the file.
 
 ```
 TARGET: <file>   CONFIG/SUITE: <which one — never omit this>
+Suite green in:  <every configuration you ran, with counts — not just the measured one>
 
 Score:      <killed>/<generated> raw   <killed>/<killable> killable
 Baseline:   <the score before this pass>

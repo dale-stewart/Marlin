@@ -152,3 +152,15 @@ substantial and say nothing.
   allowance, a retry count, or a margin still satisfies it. Find the input that just succeeds
   and the input that just fails, and assert both. One test, two calls, and the quantity is
   specified instead of merely present.
+- **A test is a claim about every configuration, not the one you measured in.** Mutation
+  work is done against one build, and it is easy to write an input that is out of range
+  *there* — an index the build does not have, a feature it does not compile, a limit it
+  does not reach. In another configuration that same input is ordinary, and the test then
+  asserts the system ignores a perfectly valid request. It will pass where it was written
+  and fail where it was not, which reads as a flaky test rather than a wrong one.
+
+  Derive such an input from the build's own constants rather than writing a literal — the
+  first index this build does *not* have, rather than a number that happens to be out of
+  range today. That keeps the test true wherever it is compiled, and it states the
+  intent, which a literal does not. Run every configuration before believing a green
+  suite, and say which ones you ran.

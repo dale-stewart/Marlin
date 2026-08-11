@@ -217,6 +217,34 @@ MARLIN_TEST(gcode_commands, M92_sets_steps_per_mm) {
   planner.settings.axis_steps_per_mm[Y_AXIS] = was_y;
 }
 
+/**
+ * `T` naming an extruder this build does not have is refused before M92 touches anything
+ * or reports back. The command must do nothing observable: no steps changed, and no
+ * report printed, which is what distinguishes an early return from one that presses on
+ * with a nonsense extruder index.
+ *
+ * The index is `EXTRUDERS` itself — the first one this build does *not* have, whatever
+ * the configuration says. Naming a literal here would make the test a statement about
+ * one configuration: `T1` is out of range with `EXTRUDERS` 1 and a perfectly ordinary
+ * request with `EXTRUDERS` 3, so the same test would assert the machine ignores a valid
+ * command. It did, and it failed the moment it was run against a multi-extruder build.
+ */
+MARLIN_TEST(gcode_commands, M92_with_an_extruder_this_build_does_not_have_does_nothing) {
+  const float was_x = planner.settings.axis_steps_per_mm[X_AXIS];
+
+  static char buf[32];
+  sprintf(buf, "M92 T%d X999", EXTRUDERS);
+  SerialCapture capture;
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  const std::string reply = capture.finish();
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(was_x, planner.settings.axis_steps_per_mm[X_AXIS],
+    "an out-of-range T must stop M92 before it changes anything");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("M92 X") == std::string::npos,
+    "an out-of-range T must stop M92 before it reports back");
+}
+
 #if HAS_EXTRUDERS
 
 namespace {
@@ -273,6 +301,45 @@ MARLIN_TEST(gcode_commands, a_very_low_M92_E_keeps_the_extruder_speed_limit_in_s
     "the new resolution should have been taken");
   TEST_ASSERT_FLOAT_WITHIN_MESSAGE(before * 1e-4f, before, e_speed_limit_in_steps_per_s(),
     "the extruder's speed limit in steps per second should not have moved");
+}
+
+/**
+ * The threshold itself: 20 is the boundary, not a value inside either region.
+ *
+ * The two tests above sit well clear of it on each side. `19` must still be read as a
+ * unit change and `20` must not — the comparison is strict, so the threshold value
+ * itself belongs to the "ordinary" side.
+ */
+MARLIN_TEST(gcode_commands, M92_E_just_under_the_threshold_is_a_unit_change) {
+  SavedExtruderSteps restore;
+
+  planner.settings.axis_steps_per_mm[E_AXIS] = 500.0f;
+  planner.settings.max_feedrate_mm_s[E_AXIS] = 25.0f;
+  planner.refresh_positioning();
+  const float before = e_speed_limit_in_steps_per_s();
+
+  host_sends("M92 E19");
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(19.0f, planner.settings.axis_steps_per_mm[E_AXIS],
+    "the new resolution should have been taken");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(before * 1e-4f, before, e_speed_limit_in_steps_per_s(),
+    "19 is still under the threshold, so the speed limit in steps per second should not have moved");
+}
+
+MARLIN_TEST(gcode_commands, M92_E_at_the_threshold_is_an_ordinary_change) {
+  SavedExtruderSteps restore;
+
+  planner.settings.axis_steps_per_mm[E_AXIS] = 500.0f;
+  planner.settings.max_feedrate_mm_s[E_AXIS] = 25.0f;
+  planner.refresh_positioning();
+
+  host_sends("M92 E20");
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(20.0f, planner.settings.axis_steps_per_mm[E_AXIS],
+    "the new resolution should have been taken");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(25.0f, planner.settings.max_feedrate_mm_s[E_AXIS],
+    "20 is at the threshold, which belongs to the ordinary side: the millimetre limit "
+    "should be left exactly as configured");
 }
 
 /**

@@ -36,6 +36,16 @@ a fault you know is equivalent.
 or reproducible, build the *unfixed* version and confirm you reproduce the fault yourself.
 A clean run only means something once you have seen a dirty one.
 
+**An equivalence used as a control is a claim like any other.** The natural control here
+is a fault you expect *not* to be caught — but "this mutant is equivalent" is exactly the
+kind of statement that is easy to argue and hard to establish, and if the control is
+wrong the whole validation rests on it. Trace the value's reachable range through the
+code rather than reasoning about what it ought to be; an accessor that looks like it
+returns an index may return a sentinel on the path no existing test takes, and that is
+precisely the path a mutant distinguishes. If you cannot establish the equivalence,
+report the mutant as *survived, reason not established* — which is honest — rather than
+as an equivalent control, which is load-bearing.
+
 **Suspect success more than failure.** An implausibly high score, a survivor count of
 zero, a denominator that changed between runs, a suite that got faster — each is more
 likely to be the harness having stopped working than the tests having improved. Chase the
