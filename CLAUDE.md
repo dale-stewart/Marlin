@@ -167,18 +167,21 @@ assign these arrays and are compiled by no configuration under `test/`. Two of t
 suspected wrong (register #33). Covering them needs configurations that build them, which is the
 same problem `006-eeprom` solved for `settings.cpp` and the same solution.
 
-**The setters conflate two different operations.** `set_max_acceleration(axis, v)` and
-`set_max_feedrate(axis, v)` clamp the value and warn about it under `LIMITED_MAX_*_EDITING`. That
-is right for *a user naming a limit* and wrong for *the firmware restating one*: `G28`'s
-`begin_slow_homing()` forces acceleration to 100 and must not be clamped or announced, and `M92`'s
-low-`E` compensation restates an existing feedrate limit in new units and has to land wherever
-the arithmetic puts it. Both therefore assign the array directly — correctly, and with the
-derived figure refreshed by hand where one exists.
+**The setters conflated two operations — now separated.** `set_max_acceleration(axis, v)` and
+`set_max_feedrate(axis, v)` clamp and warn under `LIMITED_MAX_*_EDITING`, which is right for *a
+user naming a limit* and wrong for *the firmware restating one*. `override_max_acceleration()` and
+`override_max_feedrate()` are the second operation: taken as given, not announced, and still
+keeping the derived step-rate limits in step. `set_*` delegates to `override_*`, so the invariant
+lives in one place and the difference between the two is exactly the clamping.
 
-So the remaining raw writes in compiled code are not laziness; they are the API missing a
-distinction. Until "set, as a user" and "override, as the firmware" are separate operations,
-privatising the fields would either break those two call sites or silently start clamping them.
-That is the next design step, and it is a design question rather than a coverage one.
+`G28`'s `begin_slow_homing()` and `M92`'s low-`E` compensation are the two firmware overrides, and
+both now say so. Enabling `improve_homing_reliability` in `005-bed_leveling` is what made the
+first of those safe to touch: that block was compiled by no configuration, and the existing homing
+tests exercise it the moment it is built (G28 96% there). It is executed rather than strongly
+asserted — nothing measures homing acceleration — which is worth knowing before leaning on it.
+
+With that, **every raw write to the three per-axis arrays in compiled code is gone**. What remains
+is four LCD drivers and the I2C encoder, built by no configuration under `test/`.
 
 **Migration in progress — slice 1 of the `planner.settings` correction is done.**
 `Planner::steps_per_mm(axis)` and `Planner::set_steps_per_mm(axis, value)` now exist alongside

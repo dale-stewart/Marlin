@@ -75,12 +75,10 @@ void GcodeSuite::M92() {
             #if ALL(CLASSIC_JERK, HAS_CLASSIC_E_JERK)
               planner.max_jerk.e *= factor;
             #endif
-            // Assigned rather than set through `planner.set_max_feedrate()` on purpose. That
-            // setter clamps and warns under `LIMITED_MAX_FR_EDITING`, which is right for a user
-            // naming a limit and wrong here: this is the firmware restating an existing limit in
-            // new units, and it has to land wherever the arithmetic puts it. Feedrate has no
-            // derived cache, so there is nothing owed afterwards.
-            planner.settings.max_feedrate_mm_s[e] *= factor;
+            // An override rather than a set: this is the firmware restating a limit it already
+            // owns in new units, not a user naming one, so it must land where the arithmetic puts
+            // it and must not be announced as though someone had asked for something impossible.
+            planner.override_max_feedrate(e, planner.max_feedrate(e) * factor);
           }
           planner.set_steps_per_mm(e, value);
         #endif

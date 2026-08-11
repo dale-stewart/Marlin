@@ -189,29 +189,32 @@
 
 #if ENABLED(IMPROVE_HOMING_RELIABILITY)
 
+  // Homing crawls: a missed step while looking for a switch is a machine that thinks it is
+  // somewhere it is not, and low acceleration makes that far less likely. The limits are put
+  // back afterwards, so this is the firmware borrowing them rather than the user changing them —
+  // `override_` rather than `set_`, which is what keeps it out of the clamping and the warnings
+  // that `M201` is subject to. The overrides own the refresh of the derived step-rate limits.
   motion_state_t begin_slow_homing() {
     motion_state_t motion_state{0};
-    motion_state.acceleration.set(planner.settings.max_acceleration_mm_per_s2[X_AXIS],
-                                 planner.settings.max_acceleration_mm_per_s2[Y_AXIS]
-                                 OPTARG(DELTA, planner.settings.max_acceleration_mm_per_s2[Z_AXIS])
-                               );
-    planner.settings.max_acceleration_mm_per_s2[X_AXIS] = 100;
-    planner.settings.max_acceleration_mm_per_s2[Y_AXIS] = 100;
-    TERN_(DELTA, planner.settings.max_acceleration_mm_per_s2[Z_AXIS] = 100);
+    motion_state.acceleration.set(planner.max_acceleration(X_AXIS),
+                                  planner.max_acceleration(Y_AXIS)
+                                  OPTARG(DELTA, planner.max_acceleration(Z_AXIS))
+                                );
+    planner.override_max_acceleration(X_AXIS, 100);
+    planner.override_max_acceleration(Y_AXIS, 100);
+    TERN_(DELTA, planner.override_max_acceleration(Z_AXIS, 100));
     #if ENABLED(CLASSIC_JERK)
       motion_state.jerk_state = planner.max_jerk;
       planner.max_jerk.set(0, 0 OPTARG(DELTA, 0));
     #endif
-    planner.refresh_acceleration_rates();
     return motion_state;
   }
 
   void end_slow_homing(const motion_state_t &motion_state) {
-    planner.settings.max_acceleration_mm_per_s2[X_AXIS] = motion_state.acceleration.x;
-    planner.settings.max_acceleration_mm_per_s2[Y_AXIS] = motion_state.acceleration.y;
-    TERN_(DELTA, planner.settings.max_acceleration_mm_per_s2[Z_AXIS] = motion_state.acceleration.z);
+    planner.override_max_acceleration(X_AXIS, motion_state.acceleration.x);
+    planner.override_max_acceleration(Y_AXIS, motion_state.acceleration.y);
+    TERN_(DELTA, planner.override_max_acceleration(Z_AXIS, motion_state.acceleration.z));
     TERN_(CLASSIC_JERK, planner.max_jerk = motion_state.jerk_state);
-    planner.refresh_acceleration_rates();
   }
 
 #endif // IMPROVE_HOMING_RELIABILITY

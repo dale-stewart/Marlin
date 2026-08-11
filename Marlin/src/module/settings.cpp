@@ -1995,8 +1995,8 @@ void MarlinSettings::postprocess() {
           // Hand each whole set over rather than assigning the arrays. The reciprocal cache, the
           // stepper's step counts and the acceleration limits in steps are all derived from
           // these, and the planner is what knows that.
-          planner.set_max_acceleration(accel);
-          planner.set_max_feedrate(feedrate);
+          planner.override_max_acceleration(accel);
+          planner.override_max_feedrate(feedrate);
           TERN_(EDITABLE_STEPS_PER_UNIT, planner.set_steps_per_mm(steps_per_mm));
         }
 
@@ -3331,8 +3331,8 @@ void MarlinSettings::reset() {
     TERN_(EDITABLE_STEPS_PER_UNIT, steps_per_mm[i] = pgm_read_float(&_DASU[ALIM(i, _DASU)]));
     feedrate[i] = pgm_read_float(&_DMF[ALIM(i, _DMF)]);
   }
-  planner.set_max_acceleration(accel);
-  planner.set_max_feedrate(feedrate);
+  planner.override_max_acceleration(accel);
+  planner.override_max_feedrate(feedrate);
   TERN_(EDITABLE_STEPS_PER_UNIT, planner.set_steps_per_mm(steps_per_mm));
 
   planner.settings.min_segment_time_us = DEFAULT_MINSEGMENTTIME;

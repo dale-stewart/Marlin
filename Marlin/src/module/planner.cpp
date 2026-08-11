@@ -3256,12 +3256,21 @@ void Planner::refresh_acceleration_rates() {
  * Recalculate 'position' and 'mm_per_step'.
  * Must be called whenever settings.axis_steps_per_mm changes!
  */
-void Planner::set_max_acceleration(const uint32_t (&values)[DISTINCT_AXES]) {
+void Planner::override_max_acceleration(const uint8_t axis, const float value) {
+  settings.max_acceleration_mm_per_s2[axis] = value;
+  refresh_acceleration_rates();   // the limit in steps is derived from this one
+}
+
+void Planner::override_max_feedrate(const uint8_t axis, const feedRate_t value) {
+  settings.max_feedrate_mm_s[axis] = value;
+}
+
+void Planner::override_max_acceleration(const uint32_t (&values)[DISTINCT_AXES]) {
   LOOP_DISTINCT_AXES(i) settings.max_acceleration_mm_per_s2[i] = values[i];
   refresh_acceleration_rates();
 }
 
-void Planner::set_max_feedrate(const feedRate_t (&values)[DISTINCT_AXES]) {
+void Planner::override_max_feedrate(const feedRate_t (&values)[DISTINCT_AXES]) {
   LOOP_DISTINCT_AXES(i) settings.max_feedrate_mm_s[i] = values[i];
 }
 
@@ -3316,10 +3325,8 @@ void Planner::set_max_acceleration(const AxisEnum axis, float inMaxAccelMMS2) {
     #endif
     limit_and_warn(inMaxAccelMMS2, axis, F("Acceleration"), max_acc_edit_scaled);
   #endif
-  settings.max_acceleration_mm_per_s2[axis] = inMaxAccelMMS2;
-
-  // Update steps per s2 to agree with the units per s2 (since they are used in the planner)
-  refresh_acceleration_rates();
+  // A request, once vetted, is just an override.
+  override_max_acceleration(axis, inMaxAccelMMS2);
 }
 
 /**
@@ -3339,7 +3346,7 @@ void Planner::set_max_feedrate(const AxisEnum axis, float inMaxFeedrateMMS) {
     #endif
     limit_and_warn(inMaxFeedrateMMS, axis, F("Feedrate"), max_fr_edit_scaled);
   #endif
-  settings.max_feedrate_mm_s[axis] = inMaxFeedrateMMS;
+  override_max_feedrate(axis, inMaxFeedrateMMS);
 }
 
 #if ENABLED(CLASSIC_JERK)

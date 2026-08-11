@@ -746,27 +746,42 @@ class Planner {
       static void set_steps_per_mm(const float (&values)[DISTINCT_AXES]);
     #endif
 
-    // For an axis set the Maximum Acceleration in mm/s^2
+    /**
+     * Axis limits: two operations that look identical and are not.
+     *
+     * `set_*` is **a user naming a limit** — from `M201`, `M203`, an LCD menu. The value is a
+     * request: it may be clamped to what the build allows and the machine says so when it is,
+     * because the person who typed it needs to know they did not get what they asked for.
+     *
+     * `override_*` is **the firmware restating a limit it already owns**. Homing drops
+     * acceleration to a crawl for its own reasons; a change of resolution units restates a
+     * feedrate limit in the new units. Those must land exactly where the arithmetic puts them,
+     * and announcing them would be reporting an internal detail as though the user had done
+     * something wrong.
+     *
+     * Both keep `max_acceleration_steps_per_s2` — derived from the acceleration limits and the
+     * resolutions — in step. That is the part callers must not be left to remember, and it is why
+     * the raw arrays are not the answer even for the firmware's own overrides. `set_*` delegates
+     * to `override_*` so the invariant lives in exactly one place.
+     *
+     * The distinction exists only where a user-facing limit does, which is why resolution has a
+     * single `set_steps_per_mm()`: nothing clamps it.
+     */
     static void set_max_acceleration(const AxisEnum axis, float inMaxAccelMMS2);
-
-    // For an axis set the Maximum Feedrate in mm/s
     static void set_max_feedrate(const AxisEnum axis, float inMaxFeedrateMMS);
 
-    /**
-     * @brief   Restore a whole set of axis limits at once.
-     * @details The bulk counterparts of the two setters above, for restoring a stored block or
-     *          the configured defaults. `max_acceleration_steps_per_s2` is derived from the
-     *          acceleration limits and the resolutions, so it has the same hazard as
-     *          `mm_per_step`: assign the array and the derived figure is stale until somebody
-     *          remembers.
-     *
-     *          Unlike the per-axis setters these do **not** clamp or warn. A per-axis set is a
-     *          user asking for a value and being told if it is out of range; a bulk restore is
-     *          the machine putting back what it already had, and warning about each axis every
-     *          time it starts up would be noise, not information.
-     */
-    static void set_max_acceleration(const uint32_t (&values)[DISTINCT_AXES]);
-    static void set_max_feedrate(const feedRate_t (&values)[DISTINCT_AXES]);
+    static void override_max_acceleration(const uint8_t axis, const float value);
+    static void override_max_feedrate(const uint8_t axis, const feedRate_t value);
+
+    // ...and in bulk, for restoring a stored block or the configured defaults. Always an
+    // override: the machine is putting back what it already had, and warning about every axis on
+    // every startup would be noise rather than information.
+    static void override_max_acceleration(const uint32_t (&values)[DISTINCT_AXES]);
+    static void override_max_feedrate(const feedRate_t (&values)[DISTINCT_AXES]);
+
+    // The limits as they stand.
+    FORCE_INLINE static float max_acceleration(const uint8_t axis) { return settings.max_acceleration_mm_per_s2[axis]; }
+    FORCE_INLINE static feedRate_t max_feedrate(const uint8_t axis) { return settings.max_feedrate_mm_s[axis]; }
 
     // For an axis set the Maximum Jerk (instant change) in mm/s
     #if ENABLED(CLASSIC_JERK)
