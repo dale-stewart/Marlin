@@ -3256,6 +3256,13 @@ void Planner::refresh_acceleration_rates() {
  * Recalculate 'position' and 'mm_per_step'.
  * Must be called whenever settings.axis_steps_per_mm changes!
  */
+#if ENABLED(EDITABLE_STEPS_PER_UNIT)
+  void Planner::set_steps_per_mm(const uint8_t axis, const float value) {
+    settings.axis_steps_per_mm[axis] = value;
+    refresh_positioning();
+  }
+#endif
+
 void Planner::refresh_positioning() {
   #if ENABLED(EDITABLE_STEPS_PER_UNIT)
     LOOP_DISTINCT_AXES(i) mm_per_step[i] = 1.0f / settings.axis_steps_per_mm[i];

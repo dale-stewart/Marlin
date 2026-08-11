@@ -703,6 +703,37 @@ class Planner {
      */
     static void refresh_positioning();
 
+    /**
+     * @brief   An axis's resolution, in steps per millimetre.
+     * @details Prefer this to reading `settings.axis_steps_per_mm` directly. It reads the same
+     *          value, but going through it means a caller is not also in a position to write the
+     *          field — and writing it without `set_steps_per_mm()` below leaves `mm_per_step`
+     *          stale, which is silent and wrong rather than loud and wrong.
+     */
+    FORCE_INLINE static float steps_per_mm(const uint8_t axis) { return settings.axis_steps_per_mm[axis]; }
+
+    #if ENABLED(EDITABLE_STEPS_PER_UNIT)
+      /**
+       * @brief   Set an axis's resolution, keeping everything derived from it in step.
+       * @details `mm_per_step` is a cache of the reciprocal and the stepper's idea of where the
+       *          machine is counts in steps, so changing the resolution invalidates both. Until
+       *          now that was the caller's job to remember — a public array to assign to and a
+       *          `refresh_positioning()` to call afterwards, with nothing to connect them but a
+       *          comment. Forgetting it does not fail: the machine keeps moving, at a scale that
+       *          no longer matches what it reports.
+       *
+       *          Refreshing per axis rather than per batch is deliberate. This is the
+       *          interactive path — `M92` from a host, a value at a time — and the cost is a
+       *          reciprocal and a position sync, which is nothing beside getting it wrong. The
+       *          bulk path (restoring a whole stored block) sets the array and finalises once,
+       *          and is a separate consumer that has not moved yet.
+       *
+       * @param axis   the axis, indexed as `settings.axis_steps_per_mm` is
+       * @param value  steps per millimetre
+       */
+      static void set_steps_per_mm(const uint8_t axis, const float value);
+    #endif
+
     // For an axis set the Maximum Acceleration in mm/s^2
     static void set_max_acceleration(const AxisEnum axis, float inMaxAccelMMS2);
 

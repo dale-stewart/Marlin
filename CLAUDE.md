@@ -156,6 +156,22 @@ refused — checksum, version, and a stored value that is not a number. Each fai
 be *reported* as well as refused, because a machine that quietly forgets its calibration is worse
 than one that says so.
 
+**Migration in progress — slice 1 of the `planner.settings` correction is done.**
+`Planner::steps_per_mm(axis)` and `Planner::set_steps_per_mm(axis, value)` now exist alongside
+the public array, and `M92` uses them. The defect being corrected is a public mutable field with
+a derived cache: `mm_per_step` is the reciprocal and the stepper counts in steps, so changing the
+resolution invalidates both — and until now keeping them in step was the caller's job to
+remember, with nothing connecting the array to `refresh_positioning()` but a comment. Forgetting
+it does not fail; the machine keeps moving at a scale that no longer matches what it reports.
+
+The array is still public because `settings.cpp` still writes it during a bulk restore, which is
+a different pattern (set everything, finalise once) and a separate consumer. That is the
+sequenced migration working as prescribed: new API alongside the old, old retired as consumers
+arrive.
+
+The refactor touched **three production files and no test file**, and the 24 acceptance scenarios
+stayed green and unedited throughout — which is the only thing that makes it evidence.
+
 **What the acceptance suite protects on its own (Step 7).** Measured with the unit tests
 excluded, `pio run -t marlin_eeprom -e acceptance_native_coverage`:
 
