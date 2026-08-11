@@ -74,7 +74,8 @@ public:
                          const int32_t trip_steps, const int32_t start_steps)
     : step_pin(step_pin), dir_pin(dir_pin), dir_inverted(dir_inverted),
       limit_pin(limit_pin), hit_state(hit_state),
-      trip_steps(trip_steps), carriage_steps(start_steps), lowest_steps(start_steps) {
+      trip_steps(trip_steps), carriage_steps(start_steps),
+      lowest_steps(start_steps), highest_steps(start_steps) {
     Gpio::attachPeripheral(step_pin, this);
     settle();
   }
@@ -93,19 +94,28 @@ public:
     const bool dir_high = Gpio::get(dir_pin) != 0;
     carriage_steps += (dir_high != dir_inverted) ? +1 : -1;
     if (carriage_steps < lowest_steps) lowest_steps = carriage_steps;
+    if (carriage_steps > highest_steps) highest_steps = carriage_steps;
     settle();
   }
 
   // Where the carriage physically is, in steps and in millimetres.
   int32_t position() const { return carriage_steps; }
   int32_t lowest_reached() const { return lowest_steps; }
+
+  // ...and the far end of the same record. A path that curves away and comes back — an arc, a
+  // back-off, a lift — is over by the time it ends, so the final position cannot see how far it
+  // went; these two can.
+  int32_t highest_reached() const { return highest_steps; }
+
+  // Start the record again from where the carriage is now.
+  void forget_extremes() { lowest_steps = highest_steps = carriage_steps; }
   bool closed() const { return carriage_steps <= trip_steps; }
 
   // How many times the switch went from open to closed — a homing sequence bumps twice.
   uint16_t closures() const { return closure_count; }
 
   void place_at(const int32_t steps) {
-    carriage_steps = lowest_steps = steps;
+    carriage_steps = lowest_steps = highest_steps = steps;
     settle();
   }
 
@@ -125,7 +135,7 @@ private:
   const uint8_t hit_state;
   const int32_t trip_steps;
   int32_t carriage_steps;
-  int32_t lowest_steps;
+  int32_t lowest_steps, highest_steps;
   bool was_closed = false;
   uint16_t closure_count = 0;
 };

@@ -160,6 +160,18 @@ needed. Print the resolved constant; the default config is not the whole story.
 a long time for exactly that reason. `gcode/control/T.cpp` went 0% → 75% in the same pass. Quote
 the configuration with any figure for these two or it means nothing.
 
+**"Two points and a radius determine four arcs, so assert the property, not the number."**
+`G2_G3.cpp:434-444` solves for an arc centre from the two endpoints and `R`. The centre can sit
+either side of the chord and the tool can take the short way or the long way; `G2`/`G3` picks the
+direction and the *sign* of `R` picks minor/major. None of that is readable from outside, but the
+centre must be exactly `R` from both ends, which fixes the bulge at `R - √(R² - half_chord²)` for
+the minor arc and `R + √(...)` for the major — and the bulge is something the carriage physically
+does. `test_arcs.cpp` measures it with `SimulatedAxisWithLimit::highest_reached()` /
+`lowest_reached()`, added for this. Measured, not assumed: `G2` bulges toward −X here, and a
+negative `R` bulges the **same** way as a positive one, much further — the centre crosses the
+chord and the long way round comes back over the same side. The first version of that test
+asserted the opposite side and was wrong.
+
 **"A counter the system re-bases cannot measure the movement it re-bases."** A tool change calls
 `sync_plan_position()`, which re-references the firmware's step counters to the shifted
 coordinate *without the carriage moving* — then moves the carriage back by the same amount. So
