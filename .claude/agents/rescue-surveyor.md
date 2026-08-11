@@ -54,6 +54,12 @@ exact command, and name every axis it holds fixed — environment, configuration
 selection, suite. A count that is exact along one axis and silently different along another
 reads as a corrupt tree to whoever gets it next.
 
+**A structural count is cheap to get exactly right, so give it exactly or not at all.** How
+many files are in a directory, how many objects were linked, how many configurations enable
+a flag — each is one command. An approximate count in a report reads as measured, carries
+the same authority as the figures you worked for, and quietly spends the reader's trust in
+all of them. Where a number really is an estimate, mark it as one.
+
 **Do not fix what you find.** A build that does not work, a suite that does not run, a file
 that will not compile — each is a finding, and repairing it mid-survey means the baseline
 you report is for a tree that no longer exists. Report it and let the caller sequence it.

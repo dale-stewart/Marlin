@@ -430,6 +430,22 @@ Both agent definitions now carry the corresponding rule. The pattern behind both
 is most dangerous where it is most confident**, and both errors were in claims nothing
 downstream would normally re-check.
 
+**`rescue-surveyor` validated against `Marlin/src/feature/` (2026-08-11).** Chosen because
+the directory is the four-way classification in concentrated form: 41 of 42 `.cpp` files sit
+at 0% and *none* of them wants tests written. It led with the denominator rather than the
+percentage — 95 of ~17,785 countable lines are compiled under `001-default`, so the honest
+figure for the directory is ~0.07%, not the 13.7% that a coverage report shows — found
+`host_actions.cpp` as the one genuine gap, and separated *not compiled in the baseline* from
+**not compiled in any of the eight configurations** (mmu, mmu3, leds, resonance, password,
+digipot, dac, tmc_util — about 10,800 lines dark everywhere). That last distinction was not
+in the answer key and is the more useful one.
+
+It also flagged that `test_runout.o` links under `001-default` while `feature/runout.o` does
+not. Benign — `test_runout.cpp` is guarded on `FILAMENT_RUNOUT_SENSOR` and compiles to an
+empty translation unit — and it reported the observation without claiming a defect, which is
+the right handling of an unresolved lead. Its one real error was a structural count given
+approximately (94 files; there are 85), now covered by a rule in its definition.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
