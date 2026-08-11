@@ -45,6 +45,8 @@
 #include "src/HAL/shared/eeprom_api.h"
 #include "src/module/planner.h"
 #include "src/module/motion.h"
+#include "src/module/temperature.h"
+#include <math.h>
 #include "src/gcode/gcode.h"
 #include "src/gcode/parser.h"
 
@@ -52,6 +54,16 @@
 #include <string>
 
 namespace {
+
+  // Where the settings block starts in the store. `EEPROM_OFFSET` is a private #define in
+  // settings.cpp and there is no way to ask for it, so it is repeated here; the version
+  // characters lead the block and the checksum is computed over what follows them.
+  constexpr int STORE_BASE = 100;
+
+  // The version this build writes. `EEPROM_VERSION` is private to settings.cpp, and the report
+  // quotes it, so a mismatch between this and the real one shows up as a failing assertion
+  // rather than as a test that quietly checks nothing.
+  #define EEPROM_VERSION_STR "V90"
 
   std::string host_sends(const char * const line) {
     char buf[64];
@@ -208,19 +220,106 @@ MARLIN_TEST(settings_storage, a_corrupt_store_falls_back_to_the_defaults) {
   host_sends("M500");
 
   // Overwrite a byte in the middle of the block. Not the header: this has to be a change the
-  // checksum catches rather than one the version check does. 100 is `EEPROM_OFFSET`, which is a
-  // private #define in settings.cpp — repeated here because there is no way to ask for it.
+  // checksum catches rather than one the version check does.
   persistentStore.access_start();
-  persistentStore.write_data(100 + 64, uint8_t(0x5A));
+  persistentStore.write_data(STORE_BASE + 64, uint8_t(0x5A));
   persistentStore.access_finish();
 
-  host_sends("M501");
+  const std::string said = host_sends("M501");
 
   constexpr float configured_steps[] = DEFAULT_AXIS_STEPS_PER_UNIT;
   TEST_ASSERT_NOT_EQUAL_MESSAGE(Chosen::STEPS_X, planner.settings.axis_steps_per_mm[X_AXIS],
     "a store that fails its checksum should not be loaded as though it were good");
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(configured_steps[X_AXIS], planner.settings.axis_steps_per_mm[X_AXIS],
     "it should fall back to the configured default, not to whatever the bytes happened to say");
+
+  // ...and it says so. Falling back silently would leave a user watching a machine that has
+  // quietly forgotten its calibration with no idea why.
+  TEST_ASSERT_TRUE_MESSAGE(said.find("EEPROM CRC mismatch") != std::string::npos,
+    "the checksum failure should be reported, not passed off as a successful load");
+}
+
+/**
+ * A block written by a different firmware version is not used.
+ *
+ * The stored block is a struct laid out field by field, and its layout changes whenever a
+ * setting is added, removed or resized. Reading a block written by a different build means
+ * reading every field from the wrong offset — the machine would come up with an acceleration
+ * taken from the middle of a PID gain. So the block leads with a three-character version and a
+ * mismatch is refused outright, before anything is interpreted.
+ *
+ * The version is checked *first*, and separately from the checksum: a block from another build
+ * is internally consistent and would pass its own CRC quite happily.
+ */
+MARLIN_TEST(settings_storage, a_block_from_another_firmware_version_is_refused) {
+  StoredSettingsRestored restore;
+
+  Chosen::apply();
+  host_sends("M500");
+
+  // Overwrite the version characters that lead the block, leaving everything after them —
+  // including the checksum, which is computed over the data rather than the version — intact.
+  persistentStore.access_start();
+  persistentStore.write_data(STORE_BASE + 0, uint8_t('V'));
+  persistentStore.write_data(STORE_BASE + 1, uint8_t('0'));
+  persistentStore.write_data(STORE_BASE + 2, uint8_t('0'));
+  persistentStore.access_finish();
+
+  const std::string said = host_sends("M501");
+
+  constexpr float configured_steps[] = DEFAULT_AXIS_STEPS_PER_UNIT;
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(configured_steps[X_AXIS], planner.settings.axis_steps_per_mm[X_AXIS],
+    "a block from another version should be discarded for the configured defaults");
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(Chosen::STEPS_X, planner.settings.axis_steps_per_mm[X_AXIS],
+    "and certainly should not be read as though the layout still matched");
+
+  // The report names both versions, which is the difference between a user who can see that
+  // their settings came from an older firmware and one whose machine silently forgot them.
+  TEST_ASSERT_TRUE_MESSAGE(said.find("EEPROM version mismatch") != std::string::npos,
+    "the version mismatch should be reported");
+  TEST_ASSERT_TRUE_MESSAGE(said.find("EEPROM=V00") != std::string::npos,
+    "and should quote the version it found, so it is clear which build wrote the block");
+  TEST_ASSERT_TRUE_MESSAGE(said.find(EEPROM_VERSION_STR) != std::string::npos,
+    "alongside the version this firmware expects");
+}
+
+/**
+ * A stored value that is not a number is not applied.
+ *
+ * Every float in the block is whatever bytes are at that offset, and a block that passes its
+ * checksum can still hold a bit pattern that is not a number — from a partial write, or a field
+ * that was never initialised before being saved. A PID gain of NaN does not fail loudly; it
+ * makes every subsequent control calculation NaN and the heater simply stops responding.
+ *
+ * So the load checks, and this pins the check by storing a NaN deliberately and then repairing
+ * the checksum so the block is otherwise perfectly valid — the point being that the guard has to
+ * be the one catching this, not the CRC.
+ */
+MARLIN_TEST(settings_storage, a_stored_value_that_is_not_a_number_is_not_applied) {
+  StoredSettingsRestored restore;
+
+  host_sends("M502");
+  host_sends("M301 P22.2 I1.08 D114");
+  const float good_p = thermalManager.temp_hotend[0].pid.p();
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 22.2f, good_p, "the PID gain should have been set");
+  host_sends("M500");
+
+  // Now poison it in memory and reload: the stored block is good, so the value must come back.
+  host_sends("M301 P1");
+  host_sends("M501");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, good_p, thermalManager.temp_hotend[0].pid.p(),
+    "the stored gain should have come back, or the NaN case below proves nothing");
+
+  // Store a NaN in the same field and save, so the block's own checksum covers it.
+  const float not_a_number = NAN;
+  thermalManager.temp_hotend[0].pid.set(not_a_number, 1.08f, 114.0f);
+  host_sends("M500");
+  host_sends("M301 P33.3");
+
+  host_sends("M501");
+
+  TEST_ASSERT_FALSE_MESSAGE(isnan(thermalManager.temp_hotend[0].pid.p()),
+    "a stored gain that is not a number should not be loaded into the heater");
 }
 
 #endif // __PLAT_TEST__ && EEPROM_SETTINGS

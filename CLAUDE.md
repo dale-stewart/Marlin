@@ -134,14 +134,27 @@ the `block_buffer_runtime()` accessor):
 | `module/stepper.cpp` | 96% | 68.9% | |
 | `gcode/calibrate/G28.cpp` | 91% | 66.4% | |
 | `gcode/motion/G2_G3.cpp` | 91% | 58.4% | |
-| `module/settings.cpp` | 93% | **34.2%** | measured under `006-eeprom`; 51 covered lines become 298 |
+| `module/settings.cpp` | 95% | 38.1% raw / **60.8% killable** | measured under `006-eeprom`; 51 covered lines become 303 |
 | `module/motion.cpp` | 76% | 57.8% raw / 75.3% killable | |
 | `module/temperature.cpp` | — | — | **not a blocker**: its three references are inside `MPCTEMP`, which is off here |
 
-`settings.cpp` is the reason the seam is still shut. A third of its mutants die — the signature
-of code that runs without being asserted, which is exactly what a coverage-only gate waves
-through. It is also the file that persists `planner.settings`, so changing that structure with it
-unasserted is the specific risk the ordering rule exists to prevent.
+**`settings.cpp` is closed at 38.1% raw / 60.8% killable.** The raw figure is low and stays low
+for a reason worth knowing: **256 of its 424 survivors are placeholder constants**. When a
+feature is compiled out, `save()` still writes something in its slot to keep the block layout
+stable across builds — `const xyze_pos_t planner_max_jerk = LOGICAL_AXIS_ARRAY(5, 10, 10, …)`
+with `CLASSIC_JERK` off, `autoretract_defaults` with `FWRETRACT` off — and `load()` reads the
+same slot into `dummyf` and discards it. Verified by changing the values wholesale: nothing
+observes them. They are killable only by a build that has the feature, which is the whole point
+of writing them.
+
+What is left after that is reporting: `report()` on boot, `report_position()` when a load moved
+the machine, and the debug lines around the CRC and version messages. No cluster above eight.
+
+The behaviours that matter are pinned by `test_settings_storage.cpp`: the round trip, a second
+save replacing the first, a reset leaving the stored block alone, and three ways a bad block is
+refused — checksum, version, and a stored value that is not a number. Each failure is asserted to
+be *reported* as well as refused, because a machine that quietly forgets its calibration is worse
+than one that says so.
 
 **`motion.cpp` is closed at 57.8% raw / 75.3% killable** (204/353; 82 of 149 survivors are
 equivalent), 76% line coverage. Reason categories, all checked: 24 preprocessor-erased because

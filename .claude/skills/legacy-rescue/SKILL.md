@@ -371,6 +371,17 @@ For each survivor, in descending order of risk:
   was moved forward by the re-base and back by the operation, and the two cancel. The instrument
   has to be something outside the system's control that only accumulates — an observer counting
   the events themselves rather than reading a total the code is free to rewrite.
+- **A value written to a format nothing reads back is unkillable, and there may be a lot of it.**
+  Code that serialises a fixed layout — a record, a wire format, a saved document — usually keeps
+  writing a slot when the feature behind it is compiled out or switched off, so that the layout
+  does not shift and older and newer versions can still read each other's data. The reader skips
+  that slot into a throwaway. Every constant in those slots is unobservable *by design*, and in a
+  serialiser they can outnumber everything else: they were 58% of one file's survivors here.
+
+  Recognise them by shape — a `const` or literal declared next to the write, with the read
+  discarding the same slot — and check one by changing its value wholesale rather than trusting
+  the pattern. Then report the score with them excluded, because the raw number will otherwise
+  say the file is untested when the part of it that can be tested is fine.
 - **A survivor may mean the test exists but not in the build you measured.** Where a suite is
   compiled per configuration, a test excluded by a build guard does not fail, does not appear,
   and does not run — so its subject shows up in the report as unasserted. The mutation score is
