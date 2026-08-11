@@ -524,6 +524,12 @@ survivors are likely equivalent as a result.
 
 ## Phase 4b — widen the configuration matrix
 
+> **Status: underway.** Three configurations became eight, each added to reach one named
+> file rather than to sweep up files in bulk — `006-eeprom` for `settings.cpp`,
+> `007-i2c_encoders` and `008-extui` for two consumers of `planner.settings` that no
+> configuration compiled. See the Phase 5 section of `legacy-rescue-plan.md` for what that
+> unblocked and where it stopped. The section below is the original analysis.
+
 Goal: compile the other 736 files so tests can reach them.
 
 Each configuration is a separate `test/NNN-name.ini`, and each one is a **separate

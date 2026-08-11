@@ -4,6 +4,14 @@ A sequencing plan for `.claude/skills/legacy-rescue/`, based on measurements tak
 rescuing `Marlin/src/gcode/parser.cpp`. See `CLAUDE.md` for why this fork exists and for
 the ordering rule that governs refactors.
 
+**Where it stands.** Phases 0-3 and 4a are complete; 4b is underway (three to eight
+configurations); Phase 5 took one cross-cutting correction all the way through the
+workflow, including the acceptance and refactor steps that had never been run here.
+Platform-agnostic line coverage is **77.7%** in the default configuration, with 547-618
+tests depending on configuration and 31 acceptance scenarios. The most transferable
+finding is in Phase 5: the acceptance suite is not a nicety before a refactor, it is the
+only net that does not move when the code does.
+
 ## Two facts that shape everything
 
 **Only 80 of 1,016 `.cpp` files compile into the native test build** — about 4,600 lines.
@@ -237,20 +245,108 @@ The safety paths that end in `kill()` are a blocked correction rather than a gap
 a measured one: those lines have no observable outcome other than shutting the machine
 down, so no assertion can reach them at all. They need a seam that lets `kill()` return,
 which is a production surface change. Recorded as register entry #19; details at the end
-of the 4a section of the phase-4 document. 4b has not started.
+of the 4a section of the phase-4 document.
+
+**4b is underway and is not what it looked like.** The configuration matrix has gone from
+three to eight, and every addition was made to reach a *specific* file that no
+configuration compiled — not to sweep up files in bulk:
+
+| Config | Reached |
+|---|---|
+| `006-eeprom` | `EEPROM_SETTINGS`; `settings.cpp` went from 51 covered lines to 303 |
+| `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, which needed a stub I2C bus and a simulated device |
+| `008-extui` | `EXTENSIBLE_UI`, which needed a stub display to link at all |
+
+The lesson worth carrying from 4b so far: **a file compiled by no configuration reads as a
+coverage gap and is usually a build problem.** `tool_change.cpp` showed 0% because it was
+not in the default build, not because nothing tested it — it was already at 23% under
+`003`. Whether a figure names its configuration turns out to matter more than the figure.
+
+## Phase 5 — the first sequenced migration
+
+The plan predicted that Phase 3 "may not reach 95% without seams that amount to surface
+changes, which are themselves blocked by fan-in", and that some modules could not be
+finished until their consumers moved. That is what happened, and this phase is the first
+time the workflow ran all the way through it.
+
+**The target.** `planner.settings` is a public mutable struct with two derived caches —
+`mm_per_step` (the reciprocal of `axis_steps_per_mm`) and `max_acceleration_steps_per_s2`.
+Keeping them in step was every caller's job to remember, connected to the field by nothing
+but a comment. Forgetting it is silent: the machine keeps moving, at a scale that no longer
+matches what it reports.
+
+**The sequence, and what each step actually bought.**
+
+1. *Rescue the consumers.* Eight files, closed in turn — `planner.cpp` 37.8% → 60.5%
+   mutation (73.2% killable), `motion.cpp` → 57.8% (75.3% killable), `tool_change.cpp`
+   0% → 41%, `settings.cpp` 16% → 38% (60.8% killable), `M92` → 100% line, `G2_G3` → 91%.
+2. *Write the acceptance scenarios first.* This is the step that made the refactor possible
+   and the one easiest to skip. **117 references to `planner.settings` live in the unit
+   tests** — every one would have been edited by the migration, and a test rewritten by a
+   refactor cannot show the refactor preserved anything. Two feature files
+   (`keeping_its_settings`, `moving_the_tool`) name no C++ symbol, teardown included.
+3. *Validate the acceptance suite alone (Step 7).* It reached `motion.cpp` at 5% and `G28`
+   at 0% — and the reason was not missing scenarios. `acceptance_native_test` extended
+   `env:linux_native_test`, where time is the wall clock, so motion was **not expressible**.
+   Pointing it at the test HAL and adding six scenarios took `G28` 0% → 91%, `stepper.cpp`
+   13% → 74%, `planner.cpp` 11% → 62%.
+4. *Refactor, in five slices.* Accessors and an owner for the invariant; a dead write
+   deleted (#31); bulk setters; and finally the distinction the API was missing —
+   `set_*` clamps and warns because a *user* named a limit, `override_*` does not because
+   the *firmware* is restating one. Two call sites had been assigning the arrays directly
+   and were right to: the API had no way to say what they meant.
+
+**Where it stopped, and why that is the interesting part.** Every write in every buildable
+file now goes through `Planner`. The fields are still public because three display drivers
+assign them and **cannot be built for the host at all** — `sovol_rts` and `creality/dwin`
+are ill-formed on a 64-bit target (`sendData(int)` and `sendData(int32_t)` are one
+signature here and two on the target), and `mks_ui` needs LVGL. That is not a coverage gap
+and no amount of testing closes it; making those drivers host-portable is a real project
+and it would have to come *before* this migration rather than inside it.
+
+Two of the five did fall: `encoder_i2c` (a stub `Wire.h`, then a simulated encoder
+answering on it) and `ui_api.cpp` (a stub display recording what it was told).
+
+**The payoff, stated as evidence rather than argument.** The case for the encapsulation was
+that direct assignment leaves a derived cache stale, silently. Three consumers were
+*suspected* of exactly that (#33, #34) and none could be built, so none could be confirmed.
+`calibrate_steps_mm()` was the fourth — and once `007-i2c_encoders` and a simulated encoder
+made it drivable, the bug was **confirmed by watching a test fail**: calibration correctly
+found 100 steps/mm while `mm_per_step` stayed at 1/80, the figure it had just proved wrong.
+Register #35, fixed by routing the write through the owner. The defect existed because the
+language could not express "you now owe a refresh", and stopped existing when the field had
+an owner.
+
+Across all five refactor slices **no test file was edited** and the acceptance suite stayed
+green. That property is the whole reason any of it counts as evidence.
 
 ## Cross-cutting: a blocked-corrections register
 
-`CLAUDE.md` records one blocked correction today. Phases 2 and 3 will generate more
-(`MarlinCore` singleton, `Temperature` and `Planner` globals). They need a single list
-with the unblock condition stated per entry, or they will be forgotten — the failure
-mode the skill explicitly warns about.
+`docs/defect-register.md`, 35 entries. It did not get forgotten, which was the risk, and
+it earned its place in an unexpected way: entries #33, #34 and #35 are the same defect in
+four different consumers, and writing them down separately as they were found is what made
+the pattern visible. #35 is the one that could be run, and confirming it is what turned the
+argument for the `planner.settings` migration from a design opinion into a measured fact.
+
+Three instrument defects were fixed rather than recorded, on the standing reasoning that a
+characterization test cannot pin a race, a livelock, or a store that depends on what a
+previous run left behind: #16 (serial ring-buffer race), #18 (test-HAL timer re-arming on
+enable), #32 (the emulated EEPROM was file-backed and shared across parallel mutation
+workers — a flaky-test generator, and the suite passed only from the second run onwards).
 
 ## Per-target gates
 
 Unchanged from the skill: line coverage at or above 95%, mutation detection at or above
 80% excluding equivalents, acceptance-only parity with the unit suite, and every
 survivor killed, documented as equivalent, or logged as an open question.
+
+In practice the second of those has been met in the *killable* sense and not the raw one,
+and the distinction has proved worth keeping. Equivalent mutants are a large and growing
+share as a file gets better — 176 of 400 in `planner.cpp`, 256 of 424 in `settings.cpp`,
+where the residue is placeholder constants written to keep a stored layout stable across
+builds and read back into a variable that discards them. A raw score falling while the
+killable score rises is normal, and a single number cannot show it. Every target closed
+here reports both, with the reason categories checked rather than inferred.
 
 ## Caveats
 
@@ -260,5 +356,11 @@ survivor killed, documented as equivalent, or logged as an open question.
 - About 936 files remain unreachable after all four phases without substantial HAL
   simulation. A complete rescue is a multi-quarter effort; this plan covers the
   load-bearing code.
+- Some of those files are unreachable for a reason no amount of simulation fixes: they do
+  not compile for a 64-bit host, because overload sets that are distinct on AVR and 32-bit
+  ARM collapse there. Making them buildable means editing untested driver code in order to
+  compile it, and a change to an overload set can silently alter which function a call
+  resolves to *on the target*. That is a hardware-in-the-loop job, not a testing one, and
+  it is the honest ceiling on this approach.
 - The estimate that matters is not file count. It is whether Phase 0 makes the following
   phases cost 20 hours of compute or 150.
