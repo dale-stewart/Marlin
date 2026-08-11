@@ -138,6 +138,29 @@ MARLIN_TEST(motion_commands, F_sets_the_feedrate_for_later_moves) {
   TEST_ASSERT_EQUAL_FLOAT(1200.0f / 60.0f, motion.feedrate_mm_s);
 }
 
+// get_destination_from_command() sets destination.e straight from the E parameter,
+// which is what the extrusion-guard gotcha in CLAUDE.md relies on being right upstream
+// of it — testing it directly here means the assertion is about what this function
+// computes, not about what a cold nozzle lets survive downstream.
+#if HAS_EXTRUDERS
+  MARLIN_TEST(motion_commands, get_destination_from_command_sets_the_e_destination) {
+    Stationary still;
+    host_sends("M82");                       // E absolute, so E5 means "go to 5"
+
+    parser.parse((char*)"G1 E5");
+    motion.destination.e = motion.position.e - 100.0f;  // a stale value to prove it is overwritten
+    gcode.get_destination_from_command();
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, motion.destination.e);  // E absolute: destination is the value itself
+
+    // Without an E parameter, destination.e falls back to the current position, not
+    // to whatever it last held.
+    parser.parse((char*)"G1 X1");
+    motion.destination.e = motion.position.e + 100.0f;  // a stale value to prove it is reset
+    gcode.get_destination_from_command();
+    TEST_ASSERT_EQUAL_FLOAT(motion.position.e, motion.destination.e);
+  }
+#endif
+
 MARLIN_TEST(motion_commands, G0_and_G1_both_move) {
   Stationary still;
 

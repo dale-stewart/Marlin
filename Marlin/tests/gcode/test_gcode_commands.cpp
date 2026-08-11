@@ -37,6 +37,7 @@
 #include "src/gcode/queue.h"
 #include "simulated_sensors.h"
 #include "serial_capture.h"
+#include "../support/test_clock.h"
 #include "src/module/stepper.h"
 #include "src/module/settings.h"
 #include "src/module/endstops.h"
@@ -852,6 +853,91 @@ MARLIN_TEST(gcode_commands, M108_ends_a_wait) {
   marlin.setState(was);
 }
 
+// The test above passes even if the switch case for M108 is broken, because nothing
+// was waiting to begin with — "still not heating" is true for every cause of nothing.
+// Put the machine in the state M108 exists to interrupt, so only actually running
+// M108's handler clears it.
+MARLIN_TEST(gcode_commands, M108_actually_cancels_a_wait_in_progress) {
+  const MarlinState was = marlin.state;
+  marlin.setState(MF_RUNNING);
+
+  marlin.wait_for_heatup = true;
+  host_sends("M108");
+  TEST_ASSERT_FALSE(marlin.wait_for_heatup);
+
+  marlin.setState(was);
+}
+
+// M18 is the other spelling of M84 — the switch has to recognise both case labels, not
+// just the one every other test happens to use.
+MARLIN_TEST(gcode_commands, M18_is_the_same_as_M84) {
+  host_sends("M17");
+  TEST_ASSERT_TRUE(stepper.axis_is_enabled(X_AXIS));
+
+  host_sends("M18");
+  TEST_ASSERT_FALSE(stepper.axis_is_enabled(X_AXIS));
+}
+
+// The M120/M121 test above starts from an unknown state, so M121 leaving endstops
+// disabled is also true if M121 never ran at all. Force a transition instead.
+MARLIN_TEST(gcode_commands, M121_actually_disables_endstops_that_were_enabled) {
+  host_sends("M120");
+  TEST_ASSERT_TRUE(endstops.global_enabled());
+
+  host_sends("M121");
+  TEST_ASSERT_FALSE(endstops.global_enabled());
+}
+
+// get_target_extruder_from_command() is the shared boundary check behind every command
+// that takes a T parameter: EXTRUDERS itself is the boundary, not a literal, so this
+// stays true whatever EXTRUDERS this build compiles with.
+MARLIN_TEST(gcode_commands, get_target_extruder_from_command_brackets_the_boundary) {
+  char valid_cmd[24], invalid_cmd[24], further_out_cmd[24];
+  snprintf(valid_cmd, sizeof(valid_cmd), "M221 T%d", EXTRUDERS - 1);
+  snprintf(invalid_cmd, sizeof(invalid_cmd), "M221 T%d", EXTRUDERS);
+  snprintf(further_out_cmd, sizeof(further_out_cmd), "M221 T%d", EXTRUDERS + 1);
+
+  parser.parse(valid_cmd);
+  TEST_ASSERT_EQUAL(EXTRUDERS - 1, gcode.get_target_extruder_from_command());
+
+  // One past the boundary: rejected, and the rejection is reported as a direct echo
+  // ("echo:M221 ...") rather than silently.
+  {
+    SerialCapture capture;
+    parser.parse(invalid_cmd);
+    TEST_ASSERT_EQUAL(-1, gcode.get_target_extruder_from_command());
+    TEST_ASSERT_TRUE(capture.saw("echo:M221 " STR_INVALID_EXTRUDER));
+  }
+
+  // Further out still: also rejected — distinguishes "< EXTRUDERS" from "!= EXTRUDERS",
+  // which would wrongly accept anything past the boundary except the boundary itself.
+  parser.parse(further_out_cmd);
+  TEST_ASSERT_EQUAL(-1, gcode.get_target_extruder_from_command());
+}
+
+// F only changes the feedrate above zero — F1200 alone cannot tell ">0" from ">1", so
+// straddle the real boundary instead.
+MARLIN_TEST(gcode_commands, F_only_takes_effect_above_zero) {
+  const float was_feedrate = motion.feedrate_mm_s;
+  const MarlinState was_state = marlin.state;
+  const xyze_pos_t was_position = motion.position;
+  marlin.setState(MF_RUNNING);
+  planner.clear_block_buffer();
+
+  motion.feedrate_mm_s = 5.0f;
+  host_sends("G1 F1");                     // just above the boundary
+  TEST_ASSERT_EQUAL_FLOAT(1.0f / 60.0f, motion.feedrate_mm_s);
+
+  motion.feedrate_mm_s = 5.0f;
+  host_sends("G1 F-3");                    // negative: not "> 0", must be left alone
+  TEST_ASSERT_EQUAL_FLOAT(5.0f, motion.feedrate_mm_s);
+
+  planner.clear_block_buffer();
+  motion.position = was_position;
+  marlin.setState(was_state);
+  motion.feedrate_mm_s = was_feedrate;
+}
+
 #if HAS_POWER_SWITCH
   MARLIN_TEST(gcode_commands, M80_and_M81_switch_the_power_supply) {
     host_sends("M80");
@@ -861,3 +947,255 @@ MARLIN_TEST(gcode_commands, M108_ends_a_wait) {
     TEST_ASSERT_FALSE(powerManager.psu_on);
   }
 #endif
+
+/**
+ * host_keepalive() sends "busy: ..." at intervals while the machine cannot accept a
+ * command, so a host with a timeout does not give up on it. Every fixture below starts
+ * by calling it once while NOT_BUSY, which — regardless of timing — always rebases the
+ * internal next-signal clock (the busy-gated branch is skipped, so the update at the
+ * bottom of the function always runs), giving each test a known-fresh baseline instead
+ * of one left over from whichever test ran last.
+ */
+#if ENABLED(HOST_KEEPALIVE_FEATURE)
+
+  namespace {
+    struct KeepaliveState {
+      GcodeSuite::MarlinBusyState was_busy;
+      uint8_t was_interval;
+      bool was_paused;
+      KeepaliveState() : was_busy(gcode.busy_state), was_interval(gcode.host_keepalive_interval),
+                          was_paused(gcode.autoreport_paused) {}
+      ~KeepaliveState() {
+        gcode.busy_state = was_busy;
+        gcode.host_keepalive_interval = was_interval;
+        gcode.set_autoreport_paused(was_paused);
+      }
+    };
+  }
+
+  // Not busy: no message ever, whatever the timing — this is the case that hits the
+  // switch's `default:` even if the outer guard's busy-state term is bypassed, so it
+  // cannot be told apart from a working guard by the message alone. See the next test,
+  // which forces the same term to matter by giving it a message to suppress.
+  MARLIN_TEST(gcode_commands, host_keepalive_reports_nothing_while_idle) {
+    KeepaliveState restore;
+    TestClock clock;
+
+    gcode.host_keepalive_interval = 1;
+    gcode.set_autoreport_paused(false);
+    gcode.busy_state = GcodeSuite::NOT_BUSY;
+    gcode.host_keepalive();                  // baseline
+
+    clock.advance_seconds(2);
+    SerialCapture capture;
+    gcode.host_keepalive();
+    TEST_ASSERT_FALSE(capture.saw("busy:"));
+  }
+
+  // Busy, paused, or without an interval: none of these alone produce a message, and
+  // each is a different term of the same guard.
+  MARLIN_TEST(gcode_commands, host_keepalive_is_silenced_by_pause_or_a_zero_interval) {
+    KeepaliveState restore;
+    TestClock clock;
+
+    gcode.host_keepalive_interval = 1;
+    gcode.set_autoreport_paused(false);
+    gcode.busy_state = GcodeSuite::NOT_BUSY;
+    gcode.host_keepalive();                  // baseline
+    clock.advance_seconds(2);
+
+    // Busy, but paused.
+    gcode.busy_state = GcodeSuite::IN_HANDLER;
+    gcode.set_autoreport_paused(true);
+    SerialCapture capture1;
+    gcode.host_keepalive();
+    TEST_ASSERT_FALSE(capture1.saw("busy:"));
+
+    // Busy, not paused, but the interval is off.
+    gcode.set_autoreport_paused(false);
+    gcode.host_keepalive_interval = 0;
+    clock.advance_seconds(2);
+    SerialCapture capture2;
+    gcode.host_keepalive();
+    TEST_ASSERT_FALSE(capture2.saw("busy:"));
+  }
+
+  // Busy, unpaused, with an interval: reports on time, not before it, and names the
+  // actual state — a fallthrough into the next case would print both.
+  MARLIN_TEST(gcode_commands, host_keepalive_reports_while_busy_no_faster_than_the_interval) {
+    KeepaliveState restore;
+    TestClock clock;
+
+    gcode.host_keepalive_interval = 2;
+    gcode.set_autoreport_paused(false);
+    gcode.busy_state = GcodeSuite::NOT_BUSY;
+    gcode.host_keepalive();                  // baseline: next signal is ~2s from here
+
+    gcode.busy_state = GcodeSuite::IN_HANDLER;
+
+    // Immediately busy: too soon for a message.
+    SerialCapture too_soon;
+    gcode.host_keepalive();
+    TEST_ASSERT_FALSE(too_soon.saw("busy:"));
+
+    // Just short of the interval: still too soon.
+    clock.advance_millis(1900);
+    SerialCapture still_too_soon;
+    gcode.host_keepalive();
+    TEST_ASSERT_FALSE(still_too_soon.saw("busy: processing"));
+
+    // Past the interval: reports, and reports the state it is actually in.
+    clock.advance_millis(200);
+    SerialCapture on_time;
+    gcode.host_keepalive();
+    TEST_ASSERT_TRUE(on_time.saw("busy: processing"));
+    TEST_ASSERT_FALSE(on_time.saw("busy: paused"));
+
+    // The interval restarts from here rather than firing on every later call.
+    SerialCapture right_after;
+    gcode.host_keepalive();
+    TEST_ASSERT_FALSE(right_after.saw("busy:"));
+
+    // ... and reports again once a full interval has passed a second time.
+    clock.advance_seconds(3);
+    SerialCapture second_time;
+    gcode.host_keepalive();
+    TEST_ASSERT_TRUE(second_time.saw("busy: processing"));
+  }
+
+#endif // HOST_KEEPALIVE_FEATURE
+
+// process_parsed_command()'s no_ok flag decides whether the queue is told the command
+// finished. Every test in this file calls it with no_ok=true to avoid a report that
+// would hang the binary (see NoHostAttached above), which means no_ok=false has never
+// been exercised — go through the real queue instead, where "ok" is expected output.
+MARLIN_TEST(gcode_commands, a_queued_command_is_acknowledged_with_ok) {
+  queue.clear();
+  const bool was_connected = MYSERIAL1.host_connected;
+  MYSERIAL1.host_connected = false;
+  for (const char *p = "M114\n"; *p; p++) MYSERIAL1.receive_buffer.write(uint8_t(*p));
+  queue.get_available_commands();
+
+  SerialCapture capture;
+  for (uint8_t guard = 0; guard < 8 && queue.has_commands_queued(); guard++)
+    queue.advance();
+  TEST_ASSERT_TRUE(capture.saw("ok"));
+
+  MYSERIAL1.host_connected = was_connected;
+  queue.clear();
+}
+
+// process_next_command() echoes the raw command line when the ECHO debug flag is set,
+// which is what lets a host see exactly what the firmware is about to run.
+MARLIN_TEST(gcode_commands, process_next_command_echoes_when_debugging_is_on) {
+  const uint8_t was_flags = marlin_debug_flags;
+  queue.clear();
+  const bool was_connected = MYSERIAL1.host_connected;
+  MYSERIAL1.host_connected = false;
+
+  marlin_debug_flags = MARLIN_DEBUG_ECHO;
+  for (const char *p = "M114\n"; *p; p++) MYSERIAL1.receive_buffer.write(uint8_t(*p));
+  queue.get_available_commands();
+
+  SerialCapture capture;
+  for (uint8_t guard = 0; guard < 8 && queue.has_commands_queued(); guard++)
+    queue.advance();
+  TEST_ASSERT_TRUE(capture.saw("M114"));
+
+  marlin_debug_flags = was_flags;
+  MYSERIAL1.host_connected = was_connected;
+  queue.clear();
+}
+
+// The guard has to be checked, not just always taken: without ECHO set, the raw
+// command line is not echoed (M114's own report never spells out "M114").
+MARLIN_TEST(gcode_commands, process_next_command_does_not_echo_when_debugging_is_off) {
+  const uint8_t was_flags = marlin_debug_flags;
+  queue.clear();
+  const bool was_connected = MYSERIAL1.host_connected;
+  MYSERIAL1.host_connected = false;
+
+  marlin_debug_flags = 0;
+  for (const char *p = "M114\n"; *p; p++) MYSERIAL1.receive_buffer.write(uint8_t(*p));
+  queue.get_available_commands();
+
+  SerialCapture capture;
+  for (uint8_t guard = 0; guard < 8 && queue.has_commands_queued(); guard++)
+    queue.advance();
+  TEST_ASSERT_FALSE(capture.saw("M114"));
+
+  marlin_debug_flags = was_flags;
+  MYSERIAL1.host_connected = was_connected;
+  queue.clear();
+}
+
+/**
+ * report_echo_start() and report_heading() are the two shared primitives behind every
+ * *_report() function's "forReplay" convention: forReplay=false is a direct query (a
+ * user typed M111, or M503 with no S) and gets an "echo:" marker and a heading;
+ * forReplay=true is a replay of stored settings (M503 S0, or the boot-time dump) and
+ * gets neither, so what comes out can be pasted back in as plain G-code. They are
+ * tested directly, as the shared contract every *_report() function relies on, rather
+ * than through one of its many callers.
+ */
+MARLIN_TEST(gcode_commands, report_echo_start_marks_a_direct_report_not_a_replay) {
+  {
+    SerialCapture capture;
+    gcode.report_echo_start(true);
+    TEST_ASSERT_FALSE(capture.saw("echo:"));
+  }
+  {
+    SerialCapture capture;
+    gcode.report_echo_start(false);
+    TEST_ASSERT_TRUE(capture.saw("echo:"));
+  }
+}
+
+MARLIN_TEST(gcode_commands, report_heading_prints_nothing_for_a_replay) {
+  SerialCapture capture;
+  gcode.report_heading(true, F("Ignored Heading"));
+  TEST_ASSERT_TRUE(capture.finish().empty());
+}
+
+MARLIN_TEST(gcode_commands, report_heading_prints_the_heading_and_its_terminator) {
+  {
+    SerialCapture capture;
+    gcode.report_heading(false, F("A Heading"));
+    const std::string &out = capture.finish();
+    TEST_ASSERT_TRUE(out.find("; A Heading") != std::string::npos);
+    TEST_ASSERT_TRUE(out.find(":\n") != std::string::npos);   // the default eol terminator
+  }
+  {
+    SerialCapture capture;
+    gcode.report_heading(false, F("No Terminator"), false);   // eol=false
+    const std::string &out = capture.finish();
+    TEST_ASSERT_TRUE(out.find("; No Terminator") != std::string::npos);
+    TEST_ASSERT_TRUE(out.find(":\n") == std::string::npos);
+  }
+}
+
+// A code number the switch has no case for falls to `default:`, which reports it
+// rather than silently doing nothing.
+MARLIN_TEST(gcode_commands, an_unrecognised_code_number_is_reported) {
+  // Not host_sends(): it deliberately disconnects the host so a report cannot spin the
+  // binary waiting for a drain (see NoHostAttached above), which would also swallow
+  // this test's own capture. SerialCapture supplies its own drain instead.
+  SerialCapture capture;
+  static char buf[16];
+  strcpy(buf, "M9999");
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  TEST_ASSERT_TRUE(capture.saw(STR_UNKNOWN_COMMAND));
+}
+
+// The `break` ending the G-code switch keeps it from falling into the M-code switch
+// right below. G17 and M17 share a code number (17) but do unrelated things — G17
+// selects a work plane, M17 enables steppers — so a missing break here is observable:
+// steppers would come on that a plane-selection command has no business touching.
+MARLIN_TEST(gcode_commands, G17_does_not_fall_through_to_M17) {
+  host_sends("M18");                       // steppers off
+  TEST_ASSERT_FALSE(stepper.axis_is_enabled(X_AXIS));
+
+  host_sends("G17");                       // select the XY plane
+  TEST_ASSERT_FALSE(stepper.axis_is_enabled(X_AXIS));
+}

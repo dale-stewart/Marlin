@@ -470,6 +470,22 @@ empty translation unit — and it reported the observation without claiming a de
 the right handling of an unresolved lead. Its one real error was a structural count given
 approximately (94 files; there are 85), now covered by a rule in its definition.
 
+**First target rescued end to end with the new structure: `gcode.cpp` (2026-08-11).**
+Surveyor picked it over better-covered candidates because it is the heaviest direct reader of
+the parser globals among compiled files — 11 raw hits, the consumer the blocked `GCodeParser`
+correction needs first. Line coverage was the least useful number available: 63% suggested
+thin neglect, while the validated mutation baseline was **72.1% raw / 74.5% killable**, with
+29% of the killable survivors inside one function.
+
+Now **93.2% raw / 97.4% killable** (261/268), from 17 tests. `host_keepalive()` was the
+cluster and it needed *an input*, not assertions — simulated time, plus busy and paused as
+independent guard terms. What is left is 12 equivalents and 7 genuinely blocked, and the
+blocked ones are worth knowing: `dwell()`'s busy-wait never returns under the test HAL because
+`millis()` does not advance inside the loop; `report_heading`'s `if (fstr)` false branch needs
+a null `FSTR_P` that would segfault natively; `KEEPALIVE_STATE(IN_HANDLER)` is observable only
+mid-call. Each needs a production seam, so each belongs behind the frontier rather than in a
+test.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -499,13 +515,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 559,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 576,
 `acceptance_native_test` 34 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eight** configs in `test/`, reporting **559, 560, 567, 624, 630, 568, 565, 564**. The counts above vary
+**eight** configs in `test/`, reporting **576, 577, 584, 641, 647, 585, 582, 581**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
