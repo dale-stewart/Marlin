@@ -43,3 +43,15 @@ share grows as the real gaps close, so the number gets *less* informative exactl
 gets better. Quote both, with the equivalent count and the reason categories behind it, so a
 reader can see which is which. A raw score falling while the killable score rises is a normal
 and healthy thing to happen; a single number cannot show it.
+
+**A score is comparable only to another over the same mutant population.** Killing mutants
+means writing tests, and tests cover lines that were not covered before — so the next run
+restricts mutants to a *larger* set and generates ones that never existed in the baseline. The
+difference between two runs' kill counts is therefore not the number of survivors killed: it
+also includes new mutants that were born dead. Reporting it as work done overstates the work,
+sometimes badly.
+
+Two numbers, and they answer different questions. **How many survivors did this pass kill?** —
+re-run the previous run's survivor list; that population is fixed by definition. **How good is
+the suite now?** — a fresh full run, quoted with its covered-line count, because that count *is*
+the population. Give both, and never subtract one run's total from another's.

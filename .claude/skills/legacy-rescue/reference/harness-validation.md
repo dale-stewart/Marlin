@@ -187,3 +187,15 @@ toolchain. Slower per mutant, but it measures the code that actually ships.
   mistakes live. Expect it also to disagree with the ordinary build about a result or two,
   because it changes the optimisation level; when it does, the assertion that moved was
   pinning the compiler rather than the code, and is worth knowing about either way.
+
+**The act of testing can destroy the instrument that measures it.** Coverage builds, profiling
+data and instrumented binaries are build artifacts, and the ordinary test targets are entitled
+to clean them — so a sequence as innocent as *measure, write tests, run the whole suite,
+re-measure* can leave the second measurement with no coverage data to restrict itself to. The
+failure is silent by construction: the run still completes, still reports a score, and the score
+is of a different thing.
+
+Check the artifact exists immediately before each measurement, not once at the start, and read
+what the runner says about its own inputs — a line like "on all lines" where you expected "on N
+covered lines" is the whole finding. Where a project's own tooling has this property, write down
+which command destroys what, because it is invisible in the output of either one.

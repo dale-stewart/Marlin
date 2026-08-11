@@ -506,6 +506,26 @@ reporting branches and `process_subcommands_now()`. Both need a handler that loo
 on `idle()`. That is a production seam, and it is the one thing standing between the acceptance
 suite and the dispatcher's reporting paths.
 
+**`queue.cpp` rescued (2026-08-11): 60.6% -> 77.2% raw, ~87% killable, 68% -> 76% line.**
+The M112 cluster — 28 mutants at `queue.cpp:541` — is the taxonomy's third category, code with
+no observable outcome: `Marlin::minkill()` ends in `for (;;) hal.watchdog_refresh()` and never
+returns, so no assertion can run after it. Verified by reading `MarlinCore.cpp`, not assumed.
+A real printer does stop dead on M112, so the substitute halting is accurate rather than
+defective, and the cluster is a blocked seam rather than a gap. `queue.cpp:387` is defect #25
+and still hangs.
+
+Two counting traps caught here, both worth remembering:
+
+- **The agent reported 131 survivors killed; the true figure is 79.** It had subtracted one full
+  run's kill count from another's (433 - 302) — but the new tests raised covered lines from 120
+  to 135, so the second run had a larger mutant population, including new mutants that were born
+  dead. Re-running the *previous run's survivor list* is the only way to count survivors killed,
+  because that population is fixed. Its headline 77.2% was correct; the work-done figure was
+  inflated by 65%.
+- **A measurement taken straight after `make unit-test-all-local` is unrestricted and wrong** —
+  see the gotcha above. This bit me in this very session, one hour after using the same fault
+  deliberately to test `harness-validator`.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -535,13 +555,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 579,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 599,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eight** configs in `test/`, reporting **579, 580, 587, 644, 650, 588, 585, 584**. The counts above vary
+**eight** configs in `test/`, reporting **599, 600, 607, 664, 670, 608, 605, 604**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -669,6 +689,14 @@ is blocked by PEP 668 on this machine).
   every configuration reporting the same test count as the one last measured, because
   `restore_configs` restores to whatever is checked in. Re-run `git checkout --` on those four
   paths immediately before `git add`.
+- **`make unit-test-all-local` deletes `.pio/build/testhal_native_coverage`.** Confirmed by
+  running it with the build present and watching it go. The next mutation run then finds no
+  coverage data, **warns, and mutates every line** — `queue.cpp` went from 1044 mutants on 135
+  covered lines to 2399 on all lines, and reported 28.2% instead of 77.2%. Nothing else about
+  the output looks wrong. The tell is the runner's own wording: "on all lines" where it should
+  say "on N covered lines". Rebuild coverage immediately before any measurement that follows a
+  full-suite run — which is most of them, since the natural order is measure, write tests, run
+  every config, re-measure.
 - **`restore_configs` reverts your config.** Every test target runs it before and after,
   which does `git checkout` on `Marlin/Configuration.h`, `Configuration_adv.h`,
   `Marlin/config.ini`, and `Marlin/src/pins/*/pins_*.h`. Uncommitted config work is

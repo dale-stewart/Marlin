@@ -35,6 +35,7 @@
 #ifdef __PLAT_TEST__
   #include "../support/simulated_machine.h"
 #endif
+#include "serial_capture.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -185,6 +186,109 @@ MARLIN_TEST(queue, injected_commands_can_be_a_list) {
   TEST_ASSERT_EQUAL(40, motion.feedrate_percentage);
 }
 
+/**
+ * enqueue_one() on a blank line.
+ *
+ * A truly empty string and a line that is only an EOL character are both "nothing to
+ * do", but for different reasons in the guard `*cmd == 0 || ISEOL(*cmd)` — and the two
+ * clauses have to be checked separately, or a mutant that drops one of them survives on
+ * whichever input the other clause still catches. A byte with the top bit set is thrown
+ * in because `char` is signed here: a relational mutant of `== 0` (`<= 0`, `< 0`) agrees
+ * with the true guard on every ordinary command but disagrees on a negative byte, which
+ * is neither empty nor an end-of-line character and must still be queued.
+ */
+MARLIN_TEST(queue, enqueue_one_of_an_empty_string_does_not_queue_it) {
+  CleanQueue clean;
+  TEST_ASSERT_TRUE(queue.enqueue_one(""));
+  TEST_ASSERT_EQUAL(0, queue.ring_buffer.length);
+}
+
+MARLIN_TEST(queue, enqueue_one_of_a_bare_newline_does_not_queue_it) {
+  CleanQueue clean;
+  TEST_ASSERT_TRUE(queue.enqueue_one("\n"));
+  TEST_ASSERT_EQUAL(0, queue.ring_buffer.length);
+}
+
+MARLIN_TEST(queue, enqueue_one_of_a_high_bit_byte_is_not_mistaken_for_blank) {
+  CleanQueue clean;
+  const char cmd[] = { char(0x91), '\0' };
+  TEST_ASSERT_TRUE(queue.enqueue_one(cmd));
+  TEST_ASSERT_EQUAL(1, queue.ring_buffer.length);
+}
+
+/**
+ * `RingBuffer::enqueue()` refuses two things directly: a comment line, and a full
+ * buffer. Both have to be checked with their own input, or a mutant that folds one
+ * clause to `false` survives on whatever the other clause still refuses.
+ */
+MARLIN_TEST(queue, a_comment_passed_directly_is_refused) {
+  CleanQueue clean;
+  TEST_ASSERT_FALSE(queue.enqueue_one(";not a command"));
+  TEST_ASSERT_EQUAL(0, queue.ring_buffer.length);
+}
+
+MARLIN_TEST(queue, a_command_starting_below_the_comment_character_is_still_queued) {
+  CleanQueue clean;
+  // '0' (0x30) sits below ';' (0x3B): a relational mutant of *cmd == ';' would
+  // wrongly refuse it, where only an actual ';' should be refused.
+  TEST_ASSERT_TRUE(queue.enqueue_one("0test"));
+  TEST_ASSERT_EQUAL(1, queue.ring_buffer.length);
+}
+
+/**
+ * `inject(FSTR_P)` drains through `injected_commands_P`, from PROGMEM. There is a
+ * second overload, `inject(const char*)`, that drains through `injected_commands` in
+ * SRAM instead — a separate buffer with its own "is there anything queued" check
+ * (`injected_commands[0] == '\0'`). Every other test in this file uses the PROGMEM
+ * overload, so the SRAM path and its emptiness check have never run at all.
+ */
+MARLIN_TEST(queue, an_injected_sram_command_runs) {
+  CleanQueue clean;
+  char cmd[] = "M220 S65";
+  queue.inject(cmd);
+  queue.advance();                      // one step: process_injected_command() drains it
+  TEST_ASSERT_EQUAL(65, motion.feedrate_percentage);
+}
+
+// advance() tries the SRAM injection queue before the ring buffer. With nothing
+// injected, a genuinely queued command must still get its turn — which fails if the
+// emptiness check ever answers "there is something" when there is not.
+MARLIN_TEST(queue, an_empty_injected_sram_buffer_lets_the_ring_buffer_run) {
+  CleanQueue clean;
+  queue.injected_commands[0] = '\0';
+  queue.injected_commands[1] = '\0';
+  queue.enqueue_one("M220 S80");
+  queue.advance();
+  TEST_ASSERT_EQUAL(80, motion.feedrate_percentage);
+}
+
+// A list of SRAM-injected commands is drained one line at a time, the same as the
+// PROGMEM path already covered by injected_commands_can_be_a_list — this exercises the
+// copy loop that shifts the remainder down after the first line is consumed.
+MARLIN_TEST(queue, injected_sram_commands_can_be_a_list) {
+  CleanQueue clean;
+  char cmd[] = "M220 S30\nM220 S40";
+  queue.inject(cmd);
+  queue.advance();
+  TEST_ASSERT_EQUAL_MESSAGE(30, motion.feedrate_percentage, "the first line should run first");
+  queue.advance();
+  TEST_ASSERT_EQUAL_MESSAGE(40, motion.feedrate_percentage, "the second line should run after the shift");
+}
+
+// The emptiness check reads only injected_commands[0]. A mutant that reads index 1
+// instead would see stale data left behind at that offset and wrongly claim there is
+// something to run, which starves the ring buffer of its turn.
+MARLIN_TEST(queue, process_injected_sram_command_reads_only_the_first_byte) {
+  CleanQueue clean;
+  char cmd[] = "AB";
+  queue.inject(cmd);                    // injected_commands = "AB\0..."
+  queue.injected_commands[0] = '\0';    // mark it empty again, leaving 'B' behind at [1]
+  queue.enqueue_one("M220 S80");
+  queue.advance();
+  TEST_ASSERT_EQUAL_MESSAGE(80, motion.feedrate_percentage,
+    "the emptiness check must read injected_commands[0], not a stale byte elsewhere");
+}
+
 MARLIN_TEST(queue, the_line_number_is_remembered_per_port) {
   CleanQueue clean;
   queue.set_current_line_number(123);
@@ -319,6 +423,14 @@ MARLIN_TEST(queue, an_empty_line_is_harmless) {
   TEST_ASSERT_FALSE(queue.has_commands_queued());
 }
 
+// A one-character line is not empty: it must be queued, unlike a truly empty one.
+MARLIN_TEST(queue, a_one_character_line_is_not_treated_as_empty) {
+  CleanQueue clean;
+  host_transmits("X");
+  TEST_ASSERT_TRUE(queue.has_commands_queued());
+  drain_queue();
+}
+
 // A comment line carries no command.
 MARLIN_TEST(queue, a_comment_line_is_not_queued) {
   CleanQueue clean;
@@ -326,6 +438,71 @@ MARLIN_TEST(queue, a_comment_line_is_not_queued) {
   host_transmits("; M220 S5");
   drain_queue();
   TEST_ASSERT_EQUAL(before, motion.feedrate_percentage);
+}
+
+/**
+ * A backslash escapes the character after it: the backslash itself is dropped, and
+ * whatever follows is taken literally rather than being interpreted (as a comment
+ * marker, a quote, or another backslash). The escape state has to return to normal
+ * after each one or a second backslash later in the same line would be handled wrong,
+ * which is what the second backslash here is for — it also stands in for the case
+ * that only shows up once the state has been used and released before.
+ */
+MARLIN_TEST(queue, a_backslash_escapes_the_character_that_follows) {
+  CleanQueue clean;
+  host_transmits("M220 S\\5\\5");
+  drain_queue();
+  TEST_ASSERT_EQUAL(55, motion.feedrate_percentage);
+}
+
+/**
+ * The backspace check is exact: only byte 0x08 erases. Bracket it on both sides — a
+ * byte below it (0x01, an arbitrary control code) must be taken literally rather than
+ * erasing anything, and the real backspace (0x08) must still erase.
+ */
+MARLIN_TEST(queue, backspace_erases_the_character_before_it) {
+  CleanQueue clean;
+  // Adjacent string literals, not "\x082": a hex escape consumes every hex digit that
+  // follows it, so "\x082" is one character (0x82), not 0x08 then '2'.
+  host_transmits("M220 S1" "\x08" "2");   // '1' typed, then erased, then '2': the fixed intent is 2
+  drain_queue();
+  TEST_ASSERT_EQUAL(2, motion.feedrate_percentage);
+}
+
+MARLIN_TEST(queue, a_control_character_below_backspace_is_not_taken_for_one) {
+  CleanQueue clean;
+  host_transmits("M220 S1" "\x01" "2");   // 0x01 is not backspace and must not erase the '1'
+  drain_queue();
+  TEST_ASSERT_EQUAL(1, motion.feedrate_percentage);
+}
+
+/**
+ * Leading spaces are skipped before the line-number and emergency-command checks look
+ * at fixed character positions — skip too few or too many and those checks look at
+ * the wrong byte. A tab is not a space, so it must be left where it is rather than
+ * being swept up by a mutant that skips "whitespace" more broadly.
+ */
+MARLIN_TEST(queue, leading_spaces_are_skipped_before_reading_an_emergency_command) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  marlin.wait_for_heatup = true;
+  host_transmits("   M108");
+
+  TEST_ASSERT_FALSE_MESSAGE(marlin.wait_for_heatup, "M108 should still be recognised after leading spaces");
+}
+
+MARLIN_TEST(queue, a_leading_tab_is_not_skipped_like_a_space) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  marlin.wait_for_heatup = true;
+  host_transmits("\tM108");
+
+  TEST_ASSERT_TRUE_MESSAGE(marlin.wait_for_heatup, "a tab is not a space and must not be swept up");
+
+  marlin.wait_for_heatup = false;
+  drain_queue();
 }
 
 /**
@@ -372,6 +549,53 @@ MARLIN_TEST(queue, a_line_number_just_behind_is_ignored_and_an_older_one_is_an_e
 }
 
 /**
+ * The test above cannot tell "ignored" from "refused" apart, because neither ever runs
+ * the repeated command: both leave the feedrate exactly where it was. What actually
+ * differs is what goes back to the host — a repeat inside the window is silent, and a
+ * genuinely lost line gets a resend request — which is the channel this asserts on
+ * instead. See CLAUDE.md on negative assertions and on asserting the channel a message
+ * came out on.
+ */
+MARLIN_TEST(queue, a_repeat_inside_the_window_asks_for_nothing_but_an_older_line_asks_for_a_resend) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  host_transmits_checksummed("N1 M220 S11");
+  host_transmits_checksummed("N2 M220 S22");
+  host_transmits_checksummed("N3 M220 S33");
+  drain_queue();
+
+  {
+    SerialCapture capture;
+    host_transmits_checksummed("N3 M220 S99");   // the last line, inside the window
+    TEST_ASSERT_FALSE_MESSAGE(capture.saw("Resend:"), "a repeat of the last line must not ask for a resend");
+  }
+  {
+    SerialCapture capture;
+    host_transmits_checksummed("N2 M220 S99");   // one behind, still inside the window
+    TEST_ASSERT_FALSE_MESSAGE(capture.saw("Resend:"), "a repeat of the line before last must not ask for a resend");
+  }
+  {
+    SerialCapture capture;
+    host_transmits_checksummed("N1 M220 S99");   // outside the window: genuinely lost
+    TEST_ASSERT_TRUE_MESSAGE(capture.saw("Resend:"), "a line outside the window must ask for a resend");
+  }
+
+  drain_queue();
+}
+
+// The number named in "Resend: N" is last_N + 1 exactly — the line the host should
+// send next. Pin the number, not just that a resend happened.
+MARLIN_TEST(queue, a_resend_request_names_the_next_expected_line) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  SerialCapture capture;
+  host_transmits("N1 M220 S11*1");   // wrong checksum: refused, resend requested
+  TEST_ASSERT_TRUE_MESSAGE(capture.saw("Resend: 1"), "with last_N at 0, the next expected line is 1");
+}
+
+/**
  * Commands that cannot wait are acted on as the line is read.
  *
  * `M108` and `M410` exist to reach a machine that is *already* stuck — waiting for a
@@ -413,6 +637,76 @@ MARLIN_TEST(queue, a_command_that_merely_looks_like_M108_does_not_stop_a_wait) {
   marlin.wait_for_heatup = false;              // leave nothing waiting behind
   drain_queue();
 }
+
+/**
+ * The read-time switch only enters for an M-code (`command[0] == 'M'`). A relational
+ * mutant of that check (`<= 'M'`, `>= 'M'`) is not visible on any M-command, because
+ * 'M' compares equal to itself either way — it needs a command on the other side of
+ * 'M' whose remaining characters would otherwise match the M108 case by position.
+ */
+MARLIN_TEST(queue, a_G_command_shaped_like_M108_does_not_stop_a_wait) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  marlin.wait_for_heatup = true;
+  host_transmits("G108");                      // 'G' < 'M': command[0] <= 'M' would wrongly enter
+
+  TEST_ASSERT_TRUE_MESSAGE(marlin.wait_for_heatup, "a G-command must not be read as M108");
+
+  marlin.wait_for_heatup = false;
+  drain_queue();
+}
+
+MARLIN_TEST(queue, a_T_command_shaped_like_M108_does_not_stop_a_wait) {
+  CleanQueue clean;
+  queue.set_current_line_number(0);
+
+  marlin.wait_for_heatup = true;
+  host_transmits("T108");                      // 'T' > 'M': command[0] >= 'M' would wrongly enter
+
+  TEST_ASSERT_TRUE_MESSAGE(marlin.wait_for_heatup, "a T-command must not be read as M108");
+
+  marlin.wait_for_heatup = false;
+  drain_queue();
+}
+
+/**
+ * `M410` is picked out by testing command[1] and command[2] against '4' and '1'
+ * individually. Each comparison needs a value on both sides of the character it
+ * checks, not just "some other command", or a relational mutant (`<=`, `>=`) that
+ * still agrees on that one probe survives.
+ */
+#ifdef __PLAT_TEST__
+
+MARLIN_TEST(queue, characters_either_side_of_M410_do_not_stop_the_steppers) {
+  CleanQueue clean;
+  SimulatedMachine machine;
+  queue.set_current_line_number(0);
+
+  xyze_pos_t target = { 0 };
+  motion.position = target;
+  planner.set_position_mm(target);
+  for (uint8_t i = 1; i <= 3; ++i) {
+    target.x = float(i);
+    planner.buffer_line(target, 5.0f);
+  }
+  const uint8_t planned = planner.movesplanned();
+  TEST_ASSERT_TRUE_MESSAGE(planned > 0, "the fixture planned no moves to leave alone");
+
+  // command[1]: '5' > '4' and '3' < '4'
+  host_transmits("M510");
+  TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M510 should not be taken for M410");
+  host_transmits("M310");
+  TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M310 should not be taken for M410");
+
+  // command[2]: '9' > '1' and '0' < '1'
+  host_transmits("M490");
+  TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M490 should not be taken for M410");
+  host_transmits("M400");
+  TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M400 should not be taken for M410");
+}
+
+#endif // __PLAT_TEST__
 
 #ifdef __PLAT_TEST__
 
