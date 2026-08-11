@@ -60,12 +60,22 @@ void GcodeSuite::M92() {
           const uint8_t e = E_AXIS_N(target_extruder);
           const float value = parser.value_per_axis_units(AxisEnum(e));
           if (value < 20) {
-            float factor = planner.steps_per_mm(e) / value; // increase e constants if M92 E14 is given for netfab.
+            // A suspiciously low resolution is read as a change of units rather than of speed —
+            // some slicers emit `M92 E14` for a geared extruder whose real figure is in the
+            // hundreds — so the speed limit moves with it and the extruder keeps the same limit
+            // in steps per second.
+            //
+            // There used to be a matching `max_acceleration_steps_per_s2[e] *= factor` here. It
+            // never did anything: that array is derived, and `set_steps_per_mm()` below recomputes
+            // every entry of it from `max_acceleration_mm_per_s2 * axis_steps_per_mm`. Deleting it
+            // left the whole suite passing, which is how it was confirmed. See register #31 — what
+            // it was trying to preserve is unclear, since the factor it applied matches neither the
+            // millimetre figure nor the step one.
+            const float factor = planner.steps_per_mm(e) / value;
             #if ALL(CLASSIC_JERK, HAS_CLASSIC_E_JERK)
               planner.max_jerk.e *= factor;
             #endif
             planner.settings.max_feedrate_mm_s[e] *= factor;
-            planner.max_acceleration_steps_per_s2[e] *= factor;
           }
           planner.set_steps_per_mm(e, value);
         #endif

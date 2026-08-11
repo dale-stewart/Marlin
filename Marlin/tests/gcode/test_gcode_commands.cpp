@@ -299,19 +299,16 @@ MARLIN_TEST(gcode_commands, an_ordinary_M92_E_leaves_the_speed_limit_alone) {
 }
 
 /**
- * LEGACY-BEHAVIOR: defect register #31 — the acceleration half of that compensation is discarded.
+ * The rescaling moves the speed limit and leaves acceleration alone.
  *
- * `M92.cpp:67` scales `max_acceleration_steps_per_s2` by the same factor as the feedrate, and
- * then `planner.refresh_positioning()` two lines later calls `refresh_acceleration_rates()`,
- * which recomputes that array from `max_acceleration_mm_per_s2 * axis_steps_per_mm` for every
- * axis unconditionally. The write is overwritten before anything can read it.
- *
- * So the acceleration limit in millimetres is left exactly as configured, and the limit in steps
- * follows the new resolution — which is what would happen if the line were not there at all.
- * Recorded rather than fixed: what the line intends is unclear (the factor it applies preserves
- * neither the millimetre nor the step figure), and the current outcome is the defensible one.
+ * Acceleration is configured in millimetres per second squared and stays exactly as configured;
+ * the step-rate limit derived from it simply follows the new resolution. That is the whole of
+ * the behaviour, and it is worth stating because it used to be an accident: `M92` also scaled
+ * the derived step-rate array, and `refresh_acceleration_rates()` recomputed it moments later,
+ * so the line had no effect at all. It is deleted now (register #31), and this test is what says
+ * the deletion changed nothing.
  */
-MARLIN_TEST(gcode_commands, the_low_M92_E_acceleration_compensation_is_discarded) {
+MARLIN_TEST(gcode_commands, a_low_M92_E_moves_the_speed_limit_and_not_the_acceleration) {
   SavedExtruderSteps restore;
 
   planner.settings.axis_steps_per_mm[E_AXIS] = 500.0f;
