@@ -192,6 +192,15 @@ checked rather than assumed:
 - `EXTENSIBLE_UI` compiles and will not link — `ui_api.cpp` is a library that resolves only
   against a concrete UI supplying some twenty `ExtUI::on*` callbacks, which a test would have to
   invent wholesale.
+- `I2C_POSITION_ENCODERS` **is now buildable** — it needed `<Wire.h>` (a stub bus, on the same
+  footing as `HAL/TEST/spi.cpp`) and Arduino's legacy `Bxxxxxxxx` binary-literal macros, both now
+  in `HAL/TEST/include/`. Config `007-i2c_encoders`. This was the cheapest of the five and the
+  approach generalises; the two display drivers need more, and one of them needs LVGL.
+
+Worth knowing before picking the next one: **effort and value are anti-correlated here.** The
+cheapest to make buildable — `extui/ui_api.cpp` — is the one that already gets the refresh right.
+The ones with suspected defects (#33, #34) are the display drivers, which are the expensive ones,
+and `mks_ui` needs a third-party graphics library.
 
 So this is not a coverage gap and no amount of testing closes it. Making those drivers
 host-portable is a real project and a separate one, and it would have to be sequenced *before*
@@ -397,7 +406,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**six** configs in `test/`, reporting **538, 539, 546, 603, 609, 542**. The counts above vary
+**seven** configs in `test/`, reporting **547, 548, 555, 612, 618, 556, 549**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -492,6 +501,7 @@ Configurations in `test/`:
 | `004-sd_powerloss` | media and power-loss recovery |
 | `005-bed_leveling` | probing, `Z_SAFE_HOMING`, and the whole of `test_homing_the_machine.cpp` |
 | `006-eeprom` | `EEPROM_SETTINGS`, so `M500`/`M501` and most of `settings.cpp` are compiled at all |
+| `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, the first consumer of `planner.settings` from outside the build to be made buildable |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
