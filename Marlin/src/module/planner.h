@@ -732,6 +732,18 @@ class Planner {
        * @param value  steps per millimetre
        */
       static void set_steps_per_mm(const uint8_t axis, const float value);
+
+      /**
+       * @brief   Set every axis's resolution at once, from a whole set of values.
+       * @details The bulk counterpart, for restoring a stored block or the configured defaults.
+       *          It exists so that the refresh happens once for the set rather than once per
+       *          axis, and — more to the point — so that a caller restoring settings does not
+       *          have to know that a refresh is owed at all. Assigning the array and remembering
+       *          to finalise afterwards is the same hazard as the single-axis case, just spread
+       *          over more lines and further from the assignment.
+       * @param values  steps per millimetre, one per distinct axis
+       */
+      static void set_steps_per_mm(const float (&values)[DISTINCT_AXES]);
     #endif
 
     // For an axis set the Maximum Acceleration in mm/s^2

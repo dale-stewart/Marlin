@@ -1980,13 +1980,21 @@ void MarlinSettings::postprocess() {
         feedRate_t tmp3[NUM_AXES + e_factors];
         EEPROM_READ((uint8_t *)tmp3, sizeof(tmp3)); // max_feedrate_mm_s
 
-        if (!validating) LOOP_DISTINCT_AXES(i) {
-          const bool in = (i < e_factors + NUM_AXES);
-          planner.settings.max_acceleration_mm_per_s2[i] = in ? tmp1[i] : pgm_read_dword(&_DMA[ALIM(i, _DMA)]);
+        if (!validating) {
           #if ENABLED(EDITABLE_STEPS_PER_UNIT)
-            planner.settings.axis_steps_per_mm[i]        = in ? tmp2[i] : pgm_read_float(&_DASU[ALIM(i, _DASU)]);
+            float steps_per_mm[DISTINCT_AXES];
           #endif
-          planner.settings.max_feedrate_mm_s[i]          = in ? tmp3[i] : pgm_read_float(&_DMF[ALIM(i, _DMF)]);
+          LOOP_DISTINCT_AXES(i) {
+            const bool in = (i < e_factors + NUM_AXES);
+            planner.settings.max_acceleration_mm_per_s2[i] = in ? tmp1[i] : pgm_read_dword(&_DMA[ALIM(i, _DMA)]);
+            #if ENABLED(EDITABLE_STEPS_PER_UNIT)
+              steps_per_mm[i]                              = in ? tmp2[i] : pgm_read_float(&_DASU[ALIM(i, _DASU)]);
+            #endif
+            planner.settings.max_feedrate_mm_s[i]          = in ? tmp3[i] : pgm_read_float(&_DMF[ALIM(i, _DMF)]);
+          }
+          // Hand the whole set over rather than assigning the array: the reciprocal cache and the
+          // stepper's step counts are derived from these, and the planner is what knows that.
+          TERN_(EDITABLE_STEPS_PER_UNIT, planner.set_steps_per_mm(steps_per_mm));
         }
 
         EEPROM_READ(planner.settings.acceleration);
@@ -3310,13 +3318,17 @@ void MarlinSettings::postprocess() {
  * M502 - Reset Configuration
  */
 void MarlinSettings::reset() {
+  #if ENABLED(EDITABLE_STEPS_PER_UNIT)
+    float steps_per_mm[DISTINCT_AXES];
+  #endif
   LOOP_DISTINCT_AXES(i) {
     planner.settings.max_acceleration_mm_per_s2[i] = pgm_read_dword(&_DMA[ALIM(i, _DMA)]);
     #if ENABLED(EDITABLE_STEPS_PER_UNIT)
-      planner.settings.axis_steps_per_mm[i] = pgm_read_float(&_DASU[ALIM(i, _DASU)]);
+      steps_per_mm[i] = pgm_read_float(&_DASU[ALIM(i, _DASU)]);
     #endif
     planner.settings.max_feedrate_mm_s[i] = pgm_read_float(&_DMF[ALIM(i, _DMF)]);
   }
+  TERN_(EDITABLE_STEPS_PER_UNIT, planner.set_steps_per_mm(steps_per_mm));
 
   planner.settings.min_segment_time_us = DEFAULT_MINSEGMENTTIME;
   planner.settings.acceleration = DEFAULT_ACCELERATION;

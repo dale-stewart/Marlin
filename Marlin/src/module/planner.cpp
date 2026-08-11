@@ -3261,6 +3261,11 @@ void Planner::refresh_acceleration_rates() {
     settings.axis_steps_per_mm[axis] = value;
     refresh_positioning();
   }
+
+  void Planner::set_steps_per_mm(const float (&values)[DISTINCT_AXES]) {
+    LOOP_DISTINCT_AXES(i) settings.axis_steps_per_mm[i] = values[i];
+    refresh_positioning();
+  }
 #endif
 
 void Planner::refresh_positioning() {
