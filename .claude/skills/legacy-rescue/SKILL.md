@@ -360,6 +360,17 @@ For each survivor, in descending order of risk:
   enabled by a default, a dependency, or another option's side effect. Classifying survivors as
   "dead arms of a disabled feature" on the strength of the settings is a claim about the build
   that has not been checked, and it is wrong often enough to matter. Print the resolved constant.
+- **A survivor may mean the test exists but not in the build you measured.** Where a suite is
+  compiled per configuration, a test excluded by a build guard does not fail, does not appear,
+  and does not run — so its subject shows up in the report as unasserted. The mutation score is
+  a property of *one* build, and every test guarded out of that build is invisible to it.
+
+  Check this before writing anything: search the whole suite for the behaviour, not just the
+  files that compiled. If the test turns out to exist elsewhere, you have learned something
+  more useful than a new test — the measurement understates the suite, and writing a duplicate
+  would have hidden that rather than fixed it. The fix is usually to make the basic case
+  testable in the measured build, since a behaviour reachable only under an optional feature is
+  a behaviour whose common path nobody is checking.
 - **When the only thing a branch changes is the order, the sequence is the assertion.** Some
   branches decide *when* work happens rather than whether or what: do this part first, defer
   that until after, handle these in priority order. Every ordering finishes in the same final

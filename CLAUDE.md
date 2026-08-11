@@ -145,6 +145,29 @@ arm is live, and the hand-applied mutant that swapped `HAS_FAN0` for `HAS_FAN1` 
 at all. `every_fan_is_driven_at_its_own_speed` in `test_planner.cpp` is what the line actually
 needed. Print the resolved constant; the default config is not the whole story.
 
+**"A survivor may mean the test exists but not in the build you measured."** `motion.cpp:2271`'s
+`is_home_dir` had 21 survivors and the test that kills them was already written —
+`homing_leaves_no_endstop_hit_outstanding` in `test_homing_the_machine.cpp`, whose whole file is
+guarded on `HAS_BED_PROBE && ENABLED(Z_SAFE_HOMING)`. Neither is in the default config, and the
+mutation runner only ever measures `--suite default`. Inverting `is_home_dir` passes all 525
+default-config tests and fails immediately under `005-bed_leveling`. Before treating a homing,
+probing or levelling survivor here as unasserted, grep the whole suite — the answer is often
+that the behaviour is covered in a configuration the measurement cannot see.
+
+The fix was to make the basic case testable in the measured build: the default config has plain
+X/Y/Z minimum endstops and **had never homed anything but X** — `do_homing_move` was called ten
+times in the whole suite, every one of them on axis 0. `homing_leaves_no_switch_recorded_as_hit`
+and `each_axis_homes_against_its_own_switch` in `test_homing.cpp` (unguarded) now do. Note the
+latter asserts `lowest_reached()` rather than the final position, because `Z_SAFE_HOMING` sends
+the carriage to the middle of the bed after homing X and the final position is therefore
+configuration-dependent; where the axis *went* is not.
+
+The 12 that remain on that line are equivalent by reachable range: every axis homes to its
+minimum so `axis_home_dir` is always `-1`, making `> 1`, `> -1`, `>= 0` and `== 0` all agree
+with `> 0`; and `distance` only ever takes ±300, +5 and -10, so no mutant of the `> 0` on the
+right-hand side separates either. A configuration with an axis homing to *maximum* would
+distinguish the first group.
+
 **"When the only thing a branch changes is the order, the sequence is the assertion."**
 `motion.cpp:1001` and `:1010` raise Z before crossing the bed and lower it only after arriving,
 so the nozzle passes over a printed part rather than through it. Both orderings end at identical

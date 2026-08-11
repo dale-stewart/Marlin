@@ -82,6 +82,32 @@ namespace {
     }
   };
 
+  #if HAS_Y_AXIS
+    // The same rail on Y. Homing Y has never been exercised in this configuration, and Y is
+    // not X: it has its own pins, its own direction, its own inversion setting and its own
+    // entry in every per-axis table homing reads.
+    struct YRail : SimulatedAxisWithLimit {
+      YRail(const float switch_at_mm, const float carriage_at_mm)
+        : SimulatedAxisWithLimit(Y_STEP_PIN, Y_DIR_PIN, ENABLED(INVERT_Y_DIR),
+                                 Y_MIN_PIN, Y_MIN_ENDSTOP_HIT_STATE,
+                                 int32_t(switch_at_mm * SPM), int32_t(carriage_at_mm * SPM)) {}
+      float mm() const { return float(position()) / SPM; }
+      float lowest_mm() const { return float(lowest_reached()) / SPM; }
+    };
+  #endif
+
+  #if HAS_Z_AXIS
+    // ...and on Z, which homes against its own minimum switch when there is no probe.
+    struct ZRail : SimulatedAxisWithLimit {
+      ZRail(const float switch_at_mm, const float carriage_at_mm)
+        : SimulatedAxisWithLimit(Z_STEP_PIN, Z_DIR_PIN, ENABLED(INVERT_Z_DIR),
+                                 Z_MIN_PIN, Z_MIN_ENDSTOP_HIT_STATE,
+                                 int32_t(switch_at_mm * SPM), int32_t(carriage_at_mm * SPM)) {}
+      float mm() const { return float(position()) / SPM; }
+      float lowest_mm() const { return float(lowest_reached()) / SPM; }
+    };
+  #endif
+
   void host_sends(const char * const line) {
     static char buf[64];
     strncpy(buf, line, sizeof(buf) - 1);
@@ -93,6 +119,14 @@ namespace {
   // Put the machine, the planner and the steppers all at the same place.
   void machine_is_at_x(const float mm) {
     xyze_pos_t here = { 0 }; here.x = mm;
+    motion.position = here;
+    planner.set_position_mm(here);
+  }
+
+  // The same, for a machine that is about to be homed on more than one axis.
+  void machine_is_at(const float x, const float y, const float z) {
+    xyze_pos_t here = { 0 };
+    NUM_AXIS_CODE(here.x = x, here.y = y, here.z = z, , , , , , );
     motion.position = here;
     planner.set_position_mm(here);
   }
@@ -374,6 +408,79 @@ MARLIN_TEST(homing, G28_X_does_not_home_the_other_axes) {
 
   TEST_ASSERT_FALSE(motion.axis_should_home(X_AXIS));
   TEST_ASSERT_TRUE_MESSAGE(motion.axis_should_home(Y_AXIS), "Y was homed by G28 X");
+}
+
+// ---------------------------------------------------------------------------
+// Homing the other axes
+// ---------------------------------------------------------------------------
+
+/**
+ * Homing touches every switch on purpose, and leaves none of them recorded as a hit.
+ *
+ * An endstop hit is a latched flag, and the rest of the firmware reads it as "something
+ * unexpected stopped an axis". Homing closes three switches deliberately, so it has to clear
+ * the record on the way out or the next thing to look will believe the machine crashed into
+ * something.
+ *
+ * The clearing is done by `validate_homing_move()`, which `do_homing_move()` calls only for
+ * moves heading *towards* a switch — the back-off between the two touches is heading away, and
+ * validating that one would report a failure every time. So this pins the flag that tells those
+ * two cases apart. Getting it backwards leaves the last touch's hit uncleared, which is what
+ * makes the outstanding flag visible here.
+ */
+MARLIN_TEST(homing, homing_leaves_no_switch_recorded_as_hit) {
+  SimulatedMachine machine;
+  XRail x(0.0f, 20.0f);
+  TERN_(HAS_Y_AXIS, YRail y(0.0f, 20.0f));
+  TERN_(HAS_Z_AXIS, ZRail z(0.0f, 8.0f));
+  machine_is_at(20.0f, 20.0f, 8.0f);
+
+  motion.set_axis_never_homed(X_AXIS);
+  TERN_(HAS_Y_AXIS, motion.set_axis_never_homed(Y_AXIS));
+  TERN_(HAS_Z_AXIS, motion.set_axis_never_homed(Z_AXIS));
+
+  host_sends("G28");
+  TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+
+  TEST_ASSERT_FALSE_MESSAGE(motion.axis_should_home(X_AXIS), "X should have been homed");
+  TEST_ASSERT_EQUAL_MESSAGE(0, endstops.trigger_state(),
+    "homing touches every switch on purpose and should leave none of them recorded as a hit");
+}
+
+/**
+ * Each axis homes against its own switch.
+ *
+ * Every per-axis quantity homing reads — the direction, the pin, the inversion, the feedrate,
+ * the back-off distance — is a table lookup, and until now only entry zero had ever been read.
+ * Putting the three switches at three different places is what makes a lookup that returns the
+ * wrong row visible: an axis that homed to X's switch would stop in the wrong place.
+ */
+MARLIN_TEST(homing, each_axis_homes_against_its_own_switch) {
+  SimulatedMachine machine;
+  XRail x(1.0f, 25.0f);
+  TERN_(HAS_Y_AXIS, YRail y(3.0f, 25.0f));
+  TERN_(HAS_Z_AXIS, ZRail z(5.0f, 12.0f));
+  machine_is_at(25.0f, 25.0f, 12.0f);
+
+  motion.set_axis_never_homed(X_AXIS);
+  TERN_(HAS_Y_AXIS, motion.set_axis_never_homed(Y_AXIS));
+  TERN_(HAS_Z_AXIS, motion.set_axis_never_homed(Z_AXIS));
+
+  host_sends("G28");
+  TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+
+  // Each carriage should have reached down to its own switch, not to another axis's.
+  //
+  // The low-water mark rather than the final position: what the machine does *after* homing an
+  // axis varies by configuration — `Z_SAFE_HOMING` sends the carriage to the middle of the bed
+  // before homing Z — and none of that changes which switch each axis went looking for.
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.5f, 1.0f, x.lowest_mm(), "X should have reached the X switch");
+  #if HAS_Y_AXIS
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.5f, 3.0f, y.lowest_mm(), "Y should have reached the Y switch");
+  #endif
+  #if HAS_Z_AXIS
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.5f, 5.0f, z.lowest_mm(), "Z should have reached the Z switch");
+  #endif
 }
 
 // ---------------------------------------------------------------------------
