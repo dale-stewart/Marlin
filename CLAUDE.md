@@ -180,22 +180,24 @@ excluded, `pio run -t marlin_eeprom -e acceptance_native_coverage`:
 | `module/settings.cpp` | 90% |
 | `gcode/config/M92.cpp` | 68% |
 | `gcode/config/M200-M205.cpp` | 50% |
-| `module/stepper.cpp` | 13% |
-| `module/motion.cpp` | 5% |
-| `gcode/calibrate/G28.cpp` | 0% |
-| `gcode/motion/G2_G3.cpp` | 0% |
+| `module/stepper.cpp` | 74% |
+| `module/motion.cpp` | 57% |
+| `gcode/calibrate/G28.cpp` | 91% |
+| `module/planner.cpp` | 62% |
 
-So the scenarios describe the printer's *conversation with the host* — configuration,
-persistence, reporting — and say almost nothing about its *movement*. Homing, probing and
-arcs are behaviour a user would certainly notice, and no scenario mentions them: by the Step 7
-reading that is a missing feature file, not something to backfill with unit tests.
+Those motion figures were 13%, 5%, 0% and 11% until `moving_the_tool.feature` was written, and
+two separate things had to change to fix that. The obvious one was six scenarios. The other was
+that **`acceptance_native_test` extended `env:linux_native_test`** — the LINUX HAL, where time is
+the wall clock, so a scenario could not wait for the machine to arrive anywhere and motion was
+not expressible at all. Everything else in this fork moved to the test HAL; the acceptance envs
+were left behind, and the effect was a silent ceiling on what the acceptance suite was allowed to
+be about. They now extend `testhal_*`, and `[acceptance_only]` pulls in `tests/support` because a
+scenario that homes needs rails and switches to home against.
 
-The practical consequence for the migration: `settings.cpp`, `M92` and `M200-M205` can have
-their call sites moved with a behavioural net underneath them. The motion-side consumers cannot
-yet, because their only tests are the unit tests that name `planner.settings` — 117 references
-across five files, every one of which the migration would have to edit. A net that moves with
-the code is not a net. `Marlin/tests/gcode/features/keeping_its_settings.feature` and its steps
-name no C++ symbol for exactly this reason, teardown included.
+`keeping_its_settings.feature`, `moving_the_tool.feature` and their steps name no C++ symbol,
+teardown included. That is what lets them stay unedited while `planner.settings` is migrated
+underneath them — the unit tests cannot do that job, because 117 of their references name the
+symbol being removed and a net that moves with the code is not a net.
 
 **`motion.cpp` is closed at 57.8% raw / 75.3% killable** (204/353; 82 of 149 survivors are
 equivalent), 76% line coverage. Reason categories, all checked: 24 preprocessor-erased because

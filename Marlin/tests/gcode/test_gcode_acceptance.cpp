@@ -37,6 +37,9 @@
 #include "../test/unit_tests.h"
 #include "serial_capture.h"
 #include "simulated_sensors.h"
+#include "../support/simulated_machine.h"
+#include "../support/simulated_endstops.h"
+#include "../support/reported_values.h"
 #include "src/gcode/queue.h"
 #include "src/gcode/gcode.h"
 #include "src/core/serial.h"
@@ -259,6 +262,71 @@ namespace {
     snprintf(unwanted, sizeof(unwanted), "%s%s", field, value);
     const std::string report = the_settings_report();
     TEST_ASSERT_TRUE_MESSAGE(report.find(unwanted) == std::string::npos, unwanted);
+  }
+
+
+  //
+  // ---- Steps for: Moving the tool where it was told ----
+  //
+  // A scenario about movement needs a machine to move: rails that count step pulses and switches
+  // for them to home against. Those are the *printer*, not the firmware — the simulated equivalent
+  // of putting a rule against the carriage — so a step may read one. Nothing here reads the
+  // firmware's own idea of where it is except through `M114`, which is what a host has.
+  //
+
+  struct HomedPrinter {
+    static constexpr float SPM = SimulatedMachine::STEPS_PER_MM;
+    SimulatedMachine machine;
+    SimulatedAxisWithLimit x, y;
+
+    HomedPrinter()
+      : x(X_STEP_PIN, X_DIR_PIN, ENABLED(INVERT_X_DIR), X_MIN_PIN, X_MIN_ENDSTOP_HIT_STATE,
+          0, int32_t(30.0f * SPM)),
+        y(Y_STEP_PIN, Y_DIR_PIN, ENABLED(INVERT_Y_DIR), Y_MIN_PIN, Y_MIN_ENDSTOP_HIT_STATE,
+          0, int32_t(30.0f * SPM)) {}
+
+    float x_mm() const { return float(x.position()) / SPM; }
+  };
+
+  void the_printer_is_homed_and_ready(HomedPrinter &printer) {
+    the_host_sends("G28 X Y");
+    TEST_ASSERT_TRUE_MESSAGE(SimulatedMachine::run_until_idle(), "the printer never finished homing");
+    UNUSED(printer);
+  }
+
+  void the_host_sends_the_tool_to(const char * const coordinates) {
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "G0 %s F6000", coordinates);
+    the_host_sends(cmd);
+    TEST_ASSERT_TRUE_MESSAGE(SimulatedMachine::run_until_idle(), "the move never finished");
+  }
+
+  void the_host_switches_to_relative_moves() { the_host_sends("G91"); }
+  void the_host_switches_back_to_absolute_moves() { the_host_sends("G90"); }
+
+  void the_host_declares_the_current_position_to_be(const char * const coordinates) {
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "G92 %s", coordinates);
+    the_host_sends(cmd);
+  }
+
+  // What the printer says when asked, which is all a host ever knows.
+  void the_tool_is_reported_at(const float rx, const float ry) {
+    const std::string reply = the_reply_to("M114");
+    size_t from = 0;
+    double got = 0;
+    TEST_ASSERT_TRUE_MESSAGE(reported::next_number(reply, "X:", from, got),
+      "the position report should give an X");
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.15f, rx, float(got), "reported X");
+    from = 0;
+    TEST_ASSERT_TRUE_MESSAGE(reported::next_number(reply, "Y:", from, got),
+      "the position report should give a Y");
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.15f, ry, float(got), "reported Y");
+  }
+
+  void the_carriage_really_is_along_x(const HomedPrinter &printer, const float mm) {
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.2f, mm, printer.x_mm(),
+      "where the carriage physically ended up");
   }
 
 }
@@ -511,3 +579,92 @@ MARLIN_TEST(keeping_its_settings, restoring_the_factory_settings_does_not_discar
 }
 
 #endif // EEPROM_SETTINGS
+
+//
+// ======== Feature: Moving the tool where it was told ========
+//
+// The net for the motion-side consumers of `planner.settings`. Step 7 found the acceptance suite
+// reaching `motion.cpp` at 5% and `G28`/`G2_G3` at 0% — it described the printer's conversation
+// with the host and nothing about its movement, which is most of what a printer does.
+//
+
+MARLIN_TEST(moving_the_tool, going_to_a_coordinate) {
+  ConnectedPrinter connected;
+  HomedPrinter printer;
+  the_printer_is_homed_and_ready(printer);
+
+  the_host_sends_the_tool_to("X50 Y30");
+
+  the_tool_is_reported_at(50, 30);
+  the_carriage_really_is_along_x(printer, 50);
+}
+
+// A machine that could only move once, or that measured from home every time, would pass above.
+MARLIN_TEST(moving_the_tool, going_somewhere_else_afterwards) {
+  ConnectedPrinter connected;
+  HomedPrinter printer;
+  the_printer_is_homed_and_ready(printer);
+
+  the_host_sends_the_tool_to("X50 Y30");
+  the_host_sends_the_tool_to("X20 Y60");
+
+  the_tool_is_reported_at(20, 60);
+  the_carriage_really_is_along_x(printer, 20);
+}
+
+// Relative mode is how a slicer emits extrusion and how retractions are written.
+MARLIN_TEST(moving_the_tool, relative_moves_add_to_where_the_tool_already_is) {
+  ConnectedPrinter connected;
+  HomedPrinter printer;
+  the_printer_is_homed_and_ready(printer);
+
+  the_host_sends_the_tool_to("X50 Y30");
+  the_host_switches_to_relative_moves();
+  the_host_sends_the_tool_to("X10");
+  the_host_sends_the_tool_to("X10");
+  the_host_switches_back_to_absolute_moves();
+
+  the_tool_is_reported_at(70, 30);
+}
+
+// ...and the mode has to be a mode: switching back must stop the adding.
+MARLIN_TEST(moving_the_tool, absolute_moves_go_to_the_coordinate_however_the_tool_got_there) {
+  ConnectedPrinter connected;
+  HomedPrinter printer;
+  the_printer_is_homed_and_ready(printer);
+
+  the_host_switches_to_relative_moves();
+  the_host_sends_the_tool_to("X10");
+  the_host_switches_back_to_absolute_moves();
+  the_host_sends_the_tool_to("X50 Y30");
+
+  the_tool_is_reported_at(50, 30);
+}
+
+// `G92` renames where the tool is. The carriage must not so much as twitch.
+MARLIN_TEST(moving_the_tool, telling_the_printer_where_it_is_without_moving_it) {
+  ConnectedPrinter connected;
+  HomedPrinter printer;
+  the_printer_is_homed_and_ready(printer);
+
+  the_host_sends_the_tool_to("X50 Y30");
+  const float stood_at = printer.x_mm();
+
+  the_host_declares_the_current_position_to_be("X0");
+
+  the_tool_is_reported_at(0, 30);
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, stood_at, printer.x_mm(),
+    "renaming the position should not move the carriage");
+}
+
+// The software limits are the last thing between a bad coordinate and the frame.
+MARLIN_TEST(moving_the_tool, a_coordinate_off_the_end_of_the_bed_is_not_attempted) {
+  ConnectedPrinter connected;
+  HomedPrinter printer;
+  the_printer_is_homed_and_ready(printer);
+
+  the_host_sends_the_tool_to("X1000");
+
+  TEST_ASSERT_TRUE_MESSAGE(printer.x_mm() <= float(X_MAX_POS) + 0.5f,
+    "the carriage should have stopped at the end of its travel, not gone where it was told");
+}
