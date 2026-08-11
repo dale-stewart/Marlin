@@ -779,6 +779,20 @@ a singleton, replacing a leaky type that appears in a thousand signatures — a
 5. Change the surface when the last consumer is ready, or introduce the new API
    alongside the old and retire the old as consumers arrive.
 
+**A migration can stall on consumers that cannot be built, not merely untested ones.** The
+sequenced migration assumes every consumer can eventually be brought under test. Some cannot:
+code that only compiles for one target, that needs hardware or a framework the test environment
+has no answer for, or that links only against something the tests would have to invent. Those
+consumers are not a coverage gap — no amount of testing reaches them — and treating them as one
+leads to writing elaborate fakes for code you still cannot exercise.
+
+When you hit that, the migration is *complete for the reachable code and permanently blocked for
+the rest*. Say so, in the header where the surface lives, naming the consumers and the reason.
+The alternatives are worse: editing unbuildable code blind is the exact thing the workflow
+forbids, and quietly leaving the old surface with no note invites the next person to re-derive
+all of it. Making those consumers buildable is a legitimate project — it is simply a different
+one, and it has to be sequenced before the migration rather than inside it.
+
 Do not let a blocked surface change become an argument for skipping the cover-first
 rule "just this once." The ordering is what makes the correction safe; the correction
 is still wanted, and saying so in the follow-on note keeps it from being forgotten.

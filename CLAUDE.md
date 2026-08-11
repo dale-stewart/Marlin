@@ -180,8 +180,24 @@ first of those safe to touch: that block was compiled by no configuration, and t
 tests exercise it the moment it is built (G28 96% there). It is executed rather than strongly
 asserted — nothing measures homing acceleration — which is worth knowing before leaning on it.
 
-With that, **every raw write to the three per-axis arrays in compiled code is gone**. What remains
-is four LCD drivers and the I2C encoder, built by no configuration under `test/`.
+With that, **every raw write to the three per-axis arrays in compiled code is gone**.
+
+**And there the migration ends, permanently, short of making the fields private.** The five
+remaining consumers — `sovol_rts`, `creality/dwin`, `mks_ui/draw_number_key`, `extui/ui_api` and
+`encoder_i2c` — are not merely untested. They cannot be built for the host at all, which was
+checked rather than assumed:
+
+- `SOVOL_SV06_RTS` fails to compile: it wants Arduino's `String`, and its `sendData(int, …)` and
+  `sendData(int32_t, …)` overloads are the same signature on a 64-bit target.
+- `EXTENSIBLE_UI` compiles and will not link — `ui_api.cpp` is a library that resolves only
+  against a concrete UI supplying some twenty `ExtUI::on*` callbacks, which a test would have to
+  invent wholesale.
+
+So this is not a coverage gap and no amount of testing closes it. Making those drivers
+host-portable is a real project and a separate one, and it would have to be sequenced *before*
+this migration rather than inside it. Until then the fields stay public with the reason written
+where they are declared, and register #33 records the two drivers already suspected of the
+mistake the encapsulation exists to prevent.
 
 **Migration in progress — slice 1 of the `planner.settings` correction is done.**
 `Planner::steps_per_mm(axis)` and `Planner::set_steps_per_mm(axis, value)` now exist alongside

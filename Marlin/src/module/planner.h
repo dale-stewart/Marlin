@@ -415,7 +415,21 @@ typedef struct PlannerSettings {
    uint32_t max_acceleration_mm_per_s2[DISTINCT_AXES]; // (mm/s^2) M201 XYZE
    uint32_t min_segment_time_us;                       // (µs) M205 B
 
-  // (steps) M92 XYZE - Steps per millimeter
+  /**
+   * (steps) M92 XYZE - Steps per millimeter
+   *
+   * Assign these three arrays only from inside `Planner`. Everything else should go through
+   * `set_steps_per_mm()`, `set_max_acceleration()` / `override_max_acceleration()` and
+   * `set_max_feedrate()` / `override_max_feedrate()`, which keep `mm_per_step` and
+   * `max_acceleration_steps_per_s2` — both derived from these — in step. A direct assignment
+   * leaves the derived figure stale, and nothing about that is loud: the machine keeps moving,
+   * at a scale that no longer matches what it reports.
+   *
+   * They stay public only because five consumers still assign them and none can be built for the
+   * host: four display drivers and the I2C position encoder. Two of those are already suspected
+   * of exactly this mistake — see defect register #33. Making them private is wanted and is
+   * blocked on those consumers becoming buildable, not on them becoming tested.
+   */
   #if ENABLED(EDITABLE_STEPS_PER_UNIT)
     float axis_steps_per_mm[DISTINCT_AXES];
   #else
