@@ -561,8 +561,28 @@ Under `008`: `M117` 80%. `M118` turned out to be 92% in the default build and ha
 listed as rescued at all. That is nine of eighteen effectively closed by pointing a coverage run
 at builds that already existed — no tests written.
 
-`M0_M1.cpp` is the exception and the biggest remaining consumer: **11 reads and 0% under both
-`003` and `008`**, compiled by two configurations and executed by neither.
+**`M0_M1.cpp` is rescued (2026-08-12): 0% -> 100% line, 100% mutation (21/21) under `003`.**
+It was the biggest remaining consumer — 11 parser reads — and had sat at 0% under `003`, `008`
+*and* `010` (`HAS_DWIN_E3V2` is in the `HAS_RESUME_CONTINUE` list too, which the earlier survey
+missed). Not neglect: it is a command whose entire job is to not return, so nothing in the
+suite could reach it until the test HAL made `idle()` cost simulated time.
+
+Three things it taught, none of them about M0:
+
+- **The untimed branch needs a second thread.** With no `P` and no `S` there is no deadline,
+  so the only thing that ends the loop is a person. The answer has to arrive from another
+  thread — the `SerialCapture` arrangement — and its delay must be *wall-clock*, because
+  simulated time only moves when the machine moves it.
+- **`> before` is not enough, and the mutation run is what said so.** `ms = 0` mutated to
+  `ms = 1` gives a one-millisecond deadline, which satisfies "time passed" perfectly. The
+  untimed case has to be shown to outlast any trivial deadline. Two survivors, one bound.
+- **A bare `planner.synchronize()` has no return value and no message.** Queueing a move that
+  takes ten times the wait is what makes it observable: with the synchronize the command
+  cannot return until the move is done, without it the wait is over first. This is the one
+  behaviour that actually matters — `M0` is where a person reaches into the machine.
+
+The `command_number()` read is asserted through the host prompt (`//action:prompt_begin M0 Stop`
+against `M1 Stop`), which is the only place in the file where the two commands differ at all.
 
 **`009-parser_consumers.ini` makes five more visible** — `M550`, `G53-G59`, `M16`, `M810-M819`,
 `M33`, which no configuration compiled. They now read 0-7%, which is the point: 0% and measurable
@@ -737,7 +757,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**ten** configs in `test/`, reporting **606, 607, 614, 676, 677, 615, 612, 619, 672, 654**. The counts above vary
+**ten** configs in `test/`, reporting **606, 617, 624, 676, 677, 615, 612, 629, 672, 664**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
