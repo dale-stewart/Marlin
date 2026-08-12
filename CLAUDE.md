@@ -584,6 +584,43 @@ Three things it taught, none of them about M0:
 The `command_number()` read is asserted through the host prompt (`//action:prompt_begin M0 Stop`
 against `M1 Stop`), which is the only place in the file where the two commands differ at all.
 
+**The five `009` consumers are closed, and the figures in this file were stale.** They read
+0-7% when the configuration was new; `test_parser_consumers.cpp` was written since, and they are
+**98% line** with mutation measured under `009`:
+
+| file | raw | note |
+|---|---|---|
+| `sd/M33.cpp` | 100% | |
+| `config/M550.cpp` | 92.3% | 1 survivor: `ui.reset_status(false)` deleted — no display in this build |
+| `feature/macro/M810-M819.cpp` | 87.5% | 5 survivors, all equivalent |
+| `geometry/G53-G59.cpp` | 83.8% | 11 survivors, all equivalent |
+| `host/M16.cpp` | 75% | 1 survivor: the mismatched-name branch calls `kill()`, which never returns |
+
+**Every one of those 16 "equivalent" survivors is the same shape, and it is worth naming: a
+mutant whose only effect is undefined behaviour.** Widening a bounds check lets an out-of-range
+index through, and the array read or write that follows is out of bounds — so the mutant does not
+compute a *different* answer, it computes an *undefined* one, which on this platform happens to
+read as zero. No assertion separates those, and reaching for one means asserting on memory layout.
+
+**But a sanitizer does separate them, and that was checked rather than assumed.** With the guard
+in `M810_819()` deleted, `make unit-test-asan` reports `global-buffer-overflow ...
+M810-M819.cpp:52` from inside `a_macro_number_past_the_configured_slots_does_nothing`. So the
+honest classification is *equivalent under the ordinary suite, detectable under the sanitizer
+build* — not *unkillable*.
+
+Two of the sixteen are a different and prettier equivalence: `command_number() - 54` mutated to
+`% 54`, and `- 810` to `% 810`. Over the reachable domains (54..59 and 810..819) subtraction and
+modulo agree exactly, so those are equivalent by reachable range rather than by undefined
+behaviour.
+
+**Getting to that answer took two false starts, both instructive.** The first sanitizer run
+reported nothing, and it would have been easy to write down "the sanitizer does not see it" — but
+it had aborted six test files earlier on an unrelated fault and never reached the macro tests. A
+control that does not run is not a control. The fault it aborted on is register #41, a genuine
+`strcpy`-on-overlapping-ranges in `MString::ltrim()`, and #42 is why it was invisible: PlatformIO
+prints `331 test cases: 1 failed, 329 succeeded` beside `[ERRORED]` and none of the sanitizer's
+output. Run `.pio/build/testhal_native_asan/program` directly to see it.
+
 **`009-parser_consumers.ini` makes five more visible** — `M550`, `G53-G59`, `M16`, `M810-M819`,
 `M33`, which no configuration compiled. They now read 0-7%, which is the point: 0% and measurable
 is a rescue, invisible is not. Three traps on the way, two of which `004` had already hit and

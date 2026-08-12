@@ -173,3 +173,31 @@ re-checks.
   detected only by hanging, a test that makes it hang is real but nearly worthless: it
   adds no killed-by-assertion and costs a full timeout on every future run of that target,
   slowing the loop permanently. Prefer leaving the survivor recorded and classified.
+
+**A mutant whose only effect is undefined behaviour is invisible to assertions and visible to a
+sanitizer.** Widening a bounds check is the common case: the mutant lets an out-of-range index
+through, and the access that follows is out of bounds, so it does not compute a *different*
+answer — it computes an *undefined* one, which on any given platform often reads as whatever
+happens to be adjacent. Zero, usually. Every assertion agrees with the original and the mutant
+survives.
+
+Do not reach for an assertion here. Making that memory hold something recognisable means
+asserting on layout, which pins the compiler rather than the code and breaks the moment anything
+near it changes. Classify these as equivalent *under the ordinary suite*, and say so with the
+qualifier — because a sanitizer build does distinguish them, turning the same mutant into a
+named, located failure. That is a different instrument answering a question the first one cannot,
+and it is worth one run to confirm rather than assert: apply the mutant, build under the
+sanitizer, and read the report.
+
+Two cautions from doing exactly that. A sanitizer aborts at its *first* finding, so a run that
+reports nothing about your mutant may simply never have reached it — check which tests ran, not
+just what was reported, because **a control that does not run is not a control**. And where the
+test runner wraps the sanitizer, expect the report to be swallowed: a runner that summarises
+results by parsing output will happily print a passing-looking tally beside an aborted run. Run
+the instrumented binary directly and read its stderr.
+
+**Watch for the reachable-domain equivalence hiding among them.** Arithmetic mutants are usually
+easy kills, but where the input range is narrow two different operations can agree across all of
+it — subtraction and modulo by the same constant coincide exactly when the operand stays within
+one multiple of it. That is equivalence by reachable range, not by undefined behaviour, and it
+needs the domain written down rather than the operation compared.
