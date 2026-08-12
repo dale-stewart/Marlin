@@ -605,10 +605,26 @@ configuration on any platform. Register #37. It is dead code, the defect recorde
 #33 cannot run on a machine built from this tree, and **no emulator helps**: undefined
 identifiers fail at compile time, and QEMU has nothing to run.
 
-The toolchains are now installed, so the same check on `creality/dwin` and `mks_ui` is cheap and
-has not been done. Do that before spending anything on Stage 1 or 2 — the useful question is no
-longer "can we emulate it" but "does it compile at all", and for one of the three the answer
-was no.
+The other two were then checked the same way, and the three drivers turn out to be in three
+different states:
+
+| driver | cross-compiled for its target | state |
+|---|---|---|
+| `lcd/sovol_rts` | **cannot, ever** — four undefined identifiers | dead code (#37) |
+| `lcd/dwin/creality` | **builds clean** — `STM32F103RE_creality`, flash 25.5%, RAM 11.2% | live, and testable in principle |
+| `lcd/extui/mks_ui` | **not established** | blocked before the compiler reaches it |
+
+`mks_ui` is worth being precise about, because "did not build" would be the wrong summary. Every
+display/UI combination tried was rejected by Marlin's own `LCD_ENABLED_COUNT` check
+(`Conditionals-2-LCD.h:970`, "Please select only one LCD controller option") — `MKS_TS35_V2_0`,
+`TFT_GENERIC`, and combinations with `TFT_LVGL_UI`, which is itself *not* counted as a
+controller. **The compiler never saw the driver**, so nothing at all is known about whether the
+code is sound. The blocker is configuration selection, not the source.
+
+**This changes which driver is worth emulating.** `dwin` compiles, so it is the one where
+register #33's suspicion can actually be pursued, and the one where Stage 1 or 2 would buy
+something. `sovol_rts` is dead and no emulator reaches it. `mks_ui` needs a valid configuration
+before the question is even askable — an hour with Marlin's example configs, not an emulator.
 
 **Stage 1 — `qemu-user`, not `qemu-system`.** A test binary cross-compiled for 32-bit ARM Linux
 and run under `qemu-arm` gives a genuine 32-bit type model, real execution, and the existing
