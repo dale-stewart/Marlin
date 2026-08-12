@@ -608,6 +608,27 @@ queue that `idle()` drains, so under a single-threaded harness nothing can clear
 `wait_for_user` while the call is inside it. A test without P/S would hang. The seam wanted is
 a way to release that flag from outside the blocked call.
 
+**The five `009` consumers rescued (2026-08-11): 0% -> 98% line (61/62), 20 tests.**
+`M550` 100%, `G53-G59` 100%, `M810-M819` 100%, `M33` 100%, `M16` 75%; mutation 92%, 84%, 88%,
+100%, 60% respectively. All five were invisible to every measurement until the configuration
+existed that morning, which is the whole argument for treating an uncompiled file as a build
+problem rather than a coverage gap.
+
+Two of the equivalences are worth keeping. `codenum - 54` and `codenum % 54` are the same
+function over the only values dispatch produces (`54..59`, all below 108), and the same holds
+for `- 810` / `% 810` over `810..819` — an arithmetic identity inside a reachable range, not a
+shortcut. And `ui.reset_status(false)` in `M550` compiles to nothing here: it is `{}` inline
+when `HAS_STATUS_MESSAGE` is off, **established by `nm -u` on the object file** showing no
+undefined reference, which is the right way to settle that question.
+
+The largest remaining cluster is a warning about what a passing test can rest on.
+`G53-G59.cpp:38`'s upper bound has 8 survivors because reading one slot past
+`coordinate_system[]` lands on the immediately-following static `macros[]`, which happens to be
+zero-initialised. The assertion passes for a reason that is a **memory-layout coincidence**, not
+a design property — a different link order removes it. Killing it wants a sanitizer build, and
+`M810-M819.cpp:40`'s guard is the same shape in the other direction: the out-of-bounds write it
+prevents lands outside the array under test, so no in-bounds assertion can see whether it fired.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -643,7 +664,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**nine** configs in `test/`, reporting **604, 605, 612, 669, 675, 613, 610, 617, 650**. The counts above vary
+**nine** configs in `test/`, reporting **604, 605, 612, 669, 675, 613, 610, 617, 670**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
