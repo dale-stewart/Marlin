@@ -575,112 +575,44 @@ is worth one read.
 So the migration is blocked on **`M0_M1` (11 reads, 0%), `M485` (8, unbuildable), five files at
 0-7% in the new configuration, and `M28_M29` at 71%** — not on a rescue backlog of eighteen.
 
-### Idea parked: emulate the embedded platforms with QEMU
+### Emulating the embedded platforms: what it would actually take
 
-Every wall this fork has hit that is *not* a testing problem is the same wall — code that cannot
-be compiled or run for a 64-bit host. `sovol_rts` (Arduino `String`, colliding overloads on a
-64-bit target), `creality/dwin`, `mks_ui` (needs LVGL), and now `M485.cpp` (a third-party RS485
-library wanting `arduino/HardwareSerial.h`). Each was ruled out individually, and the ruling is
-always "would need the target toolchain".
+Every wall here that is *not* a testing problem is the same wall — code that cannot be compiled
+or run for a 64-bit host: `sovol_rts`, `creality/dwin`, `mks_ui`, `M485.cpp`, `mmu3.cpp`.
 
-QEMU can emulate the ARM Cortex-M targets Marlin actually ships on, which would make that whole
-class buildable and runnable rather than permanently dark — the LCD drivers, the RS485 path, and
-anything else whose only sin is assuming it is on the metal. It would also let the register's two
-suspected driver defects (#33, #34) be confirmed rather than left suspected.
+**The important finding is that most of those are not hardware dependencies.** They are
+toolchain and type-model differences. `sovol_rts` fails because `int32_t` is `int` on x86-64
+and `long` on arm-none-eabi, which turns two distinct overloads into one signature with two
+bodies (register #36). `dwin` and `M485` fail on missing Arduino headers. None of that needs a
+CPU emulated; it needs the target's *compiler*.
 
-Not attempted, and deliberately not scoped here. It is a different kind of project from a rescue:
-a second HAL-and-harness stack rather than more tests, with its own instrument-validation problem
-— an emulator is a measuring device too, and the first question would be whether it can be caught
-lying. Worth exploring when the host-buildable work runs out, which on current sizing is not yet.
+So the work is staged, and the stages are wildly different in cost. Nothing below is installed
+on this machine — checked: no `qemu-system-arm`, no `qemu-system-avr`, no `arm-none-eabi-gcc`,
+and only the `native` PlatformIO platform.
 
-**`M0_M1.cpp` rescued (2026-08-11): 0% -> 100% line, 16/20 mutation, under `008-extui`.**
-The largest remaining consumer of the parser globals, compiled by two configurations and
-executed by neither. `EXTENSIBLE_UI` was the right build to rescue it in, because M0/M1 exists
-to ask the user something and `ExtUI::onUserConfirmRequired` is where the asking goes —
-`RecordedUI` was already there to observe it. But the ExtUI seam alone cannot see everything:
-`parser.codenum` reaches only the host prompt text, so which of M0 or M1 stopped the machine is
-observable on the serial channel and nowhere else.
+**Stage 0 — cross-compile only, no emulator.** `pio pkg install -p ststm32` brings
+`arm-none-eabi-gcc` into user space, no root needed. Compiling the four blocked files for an
+STM32 environment would confirm or refute the typedef diagnosis outright and surface whatever
+else is wrong with them. This is a compile check, not a test — but it is the cheapest step and
+it is the one that unblocks the *reasoning* about #33, #34 and #36. Do this first.
 
-Four survivors remain, all on the default `ms = 0` — the **unbounded** wait, entered when
-neither P nor S is given. That one is genuinely blocked: on hardware it is cleared by M108
-arriving through the emergency parser, which reads the UART directly rather than through the
-queue that `idle()` drains, so under a single-threaded harness nothing can clear
-`wait_for_user` while the call is inside it. A test without P/S would hang. The seam wanted is
-a way to release that flag from outside the blocked call.
+**Stage 1 — `qemu-user`, not `qemu-system`.** A test binary cross-compiled for 32-bit ARM Linux
+and run under `qemu-arm` gives a genuine 32-bit type model, real execution, and the existing
+test HAL, without modelling a board at all. Far cheaper than system emulation. Caveat worth
+checking before betting on it: glibc on ARM may define `int32_t` as `int`, in which case this
+stage does *not* reproduce #36 even though it does reproduce pointer width and alignment.
 
-**The five `009` consumers rescued (2026-08-11): 0% -> 98% line (61/62), 20 tests.**
-`M550` 100%, `G53-G59` 100%, `M810-M819` 100%, `M33` 100%, `M16` 75%; mutation 92%, 84%, 88%,
-100%, 60% respectively. All five were invisible to every measurement until the configuration
-existed that morning, which is the whole argument for treating an uncompiled file as a build
-problem rather than a coverage gap.
+**Stage 2 — `qemu-system-arm` with a Cortex-M machine and semihosting.** The only stage that
+exercises the real platform HAL — timers, USART, SPI. Also the most fragile: QEMU's STM32
+models implement a subset of peripherals, and Marlin's init touches many, so the likely first
+result is a hang in `setup()` rather than a running firmware. A project, not a task.
 
-Two of the equivalences are worth keeping. `codenum - 54` and `codenum % 54` are the same
-function over the only values dispatch produces (`54..59`, all below 108), and the same holds
-for `- 810` / `% 810` over `810..819` — an arithmetic identity inside a reachable range, not a
-shortcut. And `ui.reset_status(false)` in `M550` compiles to nothing here: it is `{}` inline
-when `HAS_STATUS_MESSAGE` is off, **established by `nm -u` on the object file** showing no
-undefined reference, which is the right way to settle that question.
-
-The largest remaining cluster is a warning about what a passing test can rest on.
-`G53-G59.cpp:38`'s upper bound has 8 survivors because reading one slot past
-`coordinate_system[]` lands on the immediately-following static `macros[]`, which happens to be
-zero-initialised. The assertion passes for a reason that is a **memory-layout coincidence**, not
-a design property — a different link order removes it. Killing it wants a sanitizer build, and
-`M810-M819.cpp:40`'s guard is the same shape in the other direction: the out-of-bounds write it
-prevents lands outside the array under test, so no in-bounds assertion can see whether it fired.
-
-### The `GCodeParser` consumer set is closed
-
-`M28_M29` finished it: 71% -> **100% line, 49/51 killable**, and the killing inputs were all
-one class — a filename that looks like the `B` flag from the wrong side. `A0`/`C0` where the
-code checks for `B`, an exact `B` with a non-digit after it, a name glued straight onto `B0`
-with no space, and two spaces where the loop skips one. Five tests, seven mutants.
-
-Where the eighteen consumers ended up:
-
-| | files | state |
-|---|---|---|
-| covered | 15 | `gcode.cpp` 97.8% killable, `M0_M1` 100% line, the five `009` files 98%, the `sd/` group 100%, `M75-M78`, `M118`, `M117`, `T.cpp` |
-| blocked, seam known | 2 | `M0_M1`'s unbounded wait; `M16`'s mismatch branch, which calls `kill()` |
-| not host-buildable | 1 | `M485.cpp` — wants `arduino/HardwareSerial.h`; see the QEMU note |
-
-**So the migration is no longer blocked on coverage.** What remains is one file that cannot be
-compiled for the host and two branches that end in a call that never returns — and neither is
-the kind of thing more testing fixes. The acceptance net was already proven against this exact
-rename: `codenum` -> `command_number`, `string_arg` -> `command_text`, `codebits` -> `seen_bits`
-across 20 production files, 37/37 acceptance tests green, unit-test build failing.
-
-The remaining judgement is whether `M485` being permanently dark is acceptable for a surface
-change that touches it. It is one file, its 8 reads are all `parser.string_arg`, and the honest
-options are: leave the field public and migrate everything else behind accessors, or take the
-QEMU route and make it testable first. That is a decision, not a task.
-
-### The `GCodeParser` migration is done as far as buildable code allows
-
-`command_number()` and `string_argument()` now exist alongside the fields, and **16 production
-files read through them**. The refactor touched 17 production files and **no test file**, and
-all nine configurations plus the acceptance suite were green and unedited throughout — which is
-the only thing that makes it evidence rather than assertion.
-
-Two consumers keep the raw field, both for reasons that are not coverage:
-`gcode/feature/rs485/M485.cpp` (8 reads) cannot be compiled for a 64-bit host at all, and
-`feature/mmu3/mmu3.cpp` (1 read) is compiled by no configuration. Editing either would be an
-edit nobody can build, which is the frontier rule applied to itself.
-
-Two things learned in the doing, both recorded where the accessors are declared:
-
-- **`string_argument()` must return non-const `char*`.** Several callers write through it —
-  `M23` truncates the filename at its first space, in place. A `const char*` accessor does not
-  compile, and it fails in `M23`, which *is* buildable, so the mistake would surface here rather
-  than on someone's board. That is the same constness question that made `M485` look risky, and
-  the compiled consumers turn out to be the stricter test.
-- **`codebits` was already private**, which is why it appeared to have no consumers. A field
-  with no external readers is not necessarily a migration opportunity; it may be finished
-  already.
-
-The fields stay public. `codenum` has 45 unit-test readers and `string_arg` six — not a reason
-to keep them public in themselves, since the unit tests are not the net, but there is nothing to
-buy by editing them until the last two consumers can be built.
+**And the instrument problem applies to the emulator itself.** An emulator is a measuring
+device, and this fork's whole discipline says an unvalidated measurement is a rumour. QEMU's
+peripheral models are approximations; a test that passes under emulation and would fail on
+hardware is exactly the self-consistent wrong measurement this workflow exists to catch. Any
+QEMU result needs the same treatment as any other harness — inject a fault, prove it can fail,
+and reproduce a known result before trusting a new one.
 
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
