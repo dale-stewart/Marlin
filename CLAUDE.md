@@ -526,6 +526,41 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+### Sizing the `GCodeParser` migration (2026-08-11)
+
+18 files read `parser.codenum` / `codebits` / `string_arg`. Measured rather than assumed, and
+the shape changed twice in the measuring.
+
+**Eight were compiled by an existing configuration and had simply never been measured.** Under
+`004`: `M23` 100%, `M30` 100%, `M32` 100%, `M928` 100%, `M28_M29` 71%. Under `003`: `T.cpp` 75%.
+Under `008`: `M117` 80%. `M118` turned out to be 92% in the default build and had never been
+listed as rescued at all. That is nine of eighteen effectively closed by pointing a coverage run
+at builds that already existed — no tests written.
+
+`M0_M1.cpp` is the exception and the biggest remaining consumer: **11 reads and 0% under both
+`003` and `008`**, compiled by two configurations and executed by neither.
+
+**`009-parser_consumers.ini` makes five more visible** — `M550`, `G53-G59`, `M16`, `M810-M819`,
+`M33`, which no configuration compiled. They now read 0-7%, which is the point: 0% and measurable
+is a rescue, invisible is not. Three traps on the way, two of which `004` had already hit and
+documented — `CONFIGURABLE_MACHINE_NAME` needs `GCODE_QUOTED_STRINGS`; media defines
+`EVENT_GCODE_SD_ABORT` and `SanityCheck` asserts on it with a **non-constexpr `strstr`**, which
+can never compile; and `REINIT_NOISY_LCD` is on by default but unwanted on `BOARD_SIMULATED`,
+which `-Werror` turns fatal. The third is new: **these `.ini` files take no inline `#` comments.**
+The configuration script copies the rest of the line into the generated `#define`, and an em-dash
+in a comment surfaced as "extended character is not valid in an identifier" in
+`Configuration_adv.h` — a file I had not edited.
+
+**Two remain genuinely out of reach, and only one is a wall.** `M485.cpp` (8 reads) pulls a
+third-party RS485 library that wants `arduino/HardwareSerial.h`: not host-buildable, same class
+as `sovol_rts` and `mks_ui`, a porting job. `mmu3.cpp` (1 read) is buildable in principle but
+chains `MMU_MODEL` → exactly 5 extruders → `FILAMENT_RUNOUT_SENSOR`, which would turn `009` into
+a different machine for the cheapest consumer in the set. It wants its own configuration, and it
+is worth one read.
+
+So the migration is blocked on **`M0_M1` (11 reads, 0%), `M485` (8, unbuildable), five files at
+0-7% in the new configuration, and `M28_M29` at 71%** — not on a rescue backlog of eighteen.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -561,7 +596,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eight** configs in `test/`, reporting **599, 600, 607, 664, 670, 608, 605, 604**. The counts above vary
+**nine** configs in `test/`, reporting **599, 600, 607, 664, 670, 608, 605, 604, 645**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -658,6 +693,7 @@ Configurations in `test/`:
 | `006-eeprom` | `EEPROM_SETTINGS`, so `M500`/`M501` and most of `settings.cpp` are compiled at all |
 | `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, the first consumer of `planner.settings` from outside the build to be made buildable |
 | `008-extui` | `EXTENSIBLE_UI`, which links only against a concrete display — `tests/support/stub_extui.cpp` is that display, and it records rather than discards |
+| `009-parser_consumers` | the last reachable consumers of the parser's global state — five files no other configuration compiles |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
