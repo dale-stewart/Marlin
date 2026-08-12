@@ -590,11 +590,25 @@ So the work is staged, and the stages are wildly different in cost. Nothing belo
 on this machine — checked: no `qemu-system-arm`, no `qemu-system-avr`, no `arm-none-eabi-gcc`,
 and only the `native` PlatformIO platform.
 
-**Stage 0 — cross-compile only, no emulator.** `pio pkg install -p ststm32` brings
-`arm-none-eabi-gcc` into user space, no root needed. Compiling the four blocked files for an
-STM32 environment would confirm or refute the typedef diagnosis outright and surface whatever
-else is wrong with them. This is a compile check, not a test — but it is the cheapest step and
-it is the one that unblocks the *reasoning* about #33, #34 and #36. Do this first.
+**Stage 0 — done, and it ended the sovol question rather than advancing it.** Both toolchains
+install into user space with no root: `pio pkg install -g -p atmelavr` and
+`-t platformio/toolchain-gccarmnoneeabi`. The type-model story is confirmed exactly —
+`int32_t` is `long` and `int` is 16-bit on AVR, so `sendData(int)` collides with the
+**`int16_t`** overload there, while on x86-64 it collides with the **`int32_t`** one. The set is
+well-formed only where `int` is 32-bit and `int32_t` is `long`, which is arm-none-eabi and
+nothing else.
+
+But cross-compiling the real `GD32F103RET6_sovol_maple` environment found something that makes
+that moot: **`sovol_rts.cpp` references four identifiers that do not exist anywhere in the tree**
+— `MARLINVERSION`, `MACVERSION`, `SOFTVERSION`, `CORP_WEBSITE_E` — so it cannot compile in any
+configuration on any platform. Register #37. It is dead code, the defect recorded against it in
+#33 cannot run on a machine built from this tree, and **no emulator helps**: undefined
+identifiers fail at compile time, and QEMU has nothing to run.
+
+The toolchains are now installed, so the same check on `creality/dwin` and `mks_ui` is cheap and
+has not been done. Do that before spending anything on Stage 1 or 2 — the useful question is no
+longer "can we emulate it" but "does it compile at all", and for one of the three the answer
+was no.
 
 **Stage 1 — `qemu-user`, not `qemu-system`.** A test binary cross-compiled for 32-bit ARM Linux
 and run under `qemu-arm` gives a genuine 32-bit type model, real execution, and the existing
