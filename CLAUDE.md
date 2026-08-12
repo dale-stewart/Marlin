@@ -629,6 +629,32 @@ a design property — a different link order removes it. Killing it wants a sani
 `M810-M819.cpp:40`'s guard is the same shape in the other direction: the out-of-bounds write it
 prevents lands outside the array under test, so no in-bounds assertion can see whether it fired.
 
+### The `GCodeParser` consumer set is closed
+
+`M28_M29` finished it: 71% -> **100% line, 49/51 killable**, and the killing inputs were all
+one class — a filename that looks like the `B` flag from the wrong side. `A0`/`C0` where the
+code checks for `B`, an exact `B` with a non-digit after it, a name glued straight onto `B0`
+with no space, and two spaces where the loop skips one. Five tests, seven mutants.
+
+Where the eighteen consumers ended up:
+
+| | files | state |
+|---|---|---|
+| covered | 15 | `gcode.cpp` 97.8% killable, `M0_M1` 100% line, the five `009` files 98%, the `sd/` group 100%, `M75-M78`, `M118`, `M117`, `T.cpp` |
+| blocked, seam known | 2 | `M0_M1`'s unbounded wait; `M16`'s mismatch branch, which calls `kill()` |
+| not host-buildable | 1 | `M485.cpp` — wants `arduino/HardwareSerial.h`; see the QEMU note |
+
+**So the migration is no longer blocked on coverage.** What remains is one file that cannot be
+compiled for the host and two branches that end in a call that never returns — and neither is
+the kind of thing more testing fixes. The acceptance net was already proven against this exact
+rename: `codenum` -> `command_number`, `string_arg` -> `command_text`, `codebits` -> `seen_bits`
+across 20 production files, 37/37 acceptance tests green, unit-test build failing.
+
+The remaining judgement is whether `M485` being permanently dark is acceptable for a surface
+change that touches it. It is one file, its 8 reads are all `parser.string_arg`, and the honest
+options are: leave the field public and migrate everything else behind accessors, or take the
+QEMU route and make it testable first. That is a decision, not a task.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -664,7 +690,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**nine** configs in `test/`, reporting **604, 605, 612, 669, 675, 613, 610, 617, 670**. The counts above vary
+**nine** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

@@ -277,6 +277,94 @@ MARLIN_TEST(media_commands, M28_and_M29_write_a_file_to_the_card) {
   TEST_ASSERT_TRUE_MESSAGE(card.fileExists("upload.gco"), "the uploaded file is not on the card");
 }
 
+#if ENABLED(BINARY_FILE_TRANSFER)
+
+/**
+ * `M28 B<flag>` is the binary-transfer variant (`BINARY_FILE_TRANSFER`): the B parameter
+ * is parsed out of the raw argument by hand, ahead of the filename, rather than through
+ * `parser`'s normal letter/value machinery. `B1` switches the port into binary mode
+ * instead of opening a file — the file only opens once the transfer itself begins
+ * elsewhere — so the sign of B decides which of the two ever happens.
+ */
+MARLIN_TEST(media_commands, M28_B1_switches_to_binary_mode_without_opening_a_file) {
+  MediaSlate slate;
+  card.flag.binary_mode = false;
+
+  const std::string reply = reply_to("M28 B1 upload.gco");
+
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.binary_mode, "M28 B1 did not switch to binary mode");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(), "M28 B1 opened a file instead of switching modes");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("Switching to Binary Protocol") != std::string::npos,
+    "M28 B1 did not announce the switch to binary mode");
+
+  card.flag.binary_mode = false;
+}
+
+// `B0` is explicitly non-binary, so parsing still has to skip past it to reach the filename.
+MARLIN_TEST(media_commands, M28_B0_opens_the_file_named_after_the_flag) {
+  MediaSlate slate;
+  card.flag.binary_mode = false;
+
+  send("M28 B0 flagged.gco");
+
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.binary_mode, "M28 B0 left the card in binary mode");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "M28 B0 did not open the named file");
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("flagged.gco"), "M28 B0 opened the wrong file");
+}
+
+/**
+ * The flag test is `p[0] == 'B'`, not "starts with a letter near B" — only an exact 'B'
+ * counts, and even then only paired with a numeric digit right after it. Anything else is
+ * an ordinary filename, first character and all.
+ */
+MARLIN_TEST(media_commands, M28_only_an_exact_B_with_a_digit_after_it_is_the_flag) {
+  MediaSlate slate;
+
+  // A letter below 'B' with a digit after it is still just a filename.
+  card.flag.binary_mode = false;
+  send("M28 A1lower.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.binary_mode, "a filename starting below 'B' was read as the binary flag");
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("a1lower.gco"), "the filename was parsed wrong");
+  card.closefile();
+
+  // A letter above 'B' with a digit after it is also just a filename.
+  card.flag.binary_mode = false;
+  send("M28 C1higher.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.binary_mode, "a filename starting above 'B' was read as the binary flag");
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("c1higher.gco"), "the filename was parsed wrong");
+  card.closefile();
+
+  // 'B' with a non-numeric character after it is not the flag either.
+  card.flag.binary_mode = false;
+  send("M28 Bxflag.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.binary_mode, "'B' without a following digit was read as the binary flag");
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("bxflag.gco"), "the filename was parsed wrong");
+
+  card.flag.binary_mode = false;
+}
+
+// The B flag is exactly two characters (letter + digit); parsing must not eat into the name.
+MARLIN_TEST(media_commands, M28_B_flag_is_exactly_two_characters_wide) {
+  MediaSlate slate;
+
+  send("M28 B0adjacent.gco");
+
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("adjacent.gco"),
+    "the flag parse consumed part of a filename that touched it");
+}
+
+// Any number of spaces between the flag and the filename are skipped, not just the first.
+MARLIN_TEST(media_commands, M28_B_flag_skips_every_space_before_the_filename) {
+  MediaSlate slate;
+
+  send("M28 B0   gapped.gco");
+
+  TEST_ASSERT_TRUE_MESSAGE(card.fileExists("gapped.gco"),
+    "not every space between the flag and the filename was skipped");
+}
+
+#endif // BINARY_FILE_TRANSFER
+
 //
 // ---- With a print actually running from the card ----
 //
