@@ -525,8 +525,18 @@ The M112 cluster — 28 mutants at `queue.cpp:541` — is the taxonomy's third c
 no observable outcome: `Marlin::minkill()` ends in `for (;;) hal.watchdog_refresh()` and never
 returns, so no assertion can run after it. Verified by reading `MarlinCore.cpp`, not assumed.
 A real printer does stop dead on M112, so the substitute halting is accurate rather than
-defective, and the cluster is a blocked seam rather than a gap. `queue.cpp:387` is defect #25
-and still hangs.
+defective, and the cluster is a blocked seam rather than a gap.
+
+**The over-long-line branch was defect #25 and no longer hangs (2026-08-12).** Nine shapes,
+both HALs, all complete — see the register for what was tried and what remains unestablished
+about why. It is now asserted from the narrowing side only, and the reason is the useful part:
+the obvious companion assertion — a parameter one character *past* the cut, expected to be
+lost — passes with the guard deleted, because without it the reader writes past the end of the
+buffer rather than reading more of the line. Widening mutants there are undefined behaviour,
+not different behaviour. Also worth knowing before writing a test like it: a test cannot
+transmit more than the port's 128-byte receive buffer in one go, and the newline goes over the
+side with everything else, so the symptom is no command at all — which looks exactly like a
+line the firmware refused.
 
 Two counting traps caught here, both worth remembering:
 
@@ -721,13 +731,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 604,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 606,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**ten** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670, 652**. The counts above vary
+**ten** configs in `test/`, reporting **606, 607, 614, 676, 677, 615, 612, 619, 672, 654**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

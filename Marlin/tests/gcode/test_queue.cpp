@@ -329,6 +329,71 @@ namespace {
 
 }
 
+/**
+ * Everything up to the last character that fits is kept.
+ *
+ * The reader fills a `MAX_CMD_SIZE` buffer and sets `PS_EOL` once it holds
+ * `MAX_CMD_SIZE - 1` characters, which skips the rest of the line. This asserts the cut
+ * falls where it says it does, by putting a parameter so that its last character is the
+ * last one the reader keeps: any reader that stops earlier loses it.
+ *
+ * **The far side of the cut is deliberately not asserted, and that is the finding.** The
+ * obvious companion — the same parameter one character further along, expected to be lost
+ * — passes just as well with the guard deleted, which was checked rather than assumed.
+ * Without it the reader does not read *more* of the line, it writes past the end of the
+ * buffer; the parameter is lost either way and for a different reason. So every mutant that
+ * widens this guard is undefined behaviour rather than different behaviour, and no assertion
+ * can separate them. Recorded in the register instead.
+ *
+ * Written after register #25, which left this branch unasserted because the test that
+ * reached it hung. It no longer does; see the register entry.
+ */
+MARLIN_TEST(queue, a_parameter_on_the_last_character_that_fits_is_still_read) {
+  CleanQueue clean;
+
+  char line[MAX_CMD_SIZE];
+  memset(line, ' ', sizeof(line));
+  memcpy(line, "M220", 4);
+  memcpy(line + (MAX_CMD_SIZE - 1) - 3, "S99", 3);
+  line[MAX_CMD_SIZE - 1] = '\0';
+
+  motion.feedrate_percentage = 50;
+  host_transmits(line);
+  drain_queue();
+  TEST_ASSERT_EQUAL_MESSAGE(99, motion.feedrate_percentage,
+    "a parameter ending on the last character the reader keeps should still be read");
+}
+
+/**
+ * An over-long line is executed as far as it fits, not refused.
+ *
+ * Truncation is not rejection: the command at the head of the line still runs. A reader that
+ * dropped the whole line on overflow would satisfy the test above and fail this one.
+ *
+ * The length is bounded by the *port*, not by the command buffer: a test writes into a
+ * 128-byte receive buffer and anything past that is dropped on the floor — including the
+ * newline, so the line never completes and no command appears at all. It has to be longer
+ * than `MAX_CMD_SIZE` and shorter than the port, which is a narrow window and worth knowing
+ * before writing another test like this one.
+ */
+MARLIN_TEST(queue, an_over_long_line_still_runs_the_command_at_its_head) {
+  CleanQueue clean;
+
+  char line[MAX_CMD_SIZE + 20];
+  memset(line, 'x', sizeof(line));
+  memcpy(line, "M220 S99 ", 9);
+  line[sizeof(line) - 1] = '\0';
+
+  motion.feedrate_percentage = 50;
+  host_transmits(line);
+  TEST_ASSERT_EQUAL_MESSAGE(1, queue.ring_buffer.length,
+    "one over-long line should still be one command, not none and not two");
+
+  drain_queue();
+  TEST_ASSERT_EQUAL_MESSAGE(99, motion.feedrate_percentage,
+    "and the command at the head of it should have run");
+}
+
 MARLIN_TEST(queue, a_transmitted_command_is_received_and_run) {
   CleanQueue clean;
 

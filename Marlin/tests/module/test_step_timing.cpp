@@ -860,8 +860,6 @@ MARLIN_TEST(step_timing, every_rung_of_the_ladder_waits_for_the_steps_it_deliver
   }
 }
 
-#endif // __PLAT_TEST__
-
 //
 // ---- Slowing down for a draining buffer ----
 //
@@ -1028,3 +1026,5 @@ MARLIN_TEST(step_timing, a_small_circle_is_taken_at_the_speed_its_radius_allows)
   TEST_ASSERT_TRUE_MESSAGE(slow > 1.0f && fast > 1.0f,
     "and neither should have stopped dead at every corner");
 }
+
+#endif // __PLAT_TEST__
