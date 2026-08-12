@@ -480,11 +480,18 @@ thin neglect, while the validated mutation baseline was **72.1% raw / 74.5% kill
 Now **93.2% raw / 97.4% killable** (261/268), from 17 tests. `host_keepalive()` was the
 cluster and it needed *an input*, not assertions — simulated time, plus busy and paused as
 independent guard terms. What is left is 12 equivalents and 7 genuinely blocked, and the
-blocked ones are worth knowing: `dwell()`'s busy-wait never returns under the test HAL because
-`millis()` does not advance inside the loop; `report_heading`'s `if (fstr)` false branch needs
-a null `FSTR_P` that would segfault natively; `KEEPALIVE_STATE(IN_HANDLER)` is observable only
-mid-call. Each needs a production seam, so each belongs behind the frontier rather than in a
-test.
+blocked ones are worth knowing: `report_heading`'s `if (fstr)` false branch needs a null
+`FSTR_P` that would segfault natively, and `KEEPALIVE_STATE(IN_HANDLER)` is observable only
+mid-call.
+
+**Correction: `dwell()` was reported blocked here and is not.** The claim was that its
+busy-wait never returns because `millis()` does not advance inside the loop — stated as
+"verified by reading the loop, not attempted", and relayed by me into two commit messages
+before anyone tried it. Under the test HAL `marlin.idle()` costs simulated time, which is the
+whole reason that HAL exists, and `G4_P_dwells_for_milliseconds` in
+`test_blocking_commands.cpp` has been passing all along. A blocked classification asserted
+from reading is worth exactly as much as an equivalence asserted from reading, which is to say
+it needs the same probe.
 
 **The `GCodeParser` correction now has a net, and the net was tested (2026-08-11).**
 Steps 6-7 for `gcode.cpp` were not bookkeeping: **239 references across 22 test files name the
@@ -579,6 +586,21 @@ a second HAL-and-harness stack rather than more tests, with its own instrument-v
 — an emulator is a measuring device too, and the first question would be whether it can be caught
 lying. Worth exploring when the host-buildable work runs out, which on current sizing is not yet.
 
+**`M0_M1.cpp` rescued (2026-08-11): 0% -> 100% line, 16/20 mutation, under `008-extui`.**
+The largest remaining consumer of the parser globals, compiled by two configurations and
+executed by neither. `EXTENSIBLE_UI` was the right build to rescue it in, because M0/M1 exists
+to ask the user something and `ExtUI::onUserConfirmRequired` is where the asking goes —
+`RecordedUI` was already there to observe it. But the ExtUI seam alone cannot see everything:
+`parser.codenum` reaches only the host prompt text, so which of M0 or M1 stopped the machine is
+observable on the serial channel and nowhere else.
+
+Four survivors remain, all on the default `ms = 0` — the **unbounded** wait, entered when
+neither P nor S is given. That one is genuinely blocked: on hardware it is cleared by M108
+arriving through the emergency parser, which reads the UART directly rather than through the
+queue that `idle()` drains, so under a single-threaded harness nothing can clear
+`wait_for_user` while the call is inside it. A test without P/S would hang. The seam wanted is
+a way to release that flag from outside the blocked call.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -614,7 +636,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**nine** configs in `test/`, reporting **599, 600, 607, 664, 670, 608, 605, 604, 645**. The counts above vary
+**nine** configs in `test/`, reporting **599, 600, 607, 664, 670, 608, 605, 612, 645**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
