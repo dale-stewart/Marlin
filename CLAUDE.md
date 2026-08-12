@@ -561,6 +561,24 @@ is worth one read.
 So the migration is blocked on **`M0_M1` (11 reads, 0%), `M485` (8, unbuildable), five files at
 0-7% in the new configuration, and `M28_M29` at 71%** — not on a rescue backlog of eighteen.
 
+### Idea parked: emulate the embedded platforms with QEMU
+
+Every wall this fork has hit that is *not* a testing problem is the same wall — code that cannot
+be compiled or run for a 64-bit host. `sovol_rts` (Arduino `String`, colliding overloads on a
+64-bit target), `creality/dwin`, `mks_ui` (needs LVGL), and now `M485.cpp` (a third-party RS485
+library wanting `arduino/HardwareSerial.h`). Each was ruled out individually, and the ruling is
+always "would need the target toolchain".
+
+QEMU can emulate the ARM Cortex-M targets Marlin actually ships on, which would make that whole
+class buildable and runnable rather than permanently dark — the LCD drivers, the RS485 path, and
+anything else whose only sin is assuming it is on the metal. It would also let the register's two
+suspected driver defects (#33, #34) be confirmed rather than left suspected.
+
+Not attempted, and deliberately not scoped here. It is a different kind of project from a rescue:
+a second HAL-and-harness stack rather than more tests, with its own instrument-validation problem
+— an emulator is a measuring device too, and the first question would be whether it can be caught
+lying. Worth exploring when the host-buildable work runs out, which on current sizing is not yet.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
