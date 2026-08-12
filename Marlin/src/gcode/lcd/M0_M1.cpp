@@ -53,8 +53,8 @@ void GcodeSuite::M0_M1() {
 
   #if HAS_MARLINUI_MENU
 
-    if (parser.string_arg)
-      ui.set_status_no_expire(parser.string_arg);
+    if (parser.string_argument())
+      ui.set_status_no_expire(parser.string_argument());
     else {
       LCD_MESSAGE(MSG_USERWAIT);
       #if ENABLED(LCD_PROGRESS_BAR) && PROGRESS_MSG_EXPIRE > 0
@@ -64,32 +64,32 @@ void GcodeSuite::M0_M1() {
 
   #elif ENABLED(DWIN_LCD_PROUI) // ExtUI with icon, string, button title
 
-    if (parser.string_arg)
-      ExtUI::onUserConfirmRequired(ICON_Continue_1, parser.string_arg, GET_TEXT_F(MSG_USERWAIT));
+    if (parser.string_argument())
+      ExtUI::onUserConfirmRequired(ICON_Continue_1, parser.string_argument(), GET_TEXT_F(MSG_USERWAIT));
     else
       ExtUI::onUserConfirmRequired(ICON_Stop_1, GET_TEXT_F(MSG_STOPPED), GET_TEXT_F(MSG_USERWAIT));
 
   #elif ENABLED(EXTENSIBLE_UI)
 
-    if (parser.string_arg)
-      ExtUI::onUserConfirmRequired(parser.string_arg); // String in an SRAM buffer
+    if (parser.string_argument())
+      ExtUI::onUserConfirmRequired(parser.string_argument()); // String in an SRAM buffer
     else
       ExtUI::onUserConfirmRequired(GET_TEXT_F(MSG_USERWAIT));
 
   #else
 
-    if (parser.string_arg) {
+    if (parser.string_argument()) {
       SERIAL_ECHO_START();
-      SERIAL_ECHOLN(parser.string_arg);
+      SERIAL_ECHOLN(parser.string_argument());
     }
 
   #endif
 
   #if ENABLED(HOST_PROMPT_SUPPORT)
-    if (parser.string_arg)
-      hostui.continue_prompt(parser.string_arg);
+    if (parser.string_argument())
+      hostui.continue_prompt(parser.string_argument());
     else
-      hostui.continue_prompt(parser.codenum ? F("M1 Stop") : F("M0 Stop"));
+      hostui.continue_prompt(parser.command_number() ? F("M1 Stop") : F("M0 Stop"));
   #endif
 
   TERN_(HAS_RESUME_CONTINUE, marlin.wait_for_user_response(ms));

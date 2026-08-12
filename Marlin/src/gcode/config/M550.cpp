@@ -40,9 +40,9 @@ void GcodeSuite::M550() {
   if (parser.seenval('P'))
     marlin.machine_name = parser.value_string();
   else if (TERN(GCODE_QUOTED_STRINGS, false, parser.seen('P')))
-    marlin.machine_name = parser.string_arg[0] == 'P' ? &parser.string_arg[1] : parser.string_arg;
+    marlin.machine_name = parser.string_argument()[0] == 'P' ? &parser.string_argument()[1] : parser.string_argument();
   else if (parser.has_string())
-    marlin.machine_name = parser.string_arg;
+    marlin.machine_name = parser.string_argument();
   else
     did_set = false;
 

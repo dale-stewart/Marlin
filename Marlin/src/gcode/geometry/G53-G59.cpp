@@ -78,7 +78,7 @@ void GcodeSuite::G53() {
  * G92 is used to set the current workspace's offset.
  */
 void G54_59(uint8_t subcode=0) {
-  const int8_t _space = parser.codenum - 54 + subcode;
+  const int8_t _space = parser.command_number() - 54 + subcode;
   if (gcode.select_coordinate_system(_space)) {
     SERIAL_ECHOLNPGM("Select workspace ", _space);
     motion.report_position();

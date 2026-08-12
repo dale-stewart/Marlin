@@ -33,7 +33,7 @@
  */
 void GcodeSuite::M16() {
 
-  if (TERN(CONFIGURABLE_MACHINE_NAME, strcmp(parser.string_arg, marlin.machine_name), strcmp_P(parser.string_arg, PSTR(MACHINE_NAME))))
+  if (TERN(CONFIGURABLE_MACHINE_NAME, strcmp(parser.string_argument(), marlin.machine_name), strcmp_P(parser.string_argument(), PSTR(MACHINE_NAME))))
     marlin.kill(GET_TEXT_F(MSG_KILL_EXPECTED_PRINTER));
 
 }

@@ -99,6 +99,27 @@ public:
 
   FORCE_INLINE static bool has_string() { return string_arg && string_arg[0]; }
 
+  /**
+   * The command's number and its string argument, read through an accessor.
+   *
+   * These exist so the fields below can eventually stop being public. That is the whole
+   * point of them, and they are deliberately nothing but the field: a getter that computed,
+   * validated or normalised anything would change behaviour at every call site at once,
+   * which is exactly what a migration behind a test frontier must not do.
+   *
+   * Two consumers still read the fields directly, and both are recorded rather than
+   * forgotten. `gcode/feature/rs485/M485.cpp` cannot be compiled for a 64-bit host at all —
+   * it reaches a third-party library wanting Arduino's `HardwareSerial` — and `feature/mmu3`
+   * is compiled by no test configuration. Substituting an accessor in either would be an
+   * edit nobody can build, let alone test, so they keep the raw field until that changes.
+   *
+   * `string_argument()` returns a non-const `char*` on purpose. Callers write through it —
+   * M23 truncates the filename at its first space, in place — so a `const char*` accessor
+   * does not compile. Worth knowing before anyone tightens it on principle.
+   */
+  FORCE_INLINE static uint16_t command_number() { return codenum; }
+  FORCE_INLINE static char* string_argument() { return string_arg; }
+
   #if ENABLED(DEBUG_GCODE_PARSER)
     static void debug();
   #endif

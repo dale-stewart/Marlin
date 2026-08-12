@@ -134,7 +134,7 @@ int8_t GcodeSuite::get_target_extruder_from_command() {
     const int8_t e = parser.value_byte();
     if (e < EXTRUDERS) return e;
     SERIAL_ECHO_START();
-    SERIAL_ECHOLN(C('M'), parser.codenum, F(" " STR_INVALID_EXTRUDER " "), e);
+    SERIAL_ECHOLN(C('M'), parser.command_number(), F(" " STR_INVALID_EXTRUDER " "), e);
     return -1;
   }
   return motion.extruder;
@@ -152,7 +152,7 @@ int8_t GcodeSuite::get_target_e_stepper_from_command(const int8_t dval/*=-1*/) {
   if (dval == -2) return dval;
 
   SERIAL_ECHO_START();
-  SERIAL_ECHO(C('M'), parser.codenum);
+  SERIAL_ECHO(C('M'), parser.command_number());
   if (e == -1)
     SERIAL_ECHOLNPGM(" " STR_E_STEPPER_NOT_SPECIFIED);
   else
@@ -226,7 +226,7 @@ void GcodeSuite::get_destination_from_command() {
     if (cutter.cutter_mode == CUTTER_MODE_CONTINUOUS || cutter.cutter_mode == CUTTER_MODE_DYNAMIC) {
       // Set the cutter power in the planner to configure this move
       cutter.last_feedrate_mm_m = 0;
-      if (WITHIN(parser.codenum, 1, TERN(ARC_SUPPORT, 3, 1)) || TERN0(BEZIER_CURVE_SUPPORT, parser.codenum == 5)) {
+      if (WITHIN(parser.command_number(), 1, TERN(ARC_SUPPORT, 3, 1)) || TERN0(BEZIER_CURVE_SUPPORT, parser.command_number() == 5)) {
         planner.laser_inline.status.isPowered = true;
         if (parser.seen('I')) cutter.set_enabled(true);       // This is set for backward LightBurn compatibility.
         if (parser.seenval('S')) {
@@ -236,13 +236,13 @@ void GcodeSuite::get_destination_from_command() {
           cutter.inline_power(TERN(SPINDLE_LASER_USE_PWM, cutter.upower_to_ocr(u), u > 0 ? 255 : 0));
         }
       }
-      else if (parser.codenum == 0) {
+      else if (parser.command_number() == 0) {
         // For dynamic mode we need to flag isPowered off, dynamic power is calculated in the stepper based on feedrate.
         if (cutter.cutter_mode == CUTTER_MODE_DYNAMIC) planner.laser_inline.status.isPowered = false;
         cutter.inline_power(0); // This is planner-based so only set power and do not disable inline control flags.
       }
     }
-    else if (parser.codenum == 0)
+    else if (parser.command_number() == 0)
       cutter.apply_power(0);
   #endif // LASER_FEATURE
 }
@@ -352,13 +352,13 @@ void GcodeSuite::process_parsed_command(bool no_ok/*=false*/) {
 
   switch (parser.command_letter) {
 
-    case 'G': switch (parser.codenum) {
+    case 'G': switch (parser.command_number()) {
 
       case 0: case 1:                                             // G0: Fast Move, G1: Linear Move
-        G0_G1(TERN_(HAS_FAST_MOVES, parser.codenum == 0)); break;
+        G0_G1(TERN_(HAS_FAST_MOVES, parser.command_number() == 0)); break;
 
       #if ENABLED(ARC_SUPPORT)
-        case 2: case 3: G2_G3(parser.codenum == 2); break;        // G2: CW ARC, G3: CCW ARC
+        case 2: case 3: G2_G3(parser.command_number() == 2); break;        // G2: CW ARC, G3: CCW ARC
       #endif
 
       case 4: G4(); break;                                        // G4: Dwell
@@ -480,7 +480,7 @@ void GcodeSuite::process_parsed_command(bool no_ok/*=false*/) {
     }
     break;
 
-    case 'M': switch (parser.codenum) {
+    case 'M': switch (parser.command_number()) {
 
       #if HAS_RESUME_CONTINUE
         case 0:                                                   // M0: Unconditional stop - Wait for user button press on LCD
@@ -1167,10 +1167,10 @@ void GcodeSuite::process_parsed_command(bool no_ok/*=false*/) {
     }
     break;
 
-    case 'T': T(parser.codenum); break;                           // Tn: Tool Change
+    case 'T': T(parser.command_number()); break;                           // Tn: Tool Change
 
     #if ENABLED(MARLIN_DEV_MODE)
-      case 'D': D(parser.codenum); break;                         // Dn: Debug codes
+      case 'D': D(parser.command_number()); break;                         // Dn: Debug codes
     #endif
 
     #if ENABLED(REALTIME_REPORTING_COMMANDS)

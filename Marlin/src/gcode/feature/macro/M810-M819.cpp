@@ -36,17 +36,17 @@
  *   M810                 Execute Macro 0
  */
 void GcodeSuite::M810_819() {
-  const uint8_t index = parser.codenum - 810;
+  const uint8_t index = parser.command_number() - 810;
   if (index >= GCODE_MACROS_SLOTS) return;
 
-  const size_t len = strlen(parser.string_arg);
+  const size_t len = strlen(parser.string_argument());
 
   if (len) {
     // Set a macro
     if (len > GCODE_MACROS_SLOT_SIZE)
       SERIAL_ERROR_MSG("Macro too long.");
     else {
-      char c, *s = parser.string_arg, *d = gcode.macros[index];
+      char c, *s = parser.string_argument(), *d = gcode.macros[index];
       do {
         c = *s++;
         *d++ = c == '|' ? '\n' : c;

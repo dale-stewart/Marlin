@@ -43,7 +43,7 @@
  */
 void GcodeSuite::M33() {
 
-  card.printLongPath(parser.string_arg);
+  card.printLongPath(parser.string_argument());
 
 }
 

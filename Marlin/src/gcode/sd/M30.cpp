@@ -36,7 +36,7 @@
 void GcodeSuite::M30() {
   if (card.isMounted()) {
     card.closefile();
-    card.removeFile(parser.string_arg);
+    card.removeFile(parser.string_argument());
   }
 }
 

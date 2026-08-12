@@ -655,6 +655,33 @@ change that touches it. It is one file, its 8 reads are all `parser.string_arg`,
 options are: leave the field public and migrate everything else behind accessors, or take the
 QEMU route and make it testable first. That is a decision, not a task.
 
+### The `GCodeParser` migration is done as far as buildable code allows
+
+`command_number()` and `string_argument()` now exist alongside the fields, and **16 production
+files read through them**. The refactor touched 17 production files and **no test file**, and
+all nine configurations plus the acceptance suite were green and unedited throughout — which is
+the only thing that makes it evidence rather than assertion.
+
+Two consumers keep the raw field, both for reasons that are not coverage:
+`gcode/feature/rs485/M485.cpp` (8 reads) cannot be compiled for a 64-bit host at all, and
+`feature/mmu3/mmu3.cpp` (1 read) is compiled by no configuration. Editing either would be an
+edit nobody can build, which is the frontier rule applied to itself.
+
+Two things learned in the doing, both recorded where the accessors are declared:
+
+- **`string_argument()` must return non-const `char*`.** Several callers write through it —
+  `M23` truncates the filename at its first space, in place. A `const char*` accessor does not
+  compile, and it fails in `M23`, which *is* buildable, so the mistake would surface here rather
+  than on someone's board. That is the same constness question that made `M485` look risky, and
+  the compiled consumers turn out to be the stricter test.
+- **`codebits` was already private**, which is why it appeared to have no consumers. A field
+  with no external readers is not necessarily a migration opportunity; it may be finished
+  already.
+
+The fields stay public. `codenum` has 45 unit-test readers and `string_arg` six — not a reason
+to keep them public in themselves, since the unit tests are not the net, but there is nothing to
+buy by editing them until the last two consumers can be built.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are

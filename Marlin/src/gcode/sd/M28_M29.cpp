@@ -45,7 +45,7 @@ void GcodeSuite::M28() {
   #if ENABLED(BINARY_FILE_TRANSFER)
 
     bool binary_mode = false;
-    char *p = parser.string_arg;
+    char *p = parser.string_argument();
     if (p[0] == 'B' && NUMERIC(p[1])) {
       binary_mode = p[1] > '0';
       p += 2;
@@ -62,7 +62,7 @@ void GcodeSuite::M28() {
 
   #else
 
-    card.openFileWrite(parser.string_arg);
+    card.openFileWrite(parser.string_argument());
 
   #endif
 }

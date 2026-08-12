@@ -57,7 +57,7 @@ void GcodeSuite::T(const int8_t tool_index) {
 
   #if HAS_MULTI_EXTRUDER
     // For 'T' with no parameter report the current tool.
-    if (parser.string_arg && *parser.string_arg == '*') {
+    if (parser.string_argument() && *parser.string_argument() == '*') {
       SERIAL_ECHOLNPGM(STR_ACTIVE_EXTRUDER, motion.extruder);
       return;
     }
@@ -71,12 +71,12 @@ void GcodeSuite::T(const int8_t tool_index) {
 
   #if HAS_PRUSA_MMU3
     if (parser.has_string()) {
-      mmu3.tool_change(parser.string_arg[0], uint8_t(tool_index));   // Special commands T?/Tx/Tc
+      mmu3.tool_change(parser.string_argument()[0], uint8_t(tool_index));   // Special commands T?/Tx/Tc
       return;
     }
   #elif HAS_PRUSA_MMU2
-    if (parser.string_arg) {
-      mmu2.tool_change(parser.string_arg);   // Special commands T?/Tx/Tc
+    if (parser.string_argument()) {
+      mmu2.tool_change(parser.string_argument());   // Special commands T?/Tx/Tc
       return;
     }
   #endif

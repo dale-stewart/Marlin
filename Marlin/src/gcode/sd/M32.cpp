@@ -43,7 +43,7 @@ void GcodeSuite::M32() {
   if (card.isMounted()) {
     const uint8_t call_procedure = parser.boolval('P');
 
-    card.openFileRead(parser.string_arg, call_procedure);
+    card.openFileRead(parser.string_argument(), call_procedure);
 
     if (parser.seenval('S')) card.setIndex(parser.value_long());
 

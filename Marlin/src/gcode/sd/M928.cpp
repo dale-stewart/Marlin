@@ -32,7 +32,7 @@
  */
 void GcodeSuite::M928() {
 
-  card.openLogFile(parser.string_arg);
+  card.openLogFile(parser.string_argument());
 
 }
 
