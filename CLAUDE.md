@@ -679,7 +679,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**nine** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670**. The counts above vary
+**ten** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670, 650**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -777,6 +777,7 @@ Configurations in `test/`:
 | `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, the first consumer of `planner.settings` from outside the build to be made buildable |
 | `008-extui` | `EXTENSIBLE_UI`, which links only against a concrete display — `tests/support/stub_extui.cpp` is that display, and it records rather than discards |
 | `009-parser_consumers` | the last reachable consumers of the parser's global state — five files no other configuration compiles |
+| `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).

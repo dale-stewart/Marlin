@@ -220,7 +220,12 @@ void hmiMaxJerkXYZE();
 void hmiSetLanguageCache();
 
 void updateVariable();
-void dwinDrawSignedFloat(uint8_t size, uint16_t bColor, uint8_t iNum, uint8_t fNum, uint16_t x, uint16_t y, long value);
+// NOTE: `int32_t`, not `long`, because that is what the definition in dwin.cpp:570 says.
+// The two agree on arm-none-eabi, where int32_t IS long, which is why this mismatch has
+// never been noticed: on that target the header and the definition are the same function.
+// Anywhere int32_t is `int` they are two functions, and a float argument is ambiguous
+// between them. Register #38.
+void dwinDrawSignedFloat(uint8_t size, uint16_t bColor, uint8_t iNum, uint8_t fNum, uint16_t x, uint16_t y, int32_t value);
 
 // SD Card
 void hmiSDCardInit();

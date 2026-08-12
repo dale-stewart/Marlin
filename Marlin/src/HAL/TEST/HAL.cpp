@@ -30,6 +30,27 @@
 // ------------------------
 
 MSerialT usb_serial(TERN0(EMERGENCY_PARSER, true));
+MSerialT lcd_serial(false);   // a display never sends emergency commands back
+
+/**
+ * The display port must not block, and there is nothing to drain it.
+ *
+ * `HalSerial()` sets `host_connected = true`, and `write()` then busy-waits for room in a
+ * 128-byte transmit buffer. On a board the display consumes those bytes; in a test binary
+ * nothing does, so the first screen refresh that overflows the buffer spins forever — the
+ * suite hangs rather than fails, which is the harness lying about the firmware.
+ *
+ * Marked as having no host attached, which is the honest model of a test with no display
+ * wired up: writes return immediately and the bytes are discarded. Capturing them, so a
+ * test could assert what the firmware told the display, needs a drain rather than this flag.
+ *
+ * In this translation unit and after `lcd_serial` deliberately: initialisation order is
+ * only guaranteed within a TU, and this fork has already been bitten once by a static
+ * initialiser that ran before the thing it touched (register #20).
+ */
+namespace {
+  struct QuietLcdSerial { QuietLcdSerial() { lcd_serial.host_connected = false; } } _quiet_lcd_serial;
+}
 
 // U8glib required functions
 extern "C" {

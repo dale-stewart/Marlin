@@ -81,6 +81,21 @@ uint8_t _getc();
 extern MSerialT usb_serial;
 #define MYSERIAL1 usb_serial
 
+/**
+ * A second port, for a display that talks over serial rather than through a UI callback.
+ *
+ * The DWIN panels are driven by writing bytes at a screen, not by calling an interface, so
+ * there is nothing to record the way `stub_extui` records ExtUI calls — the only observable
+ * is the byte stream. Giving the test HAL a real second port makes that stream readable, so
+ * a test can assert what the firmware told the display rather than only that it did not
+ * crash while telling it.
+ *
+ * `shared/serial_ports.h` wants `MSERIAL(n)`; this HAL has no numbered-port machinery and a
+ * second named instance is the smaller thing to provide.
+ */
+extern MSerialT lcd_serial;
+#define LCD_SERIAL lcd_serial
+
 //
 // Interrupts
 //

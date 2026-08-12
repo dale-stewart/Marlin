@@ -340,7 +340,10 @@ extern "C" {
 
 // Time functions
 extern "C" void delay(const int ms);
-void delayMicroseconds(unsigned long);
+// uint32_t, matching the definition in arduino.cpp. Declared `unsigned long` it is a
+// different function on LP64 and the link fails — which nothing noticed until a driver
+// outside the usual set of test configurations called it.
+void delayMicroseconds(uint32_t);
 unsigned long millis();
 
 // IO functions
