@@ -201,6 +201,33 @@ MARLIN_TEST(gcode_commands, an_unknown_command_changes_nothing) {
   motion.feedrate_percentage = was;
 }
 
+// An unrecognized G-number falls to the same "unknown command" report M-numbers get —
+// distinguishes the dispatcher's default case from one that silently drops the line.
+MARLIN_TEST(gcode_commands, an_unrecognized_G_number_is_reported) {
+  static char buf[16];
+  strcpy(buf, "G9999");
+  SerialCapture capture;
+  parser.parse(buf);
+  gcode.process_parsed_command(true);
+  TEST_ASSERT_TRUE(capture.saw(STR_UNKNOWN_COMMAND));
+}
+
+#if HAS_EXTRUDERS
+  // M82/M83 pick which of the two dispatches by case label; each must land on the
+  // handler that actually flips relative-E mode, not merely on "some handler ran".
+  MARLIN_TEST(gcode_commands, M82_and_M83_switch_extrusion_mode) {
+    const bool was = gcode.axis_is_relative(E_AXIS);
+
+    host_sends("M83");
+    TEST_ASSERT_TRUE(gcode.axis_is_relative(E_AXIS));
+
+    host_sends("M82");
+    TEST_ASSERT_FALSE(gcode.axis_is_relative(E_AXIS));
+
+    if (was) gcode.set_e_relative(); else gcode.set_e_absolute();
+  }
+#endif
+
 MARLIN_TEST(gcode_commands, M92_sets_steps_per_mm) {
   const float was_x = planner.settings.axis_steps_per_mm[X_AXIS],
               was_y = planner.settings.axis_steps_per_mm[Y_AXIS];

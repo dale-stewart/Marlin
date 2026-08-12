@@ -481,8 +481,9 @@ Now **93.2% raw / 97.4% killable** (261/268), from 17 tests. `host_keepalive()` 
 cluster and it needed *an input*, not assertions — simulated time, plus busy and paused as
 independent guard terms. What is left is 12 equivalents and 7 genuinely blocked, and the
 blocked ones are worth knowing: `report_heading`'s `if (fstr)` false branch needs a null
-`FSTR_P` that would segfault natively, and `KEEPALIVE_STATE(IN_HANDLER)` is observable only
-mid-call.
+`FSTR_P` that would segfault natively, and G2/G3 arc dispatch fills the planner buffer and
+hangs. **`gcode.cpp` is now 93.8% raw / 97.8% killable over 119 covered lines** — not comparable
+to the earlier 93.2%, which was measured over 110.
 
 **Correction: `dwell()` was reported blocked here and is not.** The claim was that its
 busy-wait never returns because `millis()` does not advance inside the loop — stated as
@@ -492,6 +493,12 @@ whole reason that HAL exists, and `G4_P_dwells_for_milliseconds` in
 `test_blocking_commands.cpp` has been passing all along. A blocked classification asserted
 from reading is worth exactly as much as an equivalence asserted from reading, which is to say
 it needs the same probe.
+
+**Two verdicts fell to one probe.** `KEEPALIVE_STATE(IN_HANDLER)` at `:330` had also been
+called observable only mid-call. A long `G4` is a handler holding the machine busy while
+`idle()` advances the clock, so `a_long_dwell_reports_busy_to_the_host` drives the real
+dispatch path and dies when the busy mark is deleted. One wrong sentence about `millis()` had
+been hiding a reachable region, and it hid it in two places.
 
 **The `GCodeParser` correction now has a net, and the net was tested (2026-08-11).**
 Steps 6-7 for `gcode.cpp` were not bookkeeping: **239 references across 22 test files name the
@@ -630,13 +637,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 599,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 604,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**nine** configs in `test/`, reporting **599, 600, 607, 664, 670, 608, 605, 612, 645**. The counts above vary
+**nine** configs in `test/`, reporting **604, 605, 612, 669, 675, 613, 610, 617, 650**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

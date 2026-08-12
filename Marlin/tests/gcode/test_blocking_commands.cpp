@@ -38,6 +38,7 @@
 #include "src/module/motion.h"
 #include "src/module/planner.h"
 #include "src/module/stepper.h"
+#include "serial_capture.h"
 #include <string.h>
 
 namespace {
@@ -122,6 +123,52 @@ MARLIN_TEST(blocking_commands, G4_S_dwells_for_seconds) {
   host_sends("G4 S1");
   TEST_ASSERT_TRUE(millis() - before >= 1000);
 }
+
+// dwell()'s loop condition is PENDING(now, start, interval) == (now - start) < interval.
+// Swapping the last two arguments computes (now - interval) < start instead, which agrees
+// with the original for any start large enough that "now - interval" does not itself
+// wrap — true of a fixed literal P/S value once the suite's own clock has run for a
+// while, which is exactly why a swapped-argument mutant survived every test using one.
+// Requesting an interval derived from the clock's own current reading (larger than "now"
+// itself, whatever that happens to be) forces the wraparound the swap gets wrong: the
+// mutant's condition is false from the very first check, so it returns at once instead
+// of waiting.
+MARLIN_TEST(blocking_commands, G4_waits_the_full_interval_even_when_it_exceeds_the_clock_so_far) {
+  SimulatedMachine machine;
+  at_the_origin();
+
+  const millis_t interval = millis() + 100;
+  char cmd[24];
+  snprintf(cmd, sizeof(cmd), "G4 P%lu", (unsigned long)interval);
+
+  const millis_t before = millis();
+  host_sends(cmd);
+  TEST_ASSERT_TRUE(millis() - before >= interval);
+}
+
+#if ENABLED(HOST_KEEPALIVE_FEATURE)
+  // A long dwell holds the handler busy for its whole duration, and host_keepalive() is
+  // driven only from inside dwell()'s own idle() loop — nothing here calls it directly.
+  // That only reports anything because process_parsed_command() marks busy_state
+  // IN_HANDLER before dispatching; deleting that mark leaves busy_state at whatever the
+  // previous command left it (NOT_BUSY) and no report goes out at all.
+  MARLIN_TEST(blocking_commands, a_long_dwell_reports_busy_to_the_host) {
+    SimulatedMachine machine;
+    at_the_origin();
+
+    const uint8_t was_interval = gcode.host_keepalive_interval;
+    const bool was_paused = gcode.autoreport_paused;
+    gcode.host_keepalive_interval = 1;   // seconds
+    gcode.set_autoreport_paused(false);
+
+    SerialCapture capture;
+    host_sends("G4 P1500");              // longer than one keepalive interval
+    TEST_ASSERT_TRUE(capture.saw("busy: processing"));
+
+    gcode.host_keepalive_interval = was_interval;
+    gcode.set_autoreport_paused(was_paused);
+  }
+#endif
 
 #if ENABLED(ARC_SUPPORT)
 

@@ -159,6 +159,22 @@ MARLIN_TEST(motion_commands, F_sets_the_feedrate_for_later_moves) {
     gcode.get_destination_from_command();
     TEST_ASSERT_EQUAL_FLOAT(motion.position.e, motion.destination.e);
   }
+
+  // In E-relative mode the destination is position.e + v, not any of the other
+  // arithmetic a mutant could substitute — which needs a nonzero starting position.e to
+  // tell apart, since every operator agrees at zero.
+  MARLIN_TEST(motion_commands, get_destination_from_command_adds_e_in_relative_mode) {
+    Stationary still;
+    host_sends("M83");                       // E relative
+    motion.position.e = 5.0f;
+
+    parser.parse((char*)"G1 E3");
+    motion.destination.e = motion.position.e - 100.0f;  // a stale value to prove it is overwritten
+    gcode.get_destination_from_command();
+    TEST_ASSERT_EQUAL_FLOAT(8.0f, motion.destination.e);  // 5 + 3, not 5 - 3, 5 * 3 or 5 / 3
+
+    host_sends("M82");                       // restore absolute mode for other tests
+  }
 #endif
 
 MARLIN_TEST(motion_commands, G0_and_G1_both_move) {
