@@ -313,6 +313,36 @@ MARLIN_TEST(media_commands, M28_B0_opens_the_file_named_after_the_flag) {
 }
 
 /**
+ * Only a space separates the flag from the filename — not "any whitespace".
+ *
+ * The skip after `B<n>` is `while (*p == ' ')`, and widening it to `<= ' '` survived every
+ * test here, because with an ordinary `B0 name.gco` the two agree exactly: one space, then a
+ * letter. They separate on any byte below a space, and a tab is the reachable one — a host is
+ * sending bytes, and nothing upstream of here turns a tab into a space.
+ *
+ * Widening also walks past the terminating null when the argument is nothing but the flag,
+ * which is the same undefined behaviour the range checks elsewhere in this suite produce.
+ * A tab is the assertable half of the pair, so that is what this uses.
+ */
+MARLIN_TEST(media_commands, only_a_space_separates_the_binary_flag_from_the_filename) {
+  MediaSlate slate;
+  card.flag.binary_mode = false;
+
+  // A space is skipped, and the name behind it opens.
+  send("M28 B0 spaced.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(),
+    "a space after the flag should be skipped and the name behind it opened");
+  card.closefile();
+
+  // A tab is not, so it stays part of the name — which is not a name a card will accept.
+  // Asserted against the space rather than on its own: "no file was opened" is satisfied by
+  // every cause of nothing, and the pair is what says the separator is the deciding factor.
+  send("M28 B0\ttabbed.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(),
+    "a tab is not a space, so it belongs to the filename rather than being skipped over it");
+}
+
+/**
  * The flag test is `p[0] == 'B'`, not "starts with a letter near B" — only an exact 'B'
  * counts, and even then only paired with a numeric digit right after it. Anything else is
  * an ordinary filename, first character and all.

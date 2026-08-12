@@ -584,6 +584,14 @@ Three things it taught, none of them about M0:
 The `command_number()` read is asserted through the host prompt (`//action:prompt_begin M0 Stop`
 against `M1 Stop`), which is the only place in the file where the two commands differ at all.
 
+**Register #41 is fixed, and the fix has no test — deliberately.** `MString::ltrim()` called
+`strcpy` on overlapping ranges; it is now `memmove`. The trim produces the right answer either
+way, so no assertion in this suite can distinguish fixed from broken, and writing one would be
+theatre. **The sanitizer is the pinning**: before, `make unit-test-asan` aborted under `009` after
+331 tests; after, both `001` and `009` run to completion with only register #27's float-rounding
+assertion failing. When the only instrument that can see a defect is the sanitizer, the sanitizer
+run *is* the regression test, and it has to be run deliberately for that to mean anything.
+
 **The five `009` consumers are closed, and the figures in this file were stale.** They read
 0-7% when the configuration was new; `test_parser_consumers.cpp` was written since, and they are
 **98% line** with mutation measured under `009`:
@@ -639,8 +647,22 @@ chains `MMU_MODEL` → exactly 5 extruders → `FILAMENT_RUNOUT_SENSOR`, which w
 a different machine for the cheapest consumer in the set. It wants its own configuration, and it
 is worth one read.
 
-So the migration is blocked on **`M0_M1` (11 reads, 0%), `M485` (8, unbuildable), five files at
-0-7% in the new configuration, and `M28_M29` at 71%** — not on a rescue backlog of eighteen.
+**The migration is now blocked on `M485` alone.** `M0_M1` is rescued (100% line, 100% mutation),
+the five `009` files are closed, and **`M28_M29` is 100% line / 98.0% raw, 100% killable** under
+`004` — its one survivor is `p[1] > '0'` mutated to `!= '0'`, which the `NUMERIC(p[1])` guard on
+the line above makes equivalent by constraining the operand to `'0'..'9'`. Worth keeping as a
+pattern: **a guard on the preceding line is part of the domain of the line after it**, and the
+mutation runner does not know that.
+
+The one test that was needed there is also worth keeping. `while (*p == ' ')` widened to `<= ' '`
+survived everything, because with an ordinary `B0 name.gco` the two agree exactly — one space,
+then a letter. They separate on any byte below a space, and a **tab** is the reachable one: a host
+sends bytes and nothing upstream turns a tab into a space. The tab is not skipped, so it stays in
+the filename, which the card then refuses — and the assertion is bracketed against the space
+rather than left as "no file was opened", because that alone is satisfied by every cause of
+nothing.
+
+`M485` remains unbuildable for the host, which is a porting job rather than a testing one.
 
 ### Emulating the embedded platforms: what it would actually take
 

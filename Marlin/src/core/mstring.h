@@ -297,7 +297,10 @@ public:
   MString& clear() { return set(); }
   MString& eol() { return append('\n'); }
   MString& trunc(const int &i) { if (i <= SIZE) str[i] = '\0'; debug(F("trunc")); return *this; }
-  MString& ltrim() { char *s = str; while (*s == ' ') ++s; if (s != str) strcpy(str, s); return *this; }
+  // `memmove`, not `strcpy`: `s` points inside `str`, and `strcpy` on overlapping ranges is
+  // undefined behaviour. It happens to work where the implementation copies forward, which is
+  // why it survived — the trim produces the right answer and no assertion can tell. See #41.
+  MString& ltrim() { char *s = str; while (*s == ' ') ++s; if (s != str) memmove(str, s, strlen(s) + 1); return *this; }
   MString& rtrim() { int s = length(); while (s && str[s - 1] == ' ') --s; str[s] = '\0'; return *this; }
   MString& trim() { return rtrim().ltrim(); }
 
