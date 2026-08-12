@@ -651,6 +651,32 @@ hardware is exactly the self-consistent wrong measurement this workflow exists t
 QEMU result needs the same treatment as any other harness — inject a fault, prove it can fail,
 and reproduce a known result before trusting a new one.
 
+### What a host-buildable display driver actually buys
+
+`SerialCapture` now takes the port to watch, so the drainer the host-facing tests already
+used works on `LCD_SERIAL` too. That matters because a DWIN panel is not an interface the
+firmware calls — it is a screen the firmware writes bytes at, so there is no `stub_extui`
+equivalent to record and the byte stream is the only observable. The drain has to run on
+another thread for the documented reason: the write busy-waits for room in 128 bytes, a
+screen refresh is longer than that, and draining afterwards means draining a buffer whose
+producer is already wedged.
+
+**Half the seam works.** `a_status_message_reaches_the_panel` is the first assertion any LCD
+driver has ever had here.
+
+**The other half does not, and that is the finding.** Register #33's write lives in
+`hmiStepXYZE()` and happens only on an encoder click; `encoderReceiveAnalyze()` gates it on
+`BUTTON_PRESSED(ENC)`, which reads `BTN_ENC`, and **`BOARD_SIMULATED` defines no encoder
+pins** — so the macro is a compile-time false and no call sequence from a test reaches the
+assignment. Making a driver host-buildable is not the same as making it drivable: everything
+the firmware *sends* is observable, and nothing a person would have *done to the machine* is.
+
+Confirming #33 by behaviour needs either a board definition with encoder pins or a simulated
+encoder attached the way `SimulatedI2CEncoder` attaches to the I2C bus. Writing
+`planner.settings.axis_steps_per_mm` from the test and asserting the reciprocal went stale
+would pass, prove nothing about the driver, and look exactly like a driver test — which is
+why it is recorded instead.
+
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
 `acceptance-author` (6-7), plus `hal-debugger` for escalation. The first four are
@@ -686,7 +712,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**ten** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670, 650**. The counts above vary
+**ten** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670, 651**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -784,7 +810,7 @@ Configurations in `test/`:
 | `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, the first consumer of `planner.settings` from outside the build to be made buildable |
 | `008-extui` | `EXTENSIBLE_UI`, which links only against a concrete display — `tests/support/stub_extui.cpp` is that display, and it records rather than discards |
 | `009-parser_consumers` | the last reachable consumers of the parser's global state — five files no other configuration compiles |
-| `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing |
+| `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing. Output is observable, **input is not** — see below |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).

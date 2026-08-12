@@ -38,10 +38,15 @@
 
 class SerialCapture {
 public:
-  SerialCapture() {
-    was_connected = MYSERIAL1.host_connected;
-    MYSERIAL1.host_connected = true;
-    while (MYSERIAL1.transmit_buffer.available()) (void)MYSERIAL1.transmit_buffer.read();
+  /**
+   * Defaults to the host port. Pass another to capture it instead — `LCD_SERIAL` for a
+   * display that is driven by writing bytes at it rather than through a UI interface,
+   * where the byte stream is the only observable there is.
+   */
+  SerialCapture(MSerialT &p = MYSERIAL1) : port(p) {
+    was_connected = port.host_connected;
+    port.host_connected = true;
+    while (port.transmit_buffer.available()) (void)port.transmit_buffer.read();
     running = true;
     drainer = std::thread([this] {
       while (running.load()) {
@@ -52,7 +57,7 @@ public:
     });
   }
 
-  ~SerialCapture() { finish(); MYSERIAL1.host_connected = was_connected; }
+  ~SerialCapture() { finish(); port.host_connected = was_connected; }
 
   // Stop draining and return everything the firmware wrote.
   //
@@ -70,10 +75,11 @@ public:
 
 private:
   void drain() {
-    while (MYSERIAL1.transmit_buffer.available())
-      text += char(MYSERIAL1.transmit_buffer.read());
+    while (port.transmit_buffer.available())
+      text += char(port.transmit_buffer.read());
   }
 
+  MSerialT &port;
   std::string text;
   std::atomic<bool> running{false};
   std::thread drainer;
