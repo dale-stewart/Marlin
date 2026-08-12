@@ -612,19 +612,26 @@ different states:
 |---|---|---|
 | `lcd/sovol_rts` | **cannot, ever** — four undefined identifiers | dead code (#37) |
 | `lcd/dwin/creality` | **builds clean** — `STM32F103RE_creality`, flash 25.5%, RAM 11.2% | live, and testable in principle |
-| `lcd/extui/mks_ui` | **not established** | blocked before the compiler reaches it |
+| `lcd/extui/mks_ui` | **builds clean** — `mks_robin_nano_v1v2`, flash 56.7%, RAM 74.8% | live; register #34 now confirmed |
 
-`mks_ui` is worth being precise about, because "did not build" would be the wrong summary. Every
-display/UI combination tried was rejected by Marlin's own `LCD_ENABLED_COUNT` check
-(`Conditionals-2-LCD.h:970`, "Please select only one LCD controller option") — `MKS_TS35_V2_0`,
-`TFT_GENERIC`, and combinations with `TFT_LVGL_UI`, which is itself *not* counted as a
-controller. **The compiler never saw the driver**, so nothing at all is known about whether the
-code is sound. The blocker is configuration selection, not the source.
+`mks_ui` took two goes, and the second one only worked after reading `Conditionals-2-LCD.h`
+instead of guessing. Two traps, both worth knowing. **`TFT_LVGL_UI` is not something you set** —
+it is auto-defined by the legacy path from `TFT_LVGL_UI_FSMC` or `TFT_LVGL_UI_SPI`, and setting
+it directly alongside a panel is what pushes `LCD_ENABLED_COUNT` past one. And
+**`TFT_RES_480x320` lives inside Configuration.h's `#if ENABLED(TFT_GENERIC)` block**, which is
+evaluated *before* Conditionals auto-defines `TFT_GENERIC` — so the resolution silently does not
+apply unless `TFT_GENERIC` is also set explicitly, and the build then insists on a resolution
+that is right there in the file.
 
-**This changes which driver is worth emulating.** `dwin` compiles, so it is the one where
-register #33's suspicion can actually be pursued, and the one where Stage 1 or 2 would buy
-something. `sovol_rts` is dead and no emulator reaches it. `mks_ui` needs a valid configuration
-before the question is even askable — an hour with Marlin's example configs, not an emulator.
+**Both live drivers had their recorded suspicion confirmed by their own object files**, which is
+the cheapest form of confirmation available and needed no emulator at all. #33 for `dwin`: uses
+`set_max_feedrate` and `set_max_acceleration`, writes steps-per-millimetre raw, references no
+`refresh` symbol. #34 for `mks_ui`: references `refresh_positioning` but no
+`refresh_acceleration_rates`, and writes `max_acceleration_mm_per_s2` raw — it remembers the
+refresh derived from resolution and forgets the one derived from acceleration.
+
+So the emulator was never what these two needed. A compiler that accepts the file and a symbol
+table settled both.
 
 **Stage 1 — `qemu-user`, not `qemu-system`.** A test binary cross-compiled for 32-bit ARM Linux
 and run under `qemu-arm` gives a genuine 32-bit type model, real execution, and the existing
