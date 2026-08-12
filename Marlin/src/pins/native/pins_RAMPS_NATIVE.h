@@ -727,6 +727,24 @@
 
   #endif // IS_NEWPANEL
 
+#elif HAS_DWIN_E3V2
+
+  /**
+   * A serial panel with a knob on it.
+   *
+   * `HAS_DWIN_E3V2` is neither `HAS_WIRED_LCD` nor a TFT UI, so it fell through both branches
+   * above and this board defined no encoder pins at all. That makes `BUTTON_PRESSED(ENC)` and
+   * `BUTTON_PRESSED(EN1/EN2)` compile-time false, and everything the driver does in response
+   * to a person turning the knob unreachable — not untested, unreachable, which reads the same
+   * way in a coverage report and is not the same problem.
+   *
+   * The panel itself talks over `LCD_SERIAL`; the encoder is three ordinary GPIOs beside it,
+   * exactly as on the boards these panels ship with. Same numbers as the TFT branch uses.
+   */
+  #define BTN_ENC                               59
+  #define BTN_EN1                               40
+  #define BTN_EN2                               63
+
 #endif // HAS_WIRED_LCD
 
 #ifndef KILL_PIN

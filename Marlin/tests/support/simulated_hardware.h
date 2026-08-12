@@ -72,6 +72,7 @@ public:
 
     sane_analog_inputs();
     release_kill_button();
+    release_panel_buttons();
 
     HAL_timer_init();
     stepper.init();
@@ -118,6 +119,38 @@ public:
     #if HAS_KILL
       SET_INPUT_PULLUP(KILL_PIN);
       WRITE(KILL_PIN, !KILL_PIN_STATE);
+    #endif
+  }
+
+  /**
+   * Say nobody is touching the knob either.
+   *
+   * The same fault as the kill button, in a place that costs more. Panel buttons are
+   * active-low with pull-ups on a board, and every simulated pin reads LOW at reset, so the
+   * firmware in a test build starts up believing the click is held down and both quadrature
+   * phases are shorted. That is not a state any encoder can be in.
+   *
+   * It is quiet rather than fatal, which is what makes it expensive: the suite still passes,
+   * because a held button changes what the UI does and not what any assertion looks at. What
+   * it changes is how long everything takes — a machine with its knob held gets extra work on
+   * every pass through `idle()`, and a suite that ran in eight seconds took ten minutes the
+   * first time this board defined encoder pins at all.
+   *
+   * Released once before the first test, and again after each one, because a test that fails
+   * part-way through a click never reaches its own cleanup.
+   */
+  static void release_panel_buttons() {
+    #if BUTTON_EXISTS(ENC)
+      SET_INPUT_PULLUP(BTN_ENC);
+      WRITE(BTN_ENC, HIGH);
+    #endif
+    #if BUTTON_EXISTS(EN1)
+      SET_INPUT_PULLUP(BTN_EN1);
+      WRITE(BTN_EN1, HIGH);
+    #endif
+    #if BUTTON_EXISTS(EN2)
+      SET_INPUT_PULLUP(BTN_EN2);
+      WRITE(BTN_EN2, HIGH);
     #endif
   }
 

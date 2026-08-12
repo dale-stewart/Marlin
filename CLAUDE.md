@@ -664,18 +664,33 @@ producer is already wedged.
 **Half the seam works.** `a_status_message_reaches_the_panel` is the first assertion any LCD
 driver has ever had here.
 
-**The other half does not, and that is the finding.** Register #33's write lives in
+**The other half needed a hand, and now has one.** Register #33's write lives in
 `hmiStepXYZE()` and happens only on an encoder click; `encoderReceiveAnalyze()` gates it on
-`BUTTON_PRESSED(ENC)`, which reads `BTN_ENC`, and **`BOARD_SIMULATED` defines no encoder
-pins** — so the macro is a compile-time false and no call sequence from a test reaches the
-assignment. Making a driver host-buildable is not the same as making it drivable: everything
-the firmware *sends* is observable, and nothing a person would have *done to the machine* is.
+`BUTTON_PRESSED(ENC)`, which reads `BTN_ENC` — and `BOARD_SIMULATED` defined **no encoder pins
+at all**, because `HAS_DWIN_E3V2` is neither `HAS_WIRED_LCD` nor a TFT UI and fell through both
+branches of `pins_RAMPS_NATIVE.h`. So the macro was a compile-time false and no call sequence
+reached the assignment. Making a driver host-buildable is not the same as making it drivable.
 
-Confirming #33 by behaviour needs either a board definition with encoder pins or a simulated
-encoder attached the way `SimulatedI2CEncoder` attaches to the I2C bus. Writing
-`planner.settings.axis_steps_per_mm` from the test and asserting the reciprocal went stale
-would pass, prove nothing about the driver, and look exactly like a driver test — which is
-why it is recorded instead.
+Three GPIOs in the pins file and `tests/support/simulated_encoder.h` close that, and
+**#33 is now confirmed by behaviour**:
+`changing_the_resolution_at_the_panel_leaves_the_reciprocal_stale` turns the knob, clicks, and
+asserts the stored resolution changed while `mm_per_step` did not follow. Nothing is set behind
+the driver's back — the starting value is below the driver's own lower limit, so the committed
+value is the driver's choice and not the test's.
+
+The fixture is worth reading before writing another like it. The firmware, not the fixture,
+does the sampling: a phase change is only seen by a call into the driver and the delta is
+consumed by that same call, so every motion takes the caller's pump. And a phase change costs
+two passes and 3 ms of simulated time, because `MarlinUI::get_encoder_delta()` debounces —
+the first pass after an edge only starts the timer.
+
+**Validated by injecting the fix.** Adding `planner.refresh_positioning()` after `dwin.cpp:1647`
+makes that test — and only that test — fail. Doing it also broke the suite twice over and found
+two harness defects worth more than the test (registers #39, #40): panel buttons power up held,
+which cost nothing but turned an 8-second run into ten minutes with everything still passing;
+and `SerialCapture`'s destructor is skipped by Unity's `longjmp`, leaving a port connected with
+nothing draining it, so the *next* long write anywhere in the suite never returns. Both are
+fixed in `quiesce_simulated_peripherals()`, which runs on the far side of the jump.
 
 **Delegating to subagents in this repo.** One agent per step of the skill:
 `rescue-surveyor` (0-2), `harness-validator` (3), `mutant-killer` (4-5) and
@@ -712,7 +727,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**ten** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670, 651**. The counts above vary
+**ten** configs in `test/`, reporting **604, 605, 612, 674, 675, 613, 610, 617, 670, 652**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -850,6 +865,12 @@ is blocked by PEP 668 on this machine).
   say "on N covered lines". Rebuild coverage immediately before any measurement that follows a
   full-suite run — which is most of them, since the natural order is measure, write tests, run
   every config, re-measure.
+- **`restore_configs` also reverts `Marlin/src/pins/*/pins_*.h`, which is a source tree you
+  may legitimately be editing.** Adding encoder pins to `pins_RAMPS_NATIVE.h` and then running
+  a test target silently undid the edit, and the symptom was a macro that stayed
+  compile-time false with no diagnostic anywhere. The cheap defence is that it runs
+  `git checkout <path>`, which restores from the **index** — so `git add` the pins file and it
+  survives. Not the same problem as the generated configs, which you want reverted.
 - **`restore_configs` reverts your config.** Every test target runs it before and after,
   which does `git checkout` on `Marlin/Configuration.h`, `Configuration_adv.h`,
   `Marlin/config.ini`, and `Marlin/src/pins/*/pins_*.h`. Uncommitted config work is

@@ -39,8 +39,10 @@
 #include "src/lcd/dwin/creality/dwin.h"
 #include "src/lcd/dwin/common/dwin_api.h"
 #include "src/module/planner.h"
+#include "src/lcd/marlinui.h"
 #include "src/MarlinCore.h"
 #include "../gcode/serial_capture.h"
+#include "../support/simulated_encoder.h"
 
 MARLIN_TEST(dwin_display, a_status_message_reaches_the_panel) {
   SerialCapture panel(LCD_SERIAL);
@@ -51,23 +53,61 @@ MARLIN_TEST(dwin_display, a_status_message_reaches_the_panel) {
     "changing the status should put bytes on the display's serial port");
 }
 
+#if ENABLED(EDITABLE_STEPS_PER_UNIT)
+
 /**
- * Register #33 cannot be driven from here, and the reason is worth more than the test.
+ * Register #33, confirmed by behaviour rather than by reading the source.
  *
- * The write that leaves the reciprocal stale lives in `hmiStepXYZE()`, and it only happens
- * on an encoder click: `encoderReceiveAnalyze()` gates it on `BUTTON_PRESSED(ENC)`, which is
- * a read of `BTN_ENC`. `BOARD_SIMULATED` defines no encoder pins, so that macro is a
- * compile-time false and no sequence of calls from a test reaches the assignment.
+ * `planner.settings.axis_steps_per_mm` has a derived cache, `planner.mm_per_step`, which is
+ * its reciprocal — and keeping the two in step is the caller's job, done by calling
+ * `refresh_positioning()`. This driver writes the array and does not. So the machine goes on
+ * moving at a scale that no longer matches the one it reports, and nothing complains.
  *
- * So making a driver host-buildable is not the same as making it drivable. What is
- * observable here is everything the firmware *sends* — that is what the test above uses —
- * and what is not is anything a person would have done to the machine by hand. Confirming
- * #33 by behaviour needs one of: a board definition with encoder pins, or a simulated
- * encoder attached the way `SimulatedI2CEncoder` attaches to the I2C bus.
+ * The test says exactly that and no more: after a person changes the resolution at the panel,
+ * the stored value changed and the reciprocal did not follow it. It does not assert the
+ * arithmetic of the new value — the driver scales by a factor private to its own translation
+ * unit, and predicting it here would be re-implementing the code under test.
  *
- * Recorded rather than faked. Setting `planner.settings.axis_steps_per_mm` from the test and
- * asserting the reciprocal went stale would pass, prove nothing about the driver, and read
- * for all the world like a driver test.
+ * Nothing is set behind the driver's back. The starting value is deliberately below the
+ * driver's own lower limit, so the first turn of the knob is clamped up to it — which makes
+ * the committed value the driver's choice rather than the test's.
  */
+MARLIN_TEST(dwin_display, changing_the_resolution_at_the_panel_leaves_the_reciprocal_stale) {
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;              // a click on a dark panel only wakes the screen
+  marlin.wait_for_user = false;     // ... and a click that resumes a wait is not an ENTER
+
+  const float steps_before = planner.settings.axis_steps_per_mm[X_AXIS],
+              per_step_before = planner.mm_per_step[X_AXIS];
+
+  // The panel, showing the X steps-per-millimetre editor.
+  checkkey = ID_StepValue;
+  hmiFlag.step_axis = X_AXIS;
+  hmiValues.maxStepScaled = 0;
+
+  const auto pump = [] { dwinHandleScreen(); };
+  knob.turn_clockwise(pump);
+  knob.click(pump);
+
+  panel.finish();
+
+  const float steps_after = planner.settings.axis_steps_per_mm[X_AXIS];
+
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(steps_before, steps_after,
+    "turning the knob and clicking should store a new resolution for X");
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(per_step_before, planner.mm_per_step[X_AXIS],
+    "the reciprocal should have gone stale - it is not refreshed after the write (register #33)");
+
+  TEST_ASSERT_FALSE_MESSAGE(NEAR(planner.mm_per_step[X_AXIS], 1.0f / steps_after),
+    "and being stale means it no longer is the reciprocal of the stored resolution");
+
+  // Put the machine back the way it was found, both halves together this time.
+  planner.set_steps_per_mm(X_AXIS, steps_before);
+}
+
+#endif // EDITABLE_STEPS_PER_UNIT
 
 #endif // __PLAT_TEST__ && DWIN_CREALITY_LCD

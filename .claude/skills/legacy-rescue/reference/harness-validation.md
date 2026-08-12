@@ -188,6 +188,28 @@ toolchain. Slower per mutant, but it measures the code that actually ships.
   because it changes the optimisation level; when it does, the assertion that moved was
   pinning the compiler rather than the code, and is worth knowing about either way.
 
+**A fixture that relies on a destructor is unsafe to fail inside.** Many test frameworks
+implement a failed assertion as a non-local jump out of the test, which unwinds no stack: the
+tail of the test does not run, and neither does the cleanup of anything it constructed. So any
+fixture whose *correctness* depends on being torn down — one that switches a mode on, holds a
+lock, redirects a stream, starts a thread — silently stops being torn down the moment a test
+fails, which is precisely when you were about to change something.
+
+The damage lands in a later, unrelated test, and it is usually not a failure. Expect the suite
+to hang or to slow down rather than to report anything: a leaked mode leaves later code waiting
+on a condition nothing will now satisfy, and a leaked *scale* — anything that multiplies how
+much work every subsequent operation does — makes the run take minutes instead of seconds with
+every test still passing. That is worse than a wrong answer, because there is nothing in the
+output to read.
+
+Put the restoration where the jump lands: in the framework's between-tests hook, not in the
+fixture. Two cautions when you do. Capture the baseline at a moment when the state is real —
+capturing before the system under test has initialised records zeros and then *imposes* them
+after every test, which is the same fault with the sign flipped, and it looks like a fix.
+And this is why an injected-fault control belongs in the harness check: it was injecting a
+known fix and watching a green suite become one that had to be killed that exposed both leaks
+here, neither of which any passing run could have shown.
+
 **The act of testing can destroy the instrument that measures it.** Coverage builds, profiling
 data and instrumented binaries are build artifacts, and the ordinary test targets are entitled
 to clean them — so a sequence as innocent as *measure, write tests, run the whole suite,

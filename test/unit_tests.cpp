@@ -30,6 +30,7 @@
 #include "unit_tests.h"
 #include "src/module/temperature.h"
 #include "src/module/planner.h"
+#include "tests/support/simulated_hardware.h"
 #include <stdio.h>
 #include <string>
 
@@ -142,8 +143,22 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
 #endif
 
 // Install the stand-ins a test cannot opt out of, once, before the first test runs.
+/**
+ * The scale the machine settled at — see quiesce_simulated_peripherals().
+ *
+ * Not recorded before the first test, which is the obvious place and the wrong one:
+ * `Planner::settings` is a zero-initialised static until something calls `settings.reset()`,
+ * and no fixture has run yet. Recording there captures all zeros, and restoring to zero
+ * after every test gives every axis an infinite millimetres-per-step — which then hangs the
+ * suite exactly as the leftover it was meant to prevent. Recorded instead on the first
+ * boundary where the values are real, which is after the first test that sets the machine up.
+ */
+static float settled_steps_per_mm[DISTINCT_AXES];
+static bool steps_per_mm_recorded = false;
+
 static void prepare_simulated_peripherals() {
   record_attached_peripherals();
+  SimulatedHardware::release_panel_buttons();
   #if HAS_MEDIA
     card.changeMedia(&simulated_card());
     card.mount();
@@ -170,6 +185,28 @@ static std::string current_test_name;
 static void quiesce_simulated_peripherals() {
   #ifdef __PLAT_LINUX__
     HAL_timer_stop_all();
+  #endif
+
+  // A test that fails part-way through a click leaves the button held for every test after
+  // it — same reasoning as the heater targets below.
+  SimulatedHardware::release_panel_buttons();
+
+  /**
+   * Leave no port claiming a host that is not there.
+   *
+   * `SerialCapture` marks a port as connected and drains it from a second thread, and puts
+   * both back in its destructor — which the `longjmp` described below does not run. What is
+   * left is the worst possible combination: a port that busy-waits for room in a 128-byte
+   * buffer, and no longer anything emptying it. The next write of more than 128 bytes never
+   * returns, from whichever unrelated test happens to make it.
+   *
+   * That is how a *failed* capture turns into a *hung suite*, and the hang is nowhere near
+   * the test at fault. Marking the ports unattached here is the same state they are given at
+   * power-on, and it costs nothing when the destructor did run.
+   */
+  MYSERIAL1.host_connected = false;
+  #ifdef LCD_SERIAL
+    LCD_SERIAL.host_connected = false;
   #endif
 
   /**
@@ -217,6 +254,33 @@ static void quiesce_simulated_peripherals() {
    * reason.
    */
   planner.clear_block_buffer();
+
+  /**
+   * Leave the machine the size it was.
+   *
+   * Steps-per-millimetre is the scale everything else is expressed in: it decides how many
+   * pulses a move costs and therefore how long every later test takes. A test that changes
+   * it and then fails never reaches its own restore — Unity's failure path is the `longjmp`
+   * described above, so neither the tail of the test nor any destructor runs.
+   *
+   * The consequence is not a failure in the next test, it is a suite that stops finishing.
+   * Leaving X at a resolution an order of magnitude out turned an eight-second run into one
+   * that had to be killed at fifteen minutes, with every test still passing on the way. That
+   * is worse than a wrong answer, because there is nothing in the output to read.
+   *
+   * Restored through the setter, so the reciprocal cache comes back with it.
+   */
+  if (!steps_per_mm_recorded) {
+    bool all_real = true;
+    LOOP_DISTINCT_AXES(i) if (planner.steps_per_mm(AxisEnum(i)) <= 0) all_real = false;
+    if (all_real) {
+      LOOP_DISTINCT_AXES(i) settled_steps_per_mm[i] = planner.steps_per_mm(AxisEnum(i));
+      steps_per_mm_recorded = true;
+    }
+  }
+  else LOOP_DISTINCT_AXES(i)
+    if (planner.steps_per_mm(AxisEnum(i)) != settled_steps_per_mm[i])
+      planner.set_steps_per_mm(AxisEnum(i), settled_steps_per_mm[i]);
 
   /**
    * Leave no peripheral pointing at a dead object.
