@@ -688,12 +688,32 @@ unreachable — worth knowing before reading a figure from `014` as though it co
 The other two buckets of the 142 are unchanged: ~39 initialisers needing a probe rather than a
 dataflow read (see the caution below), and ~56 genuinely unasserted on the hotend path.
 
-**A caution about the ~39 initialisers, because I got this wrong once already in this file.**
-The first reading was "dead stores, overwritten before use, all equivalent". That is wrong for
-`maxT`/`minT` at least: they are read at `:881`/`:882` by `NOLESS`/`NOMORE` *and printed* at
-`:911` before `:896`/`:936` overwrite them, so the first reported `T_MIN` carries the
-initialiser. Whether each is equivalent needs the probe, not the dataflow read — which is the
-rule this file already states about equivalence and which I skipped.
+**The ~39 initialisers are equivalent, and it took being wrong twice to establish it.** The
+first reading was "dead stores, all equivalent" — correct, but asserted from a glance. I then
+"corrected" it to "`maxT`/`minT` are read at `:881`/`:882` and printed at `:911`, so the first
+reported `T_MIN` carries the initialiser" — which is **wrong**, because `minT = target` at
+`:936` runs at the end of *every* cycle and the print at `:911` is guarded on `cycles > 0`, so
+the initialiser is always overwritten before any read escapes.
+
+Settled by probe, which is what should have happened first. Perturbing far beyond anything the
+mutator produces — `maxT = 999, minT = 0`, then `t_high = 7777, t_low = 8888,
+tune_pid = {5,6,7}, next_watch_temp = 1.0` — leaves the `M303` report **byte-identical** and the
+suite green. Two of the 39 are equivalent for a different reason worth separating:
+`current_temp = 0.0` is genuinely *live* — setting it to 999 aborts the tune at
+`:944`'s overshoot check and fails twenty tests — but every mutant the tool generates is
+`0 ± 1`, far below `target + MAX_OVERSHOOT_PID_AUTOTUNE`, so the *mutants* are equivalent by
+reachable range while the line is not dead. Same for `next_watch_temp`.
+
+One thing the probe did **not** establish, so it is not claimed: whether a tune that never
+computes gains can still reach `_set_hotend_pid(tune_pid)` and apply `{0, 0, 0}`. The probe used
+`M303 C4`, which completes and overwrites them. If some abort path applies the initialiser, that
+is a real defect and the classification above does not cover it.
+
+**The reusable part is the shape of the mistake.** Both wrong answers came from reading dataflow
+instead of running the code, and the second was more confident than the first. A one-line
+perturbation far outside the mutator's range settles these in a single build and distinguishes
+"dead store" from "live line whose mutants are all in range" — which are different findings with
+different follow-ups.
 
 **Autotemp rescued (2026-08-13): a whole feature with 27 survivors and no tests.**
 `M104 S<min> B<max> F<factor>` makes the nozzle track extrusion speed — the target becomes

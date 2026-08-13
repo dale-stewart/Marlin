@@ -48,6 +48,25 @@ re-checks.
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **Settle an initialiser with one exaggerated perturbation, not with a dataflow read.**
+  Declarations that seed an accumulator — a running minimum, a timer, a result struct —
+  produce large survivor clusters, and the tempting move is to trace the reads and decide.
+  Do not: the ordering that matters is often several branches away, and being wrong here is
+  cheap to do and expensive to notice, because the conclusion is a claim that *no* test could
+  ever help.
+
+  Instead set the initialiser to something far outside anything the mutator generates and run
+  the suite once. Identical output means dead, and one build has settled the whole cluster.
+  Different output separates two findings the report cannot: a **dead store**, where the value
+  never escapes, and a **live line whose mutants are all in range**, where the seed does matter
+  but only for values the tool never produces. Those have different follow-ups — the second
+  says an input class is missing, the first says nothing is.
+
+  Two cautions from doing it. Perturb **one thing at a time**: seeding several at once and
+  seeing failures tells you nothing about which. And an exaggerated value can fail for a reason
+  unrelated to the mutants — a sentinel set past a threshold takes an abort path no `±1` mutant
+  would — so read *which* tests failed rather than only how many.
+
 - **A value can be computed, correct, and then discarded.** Where two limits are combined by
   taking the smaller — a clamp, a `min`, a cap applied on top of another — the losing one has
   no effect at all. Its line is covered, its arithmetic runs, and every mutation of it survives
