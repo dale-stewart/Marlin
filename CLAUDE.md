@@ -616,6 +616,41 @@ What the survivors asked for was mostly **exactness in the report**, and that is
   widening either test enables the hot end on every `M17`, which no assertion about X, Y or
   Z can see.
 
+**`core/serial.cpp` rescued (2026-08-12): 42% -> 93% line, 90.5% raw, 100% killable
+(134/134).** Chosen over larger gaps for a reason worth keeping: **it is the instrument every
+other test asserts through.** Dozens of tests here search a captured serial stream for a
+word; if the word is right and the prefix is wrong, or the axis labels are transposed, those
+tests still pass and the machine still lies to its host. A fault here weakens assertions
+everywhere at once while looking like a formatting detail.
+
+The pure formatting helpers were the whole gap — `serial_offset()`, `serial_ternary()`,
+`print_bin()`, `SERIAL_ECHO_SP()`, the `echo:`/`Error:`/`Warning:` prefixes, and
+`print_xyz`/`print_xyze`. No fixtures, no hardware, no clock, so the assertions can be exact
+strings rather than substrings, which is what makes them worth having.
+
+Two things the mutation run asked for:
+
+- **`serial_offset(v, sp)` needs the sign and the style varied *together*.** `sp` says how
+  *zero* should be written — nothing, a space, or a plus — and the non-zero cases must ignore
+  it. Relaxing either equality (`v == 0` to `<=` or `>=`) is invisible until a non-zero value
+  is passed with a non-zero `sp`, which no caller in the firmware does and no obvious test
+  would. Five values times three styles, and eleven mutants died.
+- **`print_xyze` is a second call site with its own copy of everything** — its own argument
+  list, its own suffix decision. Covering `print_xyz` left both unasserted. Same lesson as
+  `prompt_do`'s four overloads.
+
+**A short-circuit makes a later clause unreachable, and that is its own equivalence
+category.** `else if (v > 0 || (v == 0 && sp == 2))` — mutating the second clause's `==` to
+`>=` changes nothing, because every case where they differ (`v > 0`) is already taken by the
+first clause. Not preprocessor-erased, not out of reachable range: *unreachable by
+short-circuit*. Worth recognising on sight, because it looks exactly like a live boundary
+mutant.
+
+The other thirteen survivors: ten are `NUM_AXIS_LIST_` swaps of axes this build does not have
+(`planner.cpp:1223` again), one is `count *= PROPORTIONAL_FONT_RATIO` mutated to `/=` with the
+ratio at 1.0, one is `(0==1)` written where `0` was, and one is an `else` dropped where the
+two branches are mutually exclusive anyway.
+
 **`endstops.cpp` closed (2026-08-12): 79% line, 24.8% -> 34.4% raw, 100% killable (54/54).**
 The raw figure is the lowest here by a distance and it is not a gap. **103 of the 157
 testable mutants are erased by the preprocessor**, 77 of them on a single line:
@@ -1022,7 +1057,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 660,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 675,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
