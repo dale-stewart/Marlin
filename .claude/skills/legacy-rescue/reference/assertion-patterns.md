@@ -20,6 +20,23 @@ substantial and say nothing.
   timing, iteration counts, and the steps between a call and its result. That code runs —
   hence the coverage — but only its endpoint is observed. Ask what the code computes on
   the way, and assert a relationship the domain guarantees about it.
+- **Where the outcome is blocked, assert the state the outcome will be computed from.** Some
+  decisions are only visible when they fire, and firing is what a test cannot survive — the
+  process halts, the machine stops, control leaves and does not come back. It is tempting to
+  conclude that everything leading up to it is untestable too, and to settle for asserting that
+  the system is still in its ordinary state. Do not: that assertion reads the same on both sides
+  of every boundary, so it distinguishes nothing, and a wholly different implementation passes it.
+
+  Look instead for the accumulator the decision will be taken on — a deadline, a counter, a
+  running total, a flag. It is usually reachable, it changes on *every* pass rather than only at
+  the end, and asserting it turns one unreachable outcome into many observable steps. Assert both
+  that it moved and *how far*: "the allowance was extended" is satisfied by any amount at all,
+  including one that would let the fault run for an hour.
+
+  The tell that you need this is a file of tests whose assertions are all the same value. If every
+  case — inside the boundary and outside it, before the limit and after — asserts that the system
+  is still normal, then none of them is asserting anything about the boundary.
+
 - **Compare against the values the system defines, never against another of its own
   readings.** The tempting shape, when a thing has two states, is to record it in one and
   then in the other and assert that they differ. It reads as a proper bracketed test — both

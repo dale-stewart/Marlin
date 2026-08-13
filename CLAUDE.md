@@ -561,6 +561,67 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**`temperature.cpp` — real baseline, and slice one (2026-08-13).** The measurement on disk was
+ten days stale and would have been quoted wrong. Fresh, taken alone:
+
+| | |
+|---|---|
+| line coverage | 82% over 411 covered lines |
+| raw mutation | **62.6%** (907/1450) |
+| ...killed by an assertion | **441** |
+| ...counted as detected by *timeout* | **466** |
+| survived | 543 |
+
+**Quote the killed-by-assertion figure for this file, not the raw one.** More than half the
+"detected" total is timeouts, which the runner counts as kills — so the honest headline is
+**30.4% killed by assertion**, and the raw 62.6% flatters it by a factor of two. The timeouts are
+real rather than a loaded machine (this was run alone): a great many mutants here turn a bounded
+wait into an unbounded one.
+
+The 543 split cleanly, which is what makes this file sliceable: PID autotune 142, the `M109`/`M190`
+waits 134, the MINTEMP/MAXTEMP checks 63 (register #19, blocked), the runaway state machine 30, and
+174 spread thin.
+
+**Slice one: the thermal runaway watchdog, which had never been tested at all.** 29 of the 30
+survivors in that region are dead and nothing outside it moved — every kill is on 3423-3538.
+`test_thermal_runaway.cpp`, 13 tests.
+
+It had no tests because `tr_state_machine_t` was **private**. It is a value type with a pure
+`run()` — current, target, heater, period and hysteresis all arrive as arguments and it touches
+nothing but its own three fields — so a test can hold its own instance and drive it with no heater,
+no sensor and no control loop. Making the type public is additive and moves no caller; the real
+correction, moving it to namespace scope as a watchdog of its own, is recorded as blocked #50.
+
+Three things worth carrying:
+
+- **Asserting the state was not enough, and the mutation run is what said so.** The state does not
+  change until the trip, and the trip is unreachable — `_TEMP_ERROR` ends in `kill()`. So every
+  boundary test read `TRStable` on *both* sides, and replacing `running_temp - current` with
+  `running_temp / current` survived all of them. That is not a subtle mutant: it turns a 50-degree
+  shortfall into 1.33 and reports a runaway as perfectly healthy. What separates them is `timer`,
+  the deadline the decision is carried in — pushed back on every pass inside the hysteresis, left
+  standing outside it. **Where the outcome is blocked, assert the state the outcome will be
+  computed from.** Plus one test that the deadline is exactly one configured period away, since
+  "it moved" is satisfied by any amount at all, including an hour.
+- **The tests found #49 by being the first non-static instance.** `running_temp` is the one member
+  with no default initialiser. The firmware's instances are a zeroed static array, so it cannot
+  bite there — but the arming test is `running_temp != target`, so an instance whose stack garbage
+  happens to equal the target never arms, and the heater is watched by nothing, silently. Found
+  because `two_heaters_are_watched_independently` failed against garbage that happened to be
+  200.0f. Recorded rather than fixed; `fresh()` zeroes it and says why. Note the shape: **using a
+  type the way its blocked correction would use it is itself a probe.**
+- The two survivors left are equivalent with reasons. `else if` -> `if` at 3473, where the
+  preceding branch is `TERN0(HEATER_IDLE_HANDLER, ...)` and `HEATER_IDLE_HANDLER` is undefined here
+  (it needs `ADVANCED_PAUSE_FEATURE` or `PROBING_HEATERS_OFF`, neither set). And `target > 0` ->
+  `!= 0`, which differs only for a negative target, which `setTargetHotend` cannot produce.
+
+**The 63-survivor MINTEMP/MAXTEMP cluster has a way through that needs no production change.**
+Register #19 asks for "a seam that lets the shutdown be observed and returned from under test".
+`BOGUS_TEMPERATURE_GRACE_PERIOD` is exactly that and already exists: with it set, the first temp
+errors record an expiry and **return** instead of calling `loud_kill`, so the reporting path
+becomes assertable. It would be a configuration whose safety kill is deferred, which is a
+deliberate choice rather than a free one — not taken yet.
+
 **`M206_M428.cpp` rescued (2026-08-13), and it took a configuration rather than a test:
 40% -> 95% line and 57.4% raw under the default config, 100% line and 87.3% raw / 100%
 killable under `012-max_endstops`.**
@@ -1112,13 +1173,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 684,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 697,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**twelve** configs in `test/`, reporting **684, 698, 708, 755, 755, 693, 690, 710, 750, 745, 684, 687**. The counts above vary
+**twelve** configs in `test/`, reporting **697, 711, 721, 768, 768, 706, 703, 723, 763, 758, 697, 700**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

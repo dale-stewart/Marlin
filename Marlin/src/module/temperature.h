@@ -1439,6 +1439,24 @@ class Temperature {
 
     #if HAS_THERMAL_PROTECTION
 
+  /**
+   * Public because this is the decision that stops a printer burning, and it was
+   * unreachable from outside.
+   *
+   * `tr_state_machine_t` is a value type: `run()` takes the current temperature, the target,
+   * the heater, the period and the hysteresis as arguments and touches nothing but its own
+   * three fields. It has no dependency on `Temperature` at all, so a caller can hold one and
+   * drive it — which is what `tests/module/test_thermal_runaway.cpp` does, with its own
+   * instance rather than the shared array below.
+   *
+   * BLOCKED CORRECTION: being a nested type is habit rather than design. This belongs at
+   * namespace scope as a watchdog of its own, with `Temperature` as one of its consumers.
+   * That is a public-surface change and `Temperature` is not yet covered enough to make it,
+   * so the type is exposed where it is and the move is recorded rather than done. See
+   * `docs/defect-register.md`.
+   */
+  public:
+
       // Indices and size for the tr_state_machine array. One for each protected heater.
       enum RunawayIndex : int8_t {
         _RI = -1
@@ -1476,6 +1494,10 @@ class Temperature {
         void run(const celsius_float_t current, const celsius_float_t target, const heater_id_t heater_id, const uint16_t period_seconds, const celsius_float_t hysteresis_degc);
       } tr_state_machine_t;
 
+  private:
+
+      // The firmware's own instances stay private: a test that drove these would be sharing
+      // state with every other test in the process, and the type above is all it needs.
       static tr_state_machine_t tr_state_machine[NR_HEATER_RUNAWAY];
 
     #endif // HAS_THERMAL_PROTECTION
