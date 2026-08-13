@@ -53,6 +53,23 @@
 #include "src/MarlinCore.h"
 #include "../support/simulated_hardware.h"
 
+/**
+ * How long the bed's control loop takes to reconsider.
+ *
+ * Under bang-bang control the bed is only looked at every `BED_CHECK_INTERVAL`, so a test
+ * that wants the bed actually driving has to wait that long. Under `PIDTEMPBED` it is
+ * regulated on every pass and the macro **does not exist** — a test naming it does not fail,
+ * it fails to compile. Same shape as `STR_Z_LIMIT` in `simulated_endstops.h`: name the
+ * property, not the macro that happens to express it on one machine.
+ */
+#if ENABLED(PIDTEMPBED)
+  constexpr uint32_t BED_CONTROL_PERIOD_MS = 0;
+#elif defined(BED_CHECK_INTERVAL)
+  constexpr uint32_t BED_CONTROL_PERIOD_MS = BED_CHECK_INTERVAL;
+#else
+  constexpr uint32_t BED_CONTROL_PERIOD_MS = 0;
+#endif
+
 class SimulatedSensors {
 public:
   SimulatedSensors() {

@@ -74,6 +74,22 @@ re-checks.
   comparison against zero are unkillable when the operand cannot be negative, and the same
   goes for a range check on a value the type already bounds. Neither is a gap in the tests,
   and neither is worth a second attempt once it has been named.
+- **A configuration that unblocks a cluster can also change the plant the tests run against.**
+  Turning on the option that makes a dead arm reachable is cheap when the option only selects
+  code. It is not cheap when the option changes a *control loop* — a different regulator, a
+  different scheduler, a different retry policy — because the substitute hardware the suite
+  runs against was built and tuned for the old one. The shipped parameters are matched to real
+  equipment; the simulation is not that equipment; and the two can be mismatched badly enough
+  that the system never reaches the state a waiting test is waiting for.
+
+  Expect the symptom to be a **hang rather than a failure**, since a substitute where time is
+  controlled by the test cannot tell "slow" from "never". Budget for the variant to need its
+  own tuning stated alongside it, the way the fixture already states its own scale and limits —
+  and treat that as a piece of work with a build-and-run per attempt, not as one line of
+  configuration. Where that is more than the cluster is worth today, record the count, the
+  reason, and what the attempt cost, so the next person starts from the second problem rather
+  than the first.
+
 - **Reaching a dead branch is not the same as separating it — look for the second reason before
   building the variant.** When a correction branch cannot run because its guard can never hold,
   the obvious fix is a configuration in which the guard does hold. That is often only half the

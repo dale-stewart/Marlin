@@ -622,6 +622,50 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**Where `PID_autotune`'s 142 survivors actually are (2026-08-13), and why the obvious
+configuration did not work.** Classified rather than attacked, because the classification is
+the finding:
+
+| bucket | count | what it needs |
+|---|---|---|
+| bed and chamber arms this build compiles out | 47 | a configuration, and see below |
+| initialisers whose value is overwritten before the read that matters | ~39 | needs a probe, not a guess — see the caution below |
+| genuinely unasserted on the hotend path | ~56 | tests |
+
+The 47 are eleven lines of the same shape — `(isbed || ischamber) ? A : B`, and the
+`PER_CBH(chamber, bed, hotend)` / `PER_WATCH_CBH(...)` selectors. `PIDTEMPBED` and
+`PIDTEMPCHAMBER` are both off, so `isbed` and `ischamber` are compile-time false and every
+true arm is unreachable — all thirteen mutants on the `df` line, for instance. The behaviour
+behind them is real and different: a bed gets a five-second relay hold instead of three and
+much gentler Ziegler-Nichols factors, because tuning a bed with the hotend's numbers gives a
+bed that oscillates.
+
+**A `PIDTEMPBED` configuration is the obvious lever and it does not work as it stands.** Tried
+and reverted. Two things went wrong, and the second is the interesting one:
+
+- `BED_CHECK_INTERVAL` **does not exist** under `PIDTEMPBED` — the bed is regulated every pass
+  rather than every 5 s — so two test files failed to compile. Fixed properly and kept:
+  `BED_CONTROL_PERIOD_MS` in `simulated_sensors.h` names the property instead of the macro,
+  the same move as `STR_Z_LIMIT`.
+- **The suite then hung on the first `M190`**, 528 tests in. `SimulatedBed` is 110 C at full
+  power with a 120-second time constant; the shipped bed gains are for a real 250 W silicone
+  bed — `Kp 10, Ki 0.023, Kd 305.4`, from an FOPDT model with `Tp=405`. The controller and the
+  plant are mismatched by a factor of several, so the bed never settles and `M190` never
+  returns. A test HAL where "slow" and "never" look identical makes that a hang rather than a
+  failure.
+
+So the configuration is a **plant-and-controller tuning job**, not a one-line `.ini`, and it
+wants its own bed gains stated in the configuration the way `SimulatedMachine` states its own
+steps-per-millimetre. Worth doing — 47 mutants and a genuinely different control path — but it
+is a session of its own with a build-and-run per attempt. Not started.
+
+**A caution about the ~39 initialisers, because I got this wrong once already in this file.**
+The first reading was "dead stores, overwritten before use, all equivalent". That is wrong for
+`maxT`/`minT` at least: they are read at `:881`/`:882` by `NOLESS`/`NOMORE` *and printed* at
+`:911` before `:896`/`:936` overwrite them, so the first reported `T_MIN` carries the
+initialiser. Whether each is equivalent needs the probe, not the dataflow read — which is the
+rule this file already states about equivalence and which I skipped.
+
 **Autotemp rescued (2026-08-13): a whole feature with 27 survivors and no tests.**
 `M104 S<min> B<max> F<factor>` makes the nozzle track extrusion speed — the target becomes
 `min + speed * factor`, capped at `max` — and the only mention of it anywhere in the suite was

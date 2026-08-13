@@ -127,7 +127,7 @@ namespace {
       SimulatedSensors::bed_reads(25.0f);
       thermalManager.setTargetBed(60);
     #endif
-    time_passes_ms((BED_CHECK_INTERVAL) + 1000);
+    time_passes_ms(BED_CONTROL_PERIOD_MS + 1000);
   }
 
 }
@@ -279,7 +279,7 @@ MARLIN_TEST(temperature_errors, the_cold_limit_sits_one_reading_above_the_config
     SimulatedSensors::bed_reads(25.0f);
     thermalManager.setTargetBed(60);
     thermalManager.setTargetHotend(0, 0);          // nobody has asked for a hot nozzle
-    time_passes_ms((BED_CHECK_INTERVAL) + 1000);
+    time_passes_ms(BED_CONTROL_PERIOD_MS + 1000);
     TEST_ASSERT_TRUE_MESSAGE(thermalManager.temp_bed.soft_pwm_amount > 0,
       "the fixture should have the bed heating");
 
@@ -358,7 +358,7 @@ MARLIN_TEST(temperature_errors, the_cold_limit_sits_one_reading_above_the_config
     SimulatedSensors::hotend_reads(25.0f);
     thermalManager.setTargetHotend(200, 0);
     thermalManager.setTargetBed(0);                // nobody has asked for a warm bed
-    time_passes_ms((BED_CHECK_INTERVAL) + 1000);
+    time_passes_ms(BED_CONTROL_PERIOD_MS + 1000);
     TEST_ASSERT_TRUE(thermalManager.temp_hotend[0].soft_pwm_amount > 0);
 
     SimulatedSensors::bed_reads_below(BED_MIN);

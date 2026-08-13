@@ -341,8 +341,8 @@ MARLIN_TEST(thermal_limits, disabling_all_heaters_clears_every_target_duty_cycle
   #endif
 
   // Long enough for the bed's bang-bang check, which only reconsiders every
-  // BED_CHECK_INTERVAL, to have run at least once.
-  time_passes_ms((BED_CHECK_INTERVAL) + 1000);
+  // control period, to have run at least once — see BED_CONTROL_PERIOD_MS.
+  time_passes_ms(BED_CONTROL_PERIOD_MS + 1000);
 
   TEST_ASSERT_TRUE(thermalManager.temp_hotend[0].soft_pwm_amount > 0);
   #if HAS_HEATED_BED
@@ -401,7 +401,7 @@ MARLIN_TEST(thermal_limits, a_disabled_heater_is_not_switched_back_on_by_the_con
   thermalManager.disable_all_heaters();
 
   bool ever_powered = false;
-  for (uint32_t i = 0; i < (BED_CHECK_INTERVAL) + 1000; i++) {
+  for (uint32_t i = 0; i < BED_CONTROL_PERIOD_MS + 1000; i++) {
     HAL_test_advance_millis(1);
     thermalManager.task();
     if (hotend_heater_is_powered()) ever_powered = true;
