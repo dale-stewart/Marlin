@@ -550,6 +550,36 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**Four small 0% commands closed (2026-08-12).** `M119` 0 -> 100% line / 100% mutation,
+`M155` the same, `M80_M81` 0 -> 80% line / 33.3% -> 66.7% mutation, and **`M876` was already
+at 100%** — the `host_actions` tests had covered it, which is worth noticing before writing
+anything: a file at 0% in yesterday's report may not be at 0% today.
+
+`M80` itself is not compiled — `PSU_CONTROL` is off — so the 10 countable lines are `M81`.
+What is left there is classified: two on an `LCD_MESSAGE` with no display to receive it, one
+a +/-1 mutant of the shutdown delay that no assertion can resolve, and one on
+`delayed_power_off`, which is constant-false without `POWER_OFF_TIMER`.
+
+Two of the three tests exist because of a **bare statement with nothing to observe but the
+clock** — `safe_delay(1000)` in `M81`, five survivors, killed by bounding how long the
+command takes. That is now the third instance of the same shape after `planner.synchronize()`
+in `M0` and in `M18`, and it is worth stating as a rule: *a call with no return value and no
+message is asserted on the clock or not at all.*
+
+**`M155` found register #44, and it found it by failing.** The test asserted that a period
+beyond the 60-second limit is clamped; it failed, and the probe said why —
+`set_interval()` clamps `report_interval` but schedules the *first* report from the
+unclamped `seconds`. Nothing at 61 seconds, a report at 261. So `M155 S255` gives four and a
+quarter minutes of silence before the clamp takes any effect, which is the silence the clamp
+exists to prevent. Pinned from both sides so a fix to the broken half cannot break the
+working one.
+
+**`M119` is bracketed rather than shown once**, because a report that always said "open"
+passes any test that closes nothing, and one that always said "TRIGGERED" passes any test
+that closes something. The same switch is read both ways round, driven by moving the
+simulated carriage onto its limit rather than by writing the pin — so what is asserted is
+the whole path a person exercises with their finger, inversion setting included.
+
 **`M17_M18_M84.cpp` rescued (2026-08-12): 17% -> 33% line, 50% -> 81.6% raw, 100% killable.**
 Both figures are over the same 27-line covered set, so they are directly comparable, and the
 line figure is the one that needs explaining: **two thirds of this file is dead on this
@@ -890,7 +920,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 638,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 645,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
