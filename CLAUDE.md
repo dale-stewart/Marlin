@@ -685,8 +685,37 @@ Still dark: chamber tuning. `PIDTEMPCHAMBER` needs a heated chamber, which is a 
 machine rather than a different control mode, so the `ischamber` half of those ternaries remains
 unreachable — worth knowing before reading a figure from `014` as though it covered all three.
 
-The other two buckets of the 142 are unchanged: ~39 initialisers needing a probe rather than a
-dataflow read (see the caution below), and ~56 genuinely unasserted on the hotend path.
+**And the third bucket was too optimistic — "~56 genuinely unasserted" does not survive
+inspection.** Reading the actual mutants rather than the line numbers:
+
+| what | count | why it survives |
+|---|---|---|
+| the heat-up watchdog: `:834`, `:963`, `:964`, `:966`, `:968`, `:973` | ~21 | both its abort arms call `_TEMP_ERROR` -> `kill()`. Register #19 again, inside autotune. The non-abort arm is reached constantly but its only effect is *when* the abort would fire |
+| `print_heater_states(heater_id < 0 ? extruder : heater_id)` at `:954` | 9 | for a hotend tune `heater_id`, `0` and `motion.extruder` are all zero, so every relational mutant agrees. For a bed tune the differing arm passes -1 to `degHotend()`, which indexes `temp_hotend[-1]` — **undefined behaviour**, not different behaviour |
+| `diff > 0.001f` at `:914` | 6 | the swing is ~30 C; `>=`, `> 0.0`, `> 0.1`, `(1==1)` all agree. Separating them needs a heater whose whole oscillation is under a tenth of a degree |
+| the 20-minute timeout at `:985` | 4 | one is `_MIN(t1,t2)` reordered, which is commutative; the rest need a tune that runs 20 simulated minutes without completing a cycle, and the watchdog aborts first |
+| the tuning-style label at `:925`/`:926` | 5 | **this one was a real gap** — see below |
+
+So of the 57, **five were addressable and the rest are blocked or equivalent**. That is the
+honest shape, and the earlier "~56 genuinely unasserted" was a count of lines rather than a
+reading of mutants.
+
+The five: `if (ischamber || isbed) " No overshoot" else STR_CLASSIC_PID` is the only place the
+operator can see *which* set of factors produced the three numbers they are about to paste into
+their configuration. `the_report_names_the_tuning_style_it_used` asserts both directions under
+`014` — a bed tune says no-overshoot and not classic, a hotend tune the reverse — because
+asserting only the bed's would pass against firmware that labelled everything no-overshoot.
+**Measured: 5 -> 1, and the survivor is `(0==1) || isbed`**, equivalent because `ischamber` is
+already a compile-time false. Whole-file survivors 458 -> 454.
+
+**So `temperature.cpp` is closed.** Every remaining survivor has a category and a reason:
+the chamber (needs a heated-chamber machine), the terminal paths behind `kill()` (register #19,
+in both `updateTemperaturesFromRawValues()` and the autotune watchdog), initialisers verified
+dead by probe, wrap-arithmetic sentinels in the `M109`/`M190` waits (defect #52), and mutants
+whose only effect is undefined behaviour. There is no cluster left that a test would help with.
+
+The other two buckets of the 142 are settled below: ~39 initialisers, all equivalent and
+verified by probe, and the 15 chamber arms.
 
 **The ~39 initialisers are equivalent, and it took being wrong twice to establish it.** The
 first reading was "dead stores, all equivalent" — correct, but asserted from a glance. I then
@@ -1358,7 +1387,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **706, 720, 730, 777, 777, 715, 712, 732, 772, 767, 706, 709, 715, 709**. The counts above vary
+**fourteen** configs in `test/`, reporting **706, 720, 730, 777, 777, 715, 712, 732, 772, 767, 706, 709, 715, 710**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

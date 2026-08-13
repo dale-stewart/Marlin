@@ -1182,6 +1182,54 @@ MARLIN_TEST(pid_autotune, the_bed_is_held_at_each_relay_level_for_its_own_minimu
       "a bed relay period should be at least twice the bed's five second hold");
 }
 
+/**
+ * ...and it says which set of factors it used.
+ *
+ * The report is the only place the choice is visible to the operator: the same command,
+ * the same three numbers, and nothing in them says whether they came from the aggressive
+ * classic relations or the conservative ones. Marlin prints `Classic PID` for a hotend and
+ * ` No overshoot` for a bed or chamber, and that label is what tells someone reading a log
+ * which tuning they are looking at.
+ *
+ * Both directions, because the label is a branch on the same `(ischamber || isbed)` the
+ * factors are: asserting only the bed's would pass against firmware that printed
+ * ` No overshoot` for everything.
+ */
+MARLIN_TEST(pid_autotune, the_report_names_the_tuning_style_it_used) {
+  {
+    SimulatedMachine machine;
+    SimulatedBed bed;
+    SavedBedPID saved;
+
+    bed.starts_at(SimulatedHeater::AMBIENT_C);
+    time_passes_ms(400);
+
+    AutotuneReport report;
+    autotune_run(report, "M303 E-1 S70 C3");
+
+    TEST_ASSERT_TRUE_MESSAGE(report.text.find(" No overshoot") != std::string::npos,
+      "a bed tune should report that it used the no-overshoot factors");
+    TEST_ASSERT_TRUE_MESSAGE(report.text.find(STR_CLASSIC_PID) == std::string::npos,
+      "and should not also claim the classic ones");
+  }
+  {
+    SimulatedMachine machine;
+    SimulatedHotend hotend;
+    SavedPID saved;
+
+    hotend.starts_at(SimulatedHeater::AMBIENT_C);
+    time_passes_ms(400);
+
+    AutotuneReport report;
+    autotune_run(report, "M303 E0 S180 C3");
+
+    TEST_ASSERT_TRUE_MESSAGE(report.text.find(STR_CLASSIC_PID) != std::string::npos,
+      "a hotend tune should report that it used the classic factors");
+    TEST_ASSERT_TRUE_MESSAGE(report.text.find(" No overshoot") == std::string::npos,
+      "and should not also claim the no-overshoot ones");
+  }
+}
+
 #endif // PIDTEMPBED && HAS_HEATED_BED
 
 #endif // PIDTEMP

@@ -55,3 +55,17 @@ Two numbers, and they answer different questions. **How many survivors did this 
 re-run the previous run's survivor list; that population is fixed by definition. **How good is
 the suite now?** — a fresh full run, quoted with its covered-line count, because that count *is*
 the population. Give both, and never subtract one run's total from another's.
+
+**Count a remaining-work bucket by reading mutants, not by counting lines.** A survivor summary
+groups by line, and it is tempting to total the lines you have not yet explained and call the
+result the work left. That number is almost always too big, because the reasons a cluster
+survives do not respect line boundaries: within one function you will typically find a few
+lines that are genuinely unasserted sitting among others that are blocked behind a terminal
+call, equivalent because the reachable range collapses them, or different only in that they
+invoke undefined behaviour.
+
+The difference matters because it changes what you do next, and the ratio is often stark — one
+pass here turned "about fifty-six genuinely unasserted" into five addressable and the rest
+already explained. Read the mutant text for each line in the bucket before you promise the
+bucket, and say which category each line landed in. An estimate built from line counts is a
+claim you have not checked.
