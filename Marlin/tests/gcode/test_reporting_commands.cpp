@@ -113,8 +113,15 @@ MARLIN_TEST(reporting_commands, M119_reports_each_switch_as_it_actually_is) {
 
   TEST_ASSERT_TRUE_MESSAGE(when_open != "<absent>",
     "the report should name the X minimum switch this build has");
-  TEST_ASSERT_TRUE_MESSAGE(when_open != when_closed,
-    "and say something different about it when it is closed than when it is open");
+
+  // Against the words, not against each other. "the two readings differ" is satisfied by a
+  // report that has them the wrong way round, which is exactly what an inverted comparison
+  // produces — and a person reading M119 to find out why their machine will not home is
+  // relying on the words being right, not merely on their being two of them.
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(STR_ENDSTOP_OPEN, when_open.c_str(),
+    "a carriage clear of its switch should read open");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(STR_ENDSTOP_HIT, when_closed.c_str(),
+    "and one sitting on it should read triggered");
 }
 
 // Every switch the build has gets a line, not just the one being pressed.

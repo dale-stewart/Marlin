@@ -550,6 +550,42 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**`endstops.cpp` closed (2026-08-12): 79% line, 24.8% -> 34.4% raw, 100% killable (54/54).**
+The raw figure is the lowest here by a distance and it is not a gap. **103 of the 157
+testable mutants are erased by the preprocessor**, 77 of them on a single line:
+
+    MAP(ES_REPORT, X_MIN, X2_MIN, X_MAX, X2_MAX, Y_MIN, ..., Z4_MAX);
+
+sixteen switch names, of which this build has three. Every survivor there substitutes one of
+the *absent* names — `X2_MIN` becomes `X0_MIN` — and `TERF(USE_X2_MIN, ...)` expands to
+nothing either way. That is `planner.cpp:1223` again, with the same tell: every survivor
+touches the names and none touches the comparison, which lives on the `#define` a line
+above. The rest are the same story for `ENDSTOP_NOISE_THRESHOLD`, `USE_Z_MIN_PROBE`,
+`BLTOUCH` and `JOYSTICK_DEBUG`, plus two on `__O2` — an optimisation attribute with no
+semantics — and one in `validate_homing_move()` whose else calls `kill()`.
+
+**Two lessons, and the first was my own mistake.** The first version of
+`each_switch_is_reported_from_its_own_pin` compared each switch's closed reading against its
+*open* reading and asserted they differed. It killed nothing, and the reason is the trap
+this file has warned about since `M105`: a fault that inverts every switch inverts both
+readings, so "they differ" still holds. Proven rather than argued — inverting the comparison
+by hand left the test passing. It now asserts against `STR_ENDSTOP_HIT` and
+`STR_ENDSTOP_OPEN`, the words the firmware defines, and the same injection fails it.
+
+The second: **`resync()` is a third instance of "a call with no return value and no message
+is asserted on the clock or not at all".** `enable()` and `enable_globally()` both end in it,
+it returns void, and its body is a delay that waits for the sampling interrupt to run once —
+so every mutant of it and of its guard survived everything. Timing `enable(true)` against
+`enable(false)` killed eleven at a stroke. After `planner.synchronize()` in `M0` and `M18`,
+and `M81`'s shutdown pause, that rule has earned its place.
+
+**And the per-axis gap again.** `Endstops::update()` has a hand-written
+`if (AXIS_IS_MOVING(n))` / `if (AXIS_DIR_REV(n))` block per axis, and the existing "a closed
+switch is ignored while the axis moves away" test drove only X — so widening Y's or Z's copy
+to always-true survived. Same shape as `each_axis_homes_against_its_own_switch`, one level
+down: there it was which switch homing drives *against*, here which switch is *ignored*. The
+failure it prevents is a printer that cannot be backed off its own limit.
+
 **Four small 0% commands closed (2026-08-12).** `M119` 0 -> 100% line / 100% mutation,
 `M155` the same, `M80_M81` 0 -> 80% line / 33.3% -> 66.7% mutation, and **`M876` was already
 at 100%** — the `host_actions` tests had covered it, which is worth noticing before writing
@@ -920,7 +956,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 645,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 651,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 

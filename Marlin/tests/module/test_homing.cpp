@@ -211,6 +211,59 @@ MARLIN_TEST(endstops, a_closed_switch_is_ignored_while_the_axis_moves_away_from_
 }
 
 /**
+ * ...and the same on Y and Z, which is not the same code.
+ *
+ * `Endstops::update()` has a separate `if (AXIS_IS_MOVING(n))` and `if (AXIS_DIR_REV(n))`
+ * per axis — hand-written, one block each, reading that axis's own pins and inversion
+ * setting. Testing it on X leaves Y's and Z's copies unasserted, and widening either of
+ * them to always-true survives every X test there is.
+ *
+ * This is the same gap `each_axis_homes_against_its_own_switch` was written for, one level
+ * down: there it was which switch homing drives against, here it is which switch is
+ * *ignored*. A machine that recorded a hit while retracting off a limit would refuse to
+ * move away from it — the failure is a printer that cannot be un-stuck.
+ */
+#if HAS_Y_AXIS
+  MARLIN_TEST(endstops, a_closed_Y_switch_is_ignored_while_Y_moves_away_from_it) {
+    SimulatedMachine machine;
+    EndstopsWatching watching;
+
+    YRail y(5.0f, 1.0f);
+    TEST_ASSERT_TRUE_MESSAGE(y.closed(), "the Y switch should start closed");
+
+    xyze_pos_t at = motion.position; at.y = 1.0f;
+    motion.position = at; planner.set_position_mm(at);
+
+    xyze_pos_t target = motion.position; target.y = 20.0f;
+    TEST_ASSERT_TRUE(planner.buffer_line(target, 20.0f));
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+
+    TEST_ASSERT_FALSE_MESSAGE(endstops.trigger_state(), "a hit was recorded moving Y away");
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 20.0f, y.mm());
+  }
+#endif
+
+#if HAS_Z_AXIS
+  MARLIN_TEST(endstops, a_closed_Z_switch_is_ignored_while_Z_moves_away_from_it) {
+    SimulatedMachine machine;
+    EndstopsWatching watching;
+
+    ZRail z(5.0f, 1.0f);
+    TEST_ASSERT_TRUE_MESSAGE(z.closed(), "the Z switch should start closed");
+
+    xyze_pos_t at = motion.position; at.z = 1.0f;
+    motion.position = at; planner.set_position_mm(at);
+
+    xyze_pos_t target = motion.position; target.z = 20.0f;
+    TEST_ASSERT_TRUE(planner.buffer_line(target, 20.0f));
+    TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
+
+    TEST_ASSERT_FALSE_MESSAGE(endstops.trigger_state(), "a hit was recorded moving Z away");
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 20.0f, z.mm());
+  }
+#endif
+
+/**
  * M121 turns endstop checking off, and then the switch does nothing.
  *
  * This is what a macro relies on when it deliberately drives past a limit.
