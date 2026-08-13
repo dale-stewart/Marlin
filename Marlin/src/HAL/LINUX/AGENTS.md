@@ -9,10 +9,9 @@ The LINUX HAL is a **native host build** — there is no MCU and no Arduino fram
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 buildroot/bin/mftest -t linux_native -n1 -y          # host-native build, EEPROM enabled
-buildroot/bin/mftest -t linux_native_test -n1 -y      # build + Unity unit tests
 ```
 
-The `linux_native` target (`buildroot/tests/linux_native/config-01.ini`, `BOARD_SIMULATED`, `EEPROM_SETTINGS` on) is the primary smoke target and must be green before considering LINUX work done. The `linux_native_test` target extends it with the PlatformIO Unity test framework (`+<test>` sources, `-Werror`) and is the one to run when changing HAL code that has unit tests.
+The `linux_native` target (`buildroot/tests/linux_native/config-01.ini`, `BOARD_SIMULATED`, `EEPROM_SETTINGS` on) is the primary smoke target and must be green before considering LINUX work done. There is no unit-test target for this HAL: the suite builds against `HAL/TEST` only, so a change here is covered by the smoke target and by nothing else.
 
 > Do NOT use `rm -rf .pio/build/...` to force a rebuild — the cross-profile write guard blocks it and it is unsafe. Use `pio run -e <env> -t clean` (removes only build artifacts) or just let `mftest` rebuild.
 
@@ -37,7 +36,7 @@ Because it is a plain C++ program:
 
 4. **No real ADC / PID feedback.** `MarlinHAL::adc_value()` synthesizes a 10-bit reading from the simulated GPIO bit value (`Gpio::get(pin) >> 2`). `main.cpp`'s `simulation_loop()` runs `Heater` (hotend/bed) and `LinearAxis` (X/Y/Z/E) objects that update pin state in software — this is the only "hardware" feedback loop, and it runs on its own thread alongside `loop()`.
 
-5. **`main()` is excluded under `UNIT_TEST`.** `main.cpp` is wrapped in `#ifndef UNIT_TEST` (and `#ifdef __PLAT_LINUX__`). The `linux_native_test` env compiles the HAL as a library for Unity tests and does **not** link `main()` — so a test build "succeeds" without the console entry point. Don't add HAL runtime code that only runs from `main()` and expect it to execute under the test env.
+5. **`main()` is excluded under `UNIT_TEST`.** `main.cpp` is wrapped in `#ifndef UNIT_TEST` (and `#ifdef __PLAT_LINUX__`). Nothing builds this HAL under `UNIT_TEST` any more, but the guard stays: `main()` is the console entry point and only `env:linux_native` links it, so HAL runtime code that only runs from `main()` runs in exactly one place.
 
 6. **Threads + `yield()` model timing, not interrupts.** There are no real ISRs; `CRITICAL_SECTION_START/END` are empty, `isr_on/off` are no-ops, and `DELAY_CYCLES` is `Clock::delayCycles()`. The step/sim timing is driven by `Clock` (set to `F_CPU` in `main()`) and `HAL_timer_init()`, plus per-thread `std::this_thread::yield()`. Real-time behavior is approximate and host-load dependent.
 
@@ -55,12 +54,12 @@ Because it is a plain C++ program:
 - Keep HAL changes in `Marlin/src/HAL/LINUX/` and its `hardware/`, `include/`, `inc/`, `u8g/` subfolders. There are no board pin files here — `BOARD_SIMULATED` is the only board and the pin map is the fixed software array.
 - The build is host-native: no flash/linker-script constraints, no MCU family macros, no Arduino `Serial` object — `MYSERIAL1` is the `HalSerial`-backed `usb_serial` (`HAL.h`/`HAL.cpp`).
 - `simulator_linux_*` envs in `ini/native.ini` are a _different_ target: they build the graphical `NATIVE_SIM` HAL (`src/HAL/NATIVE_SIM`, SDL2/GLM UI), **not** this LINUX HAL. Do not conflate the two — LINUX is the headless console build, NATIVE_SIM is the GUI simulator.
-- When you change HAL code, run `linux_native` (and `linux_native_test` if unit tests are affected) and verify green before committing.
+- When you change HAL code, run `linux_native` and verify green before committing.
 
 ## Related
 
 - `Marlin/src/HAL/NATIVE_SIM/` — the sibling GUI simulator HAL (SDL2/GLM), built via `simulator_linux_*` envs (distinct from this LINUX HAL).
 - Wiki: [[hal-linux]], [[marlin-src-hal]].
 - `Marlin/src/HAL/shared/` — shared HAL APIs (`eeprom_api`, SPI helpers, `Marduino.h`) that this HAL reuses.
-- `ini/native.ini` — `[env:linux_native]` / `[env:linux_native_test]` definitions.
+- `ini/native.ini` — the `[env:linux_native]` definition.
 - `buildroot/tests/linux_native/config-01.ini` — the `BOARD_SIMULATED` + EEPROM test config.

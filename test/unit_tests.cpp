@@ -168,25 +168,20 @@ static void prepare_simulated_peripherals() {
 /**
  * Put the simulated peripherals back to rest between tests.
  *
- * Tests share one process, so a peripheral left running by one test is still running
- * during the next. Under the native HAL that is not merely untidy: its timers are POSIX
- * timers delivering real signals, and one left armed at a stepper-interrupt rate
- * interrupts every blocking call in the process from then on. `sleep_for()` restarts on
- * EINTR, so a two-millisecond delay in a later test stops finishing at all — which
- * presents as an unrelated test hanging, and only in the orders that happen to run the
- * offending test first.
+ * Tests share one process, so anything one test leaves running is still running during the
+ * next, and the result stops being a function of the code and starts being a function of
+ * the order. Everything below exists because some version of that cost a diagnosis.
  *
- * Disarming after every test makes the suite's result independent of the order it runs
- * in, which is the property that lets a mutation harness link the objects in whatever
- * order it finds them.
+ * This used to begin by disarming POSIX timers, because the suite could also be built
+ * against HAL/LINUX, where a timer left armed at a stepper-interrupt rate interrupted every
+ * blocking call in the process from then on — register #20. That build is gone: unit tests
+ * run against HAL/TEST only, where a timer is state rather than a signal and cannot reach
+ * out of the test that armed it. The rest of this function still matters, because state left
+ * in the *firmware* travels between tests on any HAL.
  */
 static std::string current_test_name;
 
 static void quiesce_simulated_peripherals() {
-  #ifdef __PLAT_LINUX__
-    HAL_timer_stop_all();
-  #endif
-
   // A test that fails part-way through a click leaves the button held for every test after
   // it — same reasoning as the heater targets below.
   SimulatedHardware::release_panel_buttons();

@@ -19,44 +19,24 @@
 #pragma once
 
 /**
- * Let time pass, whichever HAL the tests are built against.
+ * Let time pass.
  *
- * Under the test HAL time is a counter and advancing it is exact. Under the LINUX HAL
- * time is the wall clock, and the nearest equivalent is to accelerate it and sleep for
- * a scaled-down interval — approximate, and the reason the test HAL exists. Tests use
- * this rather than either mechanism directly, so they read the same in both builds.
+ * Time here is a counter, so advancing it is exact and costs nothing. That is the whole
+ * reason this HAL exists, and it is why a test can say "a second goes by" and mean it.
+ *
+ * This used to have a second implementation for HAL/LINUX, where time is the wall clock:
+ * it accelerated the clock by a thousand and slept for a scaled-down interval, which was
+ * approximate, slow, and could not be used to wait for anything the firmware had to do
+ * first. Unit tests no longer build against that HAL, so the approximation is gone and
+ * `advance_millis()` means exactly what it says.
  */
 
 #include "src/inc/MarlinConfig.h"
+#include "src/HAL/TEST/timers.h"
 
-#ifdef __PLAT_TEST__
-
-  #include "src/HAL/TEST/timers.h"
-
-  // Declared in a test as `TestClock clock;` — under this HAL there is nothing to set
-  // up, because advancing time is already exact.
-  struct TestClock {
-    static void advance_seconds(const uint32_t s) { HAL_test_advance_millis(s * 1000); }
-    static void advance_millis(const uint32_t ms) { HAL_test_advance_millis(ms); }
-  };
-
-#else
-
-  #include "src/HAL/LINUX/hardware/Clock.h"
-
-  /**
-   * Accelerates the wall clock for as long as it is in scope.
-   *
-   * The acceleration has to cover the whole test, not just the sleeps: this HAL reports
-   * elapsed time as (now - startup) * multiplier, so putting the multiplier back while
-   * a stopwatch is still running would shrink the time it has already measured.
-   */
-  struct TestClock {
-    static constexpr double ACCELERATION = 1000.0;
-    TestClock() { Clock::setTimeMultiplier(ACCELERATION); }
-    ~TestClock() { Clock::setTimeMultiplier(1.0); }
-    static void advance_millis(const uint32_t ms) { Clock::delayMillis(ms); }
-    static void advance_seconds(const uint32_t s) { advance_millis(s * 1000); }
-  };
-
-#endif
+// Declared in a test as `TestClock clock;` — there is nothing to set up, because
+// advancing time is already exact.
+struct TestClock {
+  static void advance_seconds(const uint32_t s) { HAL_test_advance_millis(s * 1000); }
+  static void advance_millis(const uint32_t ms) { HAL_test_advance_millis(ms); }
+};

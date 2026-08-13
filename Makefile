@@ -54,7 +54,6 @@ help:
 	@echo "make unit-test-single-local    : Run unit tests for a single config locally"
 	@echo "make unit-test-single-local-docker : Run unit tests for a single config locally, using docker"
 	@echo "make unit-test-all-local       : Run all code tests locally (test HAL)"
-	@echo "make unit-test-integration     : Run the same tests against the LINUX HAL"
 	@echo "make unit-test-coverage        : Run one config's unit tests with gcov, report coverage"
 	@echo "make unit-test-mutation        : Mutation-test one source file (TARGET=path/to/file.cpp)"
 	@echo "make unit-test-asan            : Run one config's unit tests under AddressSanitizer"
@@ -125,13 +124,16 @@ tests-all-local-docker:
 	@if ! $(CONTAINER_RT_BIN) images -q $(CONTAINER_IMAGE) > /dev/null ; then $(MAKE) setup-local-docker ; fi
 	$(CONTAINER_RT_BIN) run $(CONTAINER_RT_OPTS) $(CONTAINER_IMAGE) make tests-all-local VERBOSE_PLATFORMIO=$(VERBOSE_PLATFORMIO) GIT_RESET_HARD=$(GIT_RESET_HARD)
 
-# The suite everything measures against. The test HAL is a strict superset of the LINUX
-# one — every test that runs there runs here — and it is the only env where time can be
-# advanced on request, so motion, blocking commands and the interrupt handlers are
-# reachable. The LINUX HAL keeps its peripherals on real OS facilities (wall-clock sleeps,
-# POSIX timers, signals), which makes it slower and, on the evidence of register entries
-# #16, #18 and #20, the source of every instrument defect found so far. It is kept as an
-# integration check, not as the working loop: see `unit-test-integration`.
+# The suite, and the only one. Unit tests build against HAL/TEST, where time advances only
+# when a test asks — so motion, blocking commands and the interrupt handlers are reachable,
+# and a run is a function of the code rather than of how busy the machine was.
+#
+# There is deliberately no LINUX-HAL equivalent any more. That HAL backs its peripherals on
+# real OS facilities, which is right for a board and wrong for a test, and the arrangement
+# failed in both directions: every command that waits was unreachable there, and the tests
+# that could run were slow enough that nobody ran them — the build was broken for seven days
+# and 56 commits before anyone noticed. HAL/LINUX is still built, as firmware, by
+# `env:linux_native`.
 UNIT_TEST_ENV ?= testhal_native_test
 
 unit-test-single-local:
@@ -148,9 +150,6 @@ unit-test-all-local:
 # Slower and historically the noisier of the two, so it is run deliberately rather than
 # on every change — but it is the only thing that exercises that HAL, and it has earned
 # its keep by failing when the test HAL could not.
-unit-test-integration:
-	platformio run -t test-marlin -e linux_native_test
-
 COVERAGE_DIR ?= .pio/coverage
 
 # Which suite to measure. Mutants are restricted to the lines this build marks covered,

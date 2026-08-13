@@ -50,11 +50,7 @@
 #include "src/inc/MarlinConfig.h"
 #include "src/module/stepper.h"
 
-#ifdef __PLAT_TEST__
-  #include "src/HAL/TEST/hardware/Gpio.h"
-#else
-  #include "src/HAL/LINUX/hardware/Gpio.h"
-#endif
+#include "src/HAL/TEST/hardware/Gpio.h"
 
 class SimulatedAxisWithLimit : public Peripheral {
 public:

@@ -90,7 +90,6 @@ FORCE_INLINE static void HAL_timer_restrain(const uint8_t timer_num, const uint1
 
 void HAL_timer_enable_interrupt(const uint8_t timer_num);
 void HAL_timer_disable_interrupt(const uint8_t timer_num);
-void HAL_timer_stop_all();   // test harness only — disarm, see timers.cpp
 bool HAL_timer_interrupt_enabled(const uint8_t timer_num);
 
 inline void HAL_timer_isr_prologue(const uint8_t) {}

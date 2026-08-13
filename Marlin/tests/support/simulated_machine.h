@@ -60,14 +60,6 @@ public:
     marlin.setState(MF_RUNNING);               // motion is ignored while not running
 
     SimulatedHardware::ensure_ready();          // main() never runs here
-    #ifndef __PLAT_TEST__
-      // The LINUX HAL's interrupts are POSIX signals, which would arrive between
-      // assertions. Silence them and drive stepper.isr() by hand instead.
-      DISABLE_STEPPER_DRIVER_INTERRUPT();
-      DISABLE_TEMPERATURE_INTERRUPT();
-      HAL_timer_set_compare(MF_TIMER_STEP, HAL_TIMER_TYPE_MAX);
-      HAL_timer_set_compare(MF_TIMER_TEMP, HAL_TIMER_TYPE_MAX);
-    #endif
 
     release_kill_button();
 
@@ -105,33 +97,22 @@ public:
   // Let the machine move until the planner is empty.
   // Returns false if it did not finish, so a stuck queue fails rather than hangs.
   //
-  // Under the test HAL the machine moves because time moves: advancing the clock runs
-  // whichever step interrupts fall inside the interval. Calling stepper.isr() by hand
-  // here would step the motors while the clock stood still — the LINUX build has to do
-  // that only because its interrupts are real signals, which a test cannot schedule.
+  // The machine moves because time moves: advancing the clock runs whichever step
+  // interrupts fall inside the interval. Calling stepper.isr() by hand would step the
+  // motors while the clock stood still, which is what a test build had to do when the
+  // suite could also be built against real signals it could not schedule.
   static bool run_until_idle(const uint32_t max_steps = 20000000) {
-    #ifdef __PLAT_TEST__
-      constexpr uint32_t SLICE_US = 100;
-      for (uint32_t i = 0; i < max_steps / SLICE_US; i++) {
-        if (!planner.has_blocks_queued()) return true;
-        HAL_test_advance_micros(SLICE_US);
-      }
-    #else
-      for (uint32_t i = 0; i < max_steps; i++) {
-        if (!planner.has_blocks_queued()) return true;
-        stepper.isr();
-      }
-    #endif
+    constexpr uint32_t SLICE_US = 100;
+    for (uint32_t i = 0; i < max_steps / SLICE_US; i++) {
+      if (!planner.has_blocks_queued()) return true;
+      HAL_test_advance_micros(SLICE_US);
+    }
     return false;
   }
 
-  // Run the interrupt a fixed number of times, for tests that want partial progress.
+  // Let a fixed amount of time pass, for tests that want partial progress.
   static void step(const uint32_t times) {
-    #ifdef __PLAT_TEST__
-      for (uint32_t i = 0; i < times; i++) HAL_test_advance_micros(100);
-    #else
-      for (uint32_t i = 0; i < times; i++) stepper.isr();
-    #endif
+    for (uint32_t i = 0; i < times; i++) HAL_test_advance_micros(100);
   }
 
   // Where the steppers actually are, in millimetres.

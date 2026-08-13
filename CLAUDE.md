@@ -827,42 +827,66 @@ adding the configuration was cheaper than any test.
 
 ## Which HAL the tests run against
 
-**The test HAL is the working loop. The LINUX HAL is an integration check.**
+**HAL/TEST, and only HAL/TEST.** As of 2026-08-12 there is no way to build the unit tests
+against anything else: `linux_native_test` and `linux_native_coverage` are deleted, so is
+`make unit-test-integration`, and `[native_unit_test]` — the section every test env now
+extends — deliberately names no HAL. A test environment that descends from a HAL
+environment is how a suite ends up built against the wall clock, which is the mistake this
+prevents rather than documents.
 
-`testhal_native_test` is a strict superset — verified by comparing the test names the two
-binaries actually register, and no test exists under LINUX that does not exist here. It is
-also the only env where time advances on request, so motion, blocking commands and the
-interrupt handlers are reachable at all; every coverage and mutation figure in `docs/`
-comes from it.
+`HAL/LINUX` is still built, as **firmware**, by `env:linux_native`. That is all it is for.
 
-The LINUX HAL backs its peripherals with real OS facilities — wall-clock sleeps, POSIX
-timers, signals — which is why it is slower and why every instrument defect found so far
-(register #16, #18, #20) lived there rather than in the firmware. It still earns its place
-as the only thing exercising that HAL, and #20 was a genuine order-dependence it caught
-that the test HAL could not. Run it deliberately, with `make unit-test-integration`, not
-on every change.
+The reasoning is worth keeping because the arrangement failed in both directions:
+
+- **Real time makes most of the suite unreachable.** Under wall-clock time a test cannot
+  advance the clock, so every command that waits — `G4`, `M400`, `M109`, homing, arcs — is
+  not expressible. Those tests were guarded out, which meant the LINUX build exercised the
+  code *least* likely to be HAL-sensitive.
+- **Nobody ran it.** `b301300403` (2026-08-05) appended four tests after
+  `test_step_timing.cpp`'s closing `#endif`, and the LINUX build stopped compiling for
+  **seven days and 56 commits** before anyone noticed. It was found by accident, while
+  trying to reproduce a defect on that HAL. A check that can be broken for a week without
+  anyone tripping over it is not a check.
+- **And it did not finish.** Measured before deleting it: 193 tests in 800 seconds, then
+  killed. At that rate a full run is half an hour.
+
+Its historical value was real — registers #16, #18 and #20 were all found there — and it is
+spent. #20, the link-order dependence, is now guarded by something cheaper and HAL-free: the
+mutation runner sorts its link inputs, and the suite is verified under sorted, reversed,
+filesystem and four shuffled orders.
+
+Two things fell out of the removal that are worth knowing:
+
+- **`preflight-checks.py` grants board compatibility by name, and used to grant it by
+  inheritance.** `testhal_native_asan` qualified only because its `extends` chain reached
+  `linux_native_test`, which the board's own annotation in `pins.h` names. Breaking that
+  chain broke the asan env with a message pointing at an environment that no longer exists.
+  The exemption is now `_native_test`, `_native_coverage`, `_native_asan` — **the name is
+  the whole rule**, so a new measurement env must match it or it will not build at all.
+- **The whole-file `#ifdef __PLAT_TEST__` guards on the test files are now inert** and were
+  deliberately left in place. They document what a file needs; they no longer switch
+  anything, because the macro is always defined for a test build. That also means the trap
+  that caused the seven-day breakage is gone rather than merely avoided — a test appended
+  after a closing `#endif` now simply runs.
 
 ## Test, coverage, and mutation tooling
 
 ```bash
 make unit-test-all-local                    # test HAL, all 3 configs in test/
-make unit-test-integration                  # LINUX HAL, all 3 configs — the slow check
 make unit-test-coverage                     # test HAL + gcov/gcovr report
 make unit-test-mutation TARGET=<file.cpp>   # mutation-test one source file, test HAL
 pio run -t marlin_default -e acceptance_native_test        # acceptance suite alone
 pio run -t marlin_default -e acceptance_native_coverage    # ... with coverage
 ```
 
-**Everything defaults to the test HAL now.** `UNIT_TEST_ENV`, `COVERAGE_ENV` and
-`MUTATION_ENV` all name `testhal_*`, so the bare commands above measure the suite the
-documents quote. Nothing needs saying twice any more:
+**There is only the test HAL now.** `UNIT_TEST_ENV`, `COVERAGE_ENV` and `MUTATION_ENV` all
+name `testhal_*` and there is no longer a second suite to name by mistake:
 
 ```bash
 make unit-test-all-local                                  # test HAL, all three configs
 make unit-test-coverage                                   # test HAL + gcov
 make unit-test-mutation TARGET=<file.cpp>                 # test HAL
 make unit-test-mutation TARGET=<file.cpp> RERUN=.pio/mutation/results.json
-make unit-test-integration                                # the LINUX HAL, run deliberately
 ```
 
 **Coverage and mutation must still name the same suite** whenever either is overridden —
@@ -896,7 +920,6 @@ Environments added by this fork, in `ini/native.ini`:
 
 | Env | Purpose |
 |---|---|
-| `linux_native_coverage` | `linux_native_test` + gcov instrumentation (integration only) |
 | `acceptance_native_test` | acceptance suite only, unit tests excluded |
 | `acceptance_native_coverage` | the same, with coverage |
 | `testhal_native_test` | **the default suite** — unit tests against `HAL/TEST`, time advances only on request |

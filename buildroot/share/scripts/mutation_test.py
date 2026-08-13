@@ -317,7 +317,7 @@ def report(results, total_generated):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('target', help='source file to mutate, e.g. Marlin/src/gcode/parser.cpp')
-    ap.add_argument('--env', default='linux_native_test', help='PlatformIO environment (default: %(default)s)')
+    ap.add_argument('--env', default='testhal_native_test', help='PlatformIO environment (default: %(default)s)')
     ap.add_argument('--suite', default='default', help='test suite from test/*.ini (default: %(default)s)')
     ap.add_argument('--coverage-build', default=None,
                     help='gcov build dir used to restrict mutants to covered lines '

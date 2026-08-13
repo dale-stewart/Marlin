@@ -116,9 +116,12 @@ if pioutil.is_pio_build():
         config = env.GetProjectConfig()
         result = check_envs("env:"+build_env, board_envs, config)
 
-        # Make sure board is compatible with the build environment. Skip for _test
-        # and _coverage, since the board is manipulated as each unit test is executed.
-        if not result and not build_env.endswith(("_native_test", "_native_coverage")):
+        # Make sure board is compatible with the build environment. Skip the unit-test
+        # environments, since the board is manipulated as each unit test is executed.
+        # These used to qualify by inheriting from an env named in the board's own list;
+        # that chain is gone now that no test env descends from a HAL env, so the names
+        # are the whole rule and a new one must match this tuple to build at all.
+        if not result and not build_env.endswith(("_native_test", "_native_coverage", "_native_asan")):
             err = "Error: Build environment '%s' is incompatible with %s. Use one of these environments: %s" % \
                   ( build_env, motherboard, ", ".join([ e[4:] for e in board_envs if e.startswith("env:") ]) )
             raise SystemExit(err)

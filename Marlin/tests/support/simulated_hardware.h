@@ -35,11 +35,11 @@
  *     and BED_MAXTEMP. The first `Temperature::task()` after the ISR starts producing
  *     readings would call `kill()`, which never returns.
  *
- *  2. `HAL_timer_init()` before anything that starts a timer. Under the LINUX HAL a
- *     Timer's frequency is zero until `init()` has run, and `Timer::setCompare()`
- *     divides by it — that is the SIGFPE that `Temperature::init()` was recorded as
- *     causing, and it is the same cause that once broke `Stepper::init()`. The test HAL
- *     guards the division, so it survives either way; the LINUX HAL does not.
+ *  2. `HAL_timer_init()` before anything that starts a timer. A Timer's frequency is zero
+ *     until `init()` has run and `Timer::setCompare()` divides by it — the SIGFPE that
+ *     `Temperature::init()` was recorded as causing, and the same cause that once broke
+ *     `Stepper::init()`. This HAL guards the division, so the order is belt and braces
+ *     rather than load-bearing; it was load-bearing under HAL/LINUX, which is gone.
  *
  *  3. `Temperature::init()` last, because it is what arms and enables MF_TIMER_TEMP.
  *     From here on, advancing simulated time runs the real `Temperature::isr()`.
@@ -50,13 +50,8 @@
 #include "src/module/temperature.h"
 #include "src/MarlinCore.h"
 
-#ifdef __PLAT_TEST__
-  #include "src/HAL/TEST/timers.h"
-  #include "src/HAL/TEST/hardware/Gpio.h"
-#else
-  #include "src/HAL/LINUX/timers.h"
-  #include "src/HAL/LINUX/hardware/Gpio.h"
-#endif
+#include "src/HAL/TEST/timers.h"
+#include "src/HAL/TEST/hardware/Gpio.h"
 
 #include <math.h>
 
@@ -77,32 +72,15 @@ public:
     HAL_timer_init();
     stepper.init();
 
-    #ifdef __PLAT_TEST__
-      // An interrupt fires here because time crossed a timer's compare value, so each
-      // timer has to be armed and enabled or advancing the clock does nothing. The
-      // step timer's initial rate is a placeholder: Stepper::isr() programs the real
-      // interval for the block it is running, from its first call onward.
-      HAL_timer_start(MF_TIMER_STEP, STEPPER_TIMER_RATE / 1000);
-      ENABLE_STEPPER_DRIVER_INTERRUPT();
+    // An interrupt fires here because time crossed a timer's compare value, so each
+    // timer has to be armed and enabled or advancing the clock does nothing. The
+    // step timer's initial rate is a placeholder: Stepper::isr() programs the real
+    // interval for the block it is running, from its first call onward.
+    HAL_timer_start(MF_TIMER_STEP, STEPPER_TIMER_RATE / 1000);
+    ENABLE_STEPPER_DRIVER_INTERRUPT();
 
-      // Arms and enables MF_TIMER_TEMP, so Temperature::isr() runs from now on.
-      thermalManager.init();
-    #else
-      /**
-       * Silence the timers the moment they exist.
-       *
-       * `Stepper::init()` ends with `HAL_timer_start(MF_TIMER_STEP, 122)` and
-       * `wake_up()`, so by the time it returns the LINUX HAL has a live POSIX interval
-       * timer delivering SIGRTMIN at 122 Hz — and its handler is the real stepper ISR,
-       * arriving between arbitrary instructions of whatever test is running. Masking
-       * has to happen here rather than in a fixture's constructor, because the first
-       * fixture to want working hardware may not be the one that drives motion.
-       */
-      DISABLE_STEPPER_DRIVER_INTERRUPT();
-      DISABLE_TEMPERATURE_INTERRUPT();
-      HAL_timer_set_compare(MF_TIMER_STEP, HAL_TIMER_TYPE_MAX);
-      HAL_timer_set_compare(MF_TIMER_TEMP, HAL_TIMER_TYPE_MAX);
-    #endif
+    // Arms and enables MF_TIMER_TEMP, so Temperature::isr() runs from now on.
+    thermalManager.init();
   }
 
   /**
