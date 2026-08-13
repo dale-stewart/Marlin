@@ -100,6 +100,18 @@ public:
       return thermalManager.degBed();
     }
 
+    // The nearest reading at or above `c`, and the nearest strictly below it — the same
+    // pair the hotend has, for pinning a threshold from both sides. A test that wants a
+    // *fault* has to use these rather than `bed_reads(limit + 5)`: quantisation near the
+    // top of the table is several degrees per count, so "about five over" can land under.
+    static celsius_float_t bed_reads_at_least(const celsius_float_t c) {
+      return drive_bed(bed_code_on_side(true, c));
+    }
+
+    static celsius_float_t bed_reads_below(const celsius_float_t c) {
+      return drive_bed(bed_code_on_side(false, c));
+    }
+
     static celsius_float_t bed_would_read(const celsius_float_t c) {
       return thermalManager.analog_to_celsius_bed(
         raw_adc_t(SimulatedHardware::code_nearest(bed_conv, c) * OVERSAMPLENR));
@@ -166,6 +178,24 @@ private:
   #if HAS_HEATED_BED
     static celsius_float_t bed_conv(const raw_adc_t r) { return thermalManager.analog_to_celsius_bed(r); }
     static celsius_float_t celsius_of_bed(const uint16_t code) { return bed_conv(raw_adc_t(code * OVERSAMPLENR)); }
+
+    static celsius_float_t drive_bed(const uint16_t code) {
+      SimulatedHardware::drive_adc(TEMP_BED_PIN, code);
+      settle();
+      return thermalManager.degBed();
+    }
+
+    static uint16_t bed_code_on_side(const bool at_or_above, const celsius_float_t c) {
+      uint16_t best = 0;
+      float best_err = 1e30f;
+      for (uint16_t code = 0; code < 1024; code++) {
+        const float v = float(celsius_of_bed(code));
+        if (at_or_above ? (v < float(c)) : (v >= float(c))) continue;
+        const float err = fabsf(v - float(c));
+        if (err < best_err) { best_err = err; best = code; }
+      }
+      return best;
+    }
   #endif
 
   // Has every driven pin become the reading the manager reports?

@@ -622,6 +622,56 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**`013-bogus_temp_grace` partly unblocked register #19 (2026-08-13), and the seam was already in
+the firmware.** `_temp_error()` ends in `kill()`, which does not return, so the MINTEMP/MAXTEMP
+checks could be *reached* by a test but never asserted after — 63 survivors, recorded as blocked
+since the register was written. `BOGUS_TEMPERATURE_GRACE_PERIOD` is Marlin's own answer to a
+related problem (sensors are unreliable just after power-on) and within it a temperature error
+disables the heaters and **returns**. That is exactly the seam #19 asks for. No production change,
+nothing stubbed, one line of configuration.
+
+The rule is in `survivor-taxonomy.md` now: **before recording a seam as needing new production
+code, check whether the code already has one behind a build option.** Software that halts on a
+fault usually has a mode where it does not, because its authors needed the same escape.
+
+`test_temperature_errors.cpp`, 9 tests. What they assert is the safety property rather than a
+message: a sensor that has stopped making sense is *detected* and every heater is *switched off* —
+hotend and bed, both directions, target cleared as well as pin, and still off several control
+passes later. A bed fault takes the hotend with it, because `_temp_error()` calls
+`disable_all_heaters()` rather than disabling the one that failed.
+
+**What the configuration actually bought, stated honestly.** Killed-by-assertion went **441 -> 642**
+and timeouts fell **466 -> 348**; raw is 62.6% -> **65.5%** (990/1512) over a covered set that grew
+411 -> 440, so the raw figures are not comparable and the kill count is. Most of that +201 is
+*timeouts becoming assertion kills* — the same mutants detected properly instead of by hanging —
+rather than new behaviour covered. That is worth having on its own: a suite whose detections are
+hangs is slow and its score is soft. (The last 18 of those kills come from a survivor re-run after
+two more bed tests were added, over the same 1512-mutant population.)
+
+**And the min/max cluster only fell 63 -> 42, which turned out to be the more useful finding.**
+The MAXTEMP checks are **masked**, not merely blocked: `updateTemperaturesFromRawValues()` compares
+the raw ADC value against `raw_max` and `manage_hotends()`/`manage_heated_bed()` compare the degrees
+against `maxtemp`/`BED_MAXTEMP`, and since `raw_max` is derived in `init()` by walking until
+`analog_to_celsius(raw_max) <= tmax`, the two are the same predicate either side of the same
+monotonic conversion. Any input reaching one reaches the other, so no assertion can separate them.
+Register #51 — 24 of the 42 that remain are exactly those. The MINTEMP checks have no such twin,
+which is why those *did* fall to tests: the bed's alone went 14 -> 5 once a test drove the bed cold
+with its heater on.
+
+**Two things this file said about the temperature fixture were wrong**, and both cost a wrong first
+draft — see the gotcha, which is corrected. `thermalManager.init()` does **not** SIGFPE and
+`SimulatedHardware::ensure_ready()` has been calling it all along, which is what narrows
+`temp_range[]` to the configured limits and makes them brackettable. And the ADC pipeline is not
+dormant; what is true is that **a changed reading takes ~300 ms of simulated time to arrive**,
+because the ADC is oversampled 16 times. Asserting 50 ms after changing a sensor sees the old value,
+which looks exactly like a fault that went undetected — four tests failed that way first.
+
+One behaviour found and pinned rather than changed: **the cold limit sits one representable reading
+above the configured minimum.** A nozzle reading exactly 5.00 C is shut down and 6.00 C is not,
+because `init()` walks `raw_min` down in steps of `OVERSAMPLENR` from a value that is not a multiple
+of it, so the boundary never lands on a reading the ADC can produce. Harmless — 5 C is below any
+room a printer lives in — and now bracketed to a single count in both directions.
+
 **`M206_M428.cpp` rescued (2026-08-13), and it took a configuration rather than a test:
 40% -> 95% line and 57.4% raw under the default config, 100% line and 87.3% raw / 100%
 killable under `012-max_endstops`.**
@@ -1179,7 +1229,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**twelve** configs in `test/`, reporting **697, 711, 721, 768, 768, 706, 703, 723, 763, 758, 697, 700**. The counts above vary
+**thirteen** configs in `test/`, reporting **697, 711, 721, 768, 768, 706, 703, 723, 763, 758, 697, 700, 706**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -1313,6 +1363,7 @@ Configurations in `test/`:
 | `011-shared_enable` | a board where X and Y share one driver enable pin — the first configuration here with any enable overlap, which makes two thirds of `M17_M18_M84.cpp` reachable at all |
 | `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing. Output is observable, **input is not** — see below |
 | `012-max_endstops` | `Z_HOME_DIR 1` — the first machine here that homes an axis to its *maximum*, which is what makes `home_dir(axis) > 0` reachable and `base_home_pos(axis)` non-zero |
+| `013-bogus_temp_grace` | `BOGUS_TEMPERATURE_GRACE_PERIOD` — a temperature error disables the heaters and **returns** instead of calling `kill()`, which is the seam register #19 asks for and it already existed in the firmware |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
@@ -1393,14 +1444,27 @@ is blocked by PEP 668 on this machine).
   virtual interface and `CardReader::changeMedia()` is public, so a fake block device goes
   in at the level the firmware already abstracts. Simulating a card over SPI would mean
   implementing SD's command protocol to test code sitting well above it.
-- **Commands that wait for hardware need a stand-in sensor.** `M109`/`M190` loop until a
-  temperature is reached and nothing advances a heater here, so a non-zero target would
-  never return. No production seam was needed: `thermalManager.temp_hotend`/`temp_bed`
-  are public and the ADC pipeline that would overwrite them is dormant in this build
-  (it only refreshes when the temperature ISR has produced a full sample set, and that
-  ISR does not run). Tests say what the sensor reads via
-  `Marlin/tests/gcode/simulated_sensors.h`. Note `thermalManager.init()` crashes with
-  SIGFPE in this build — do not call it. The same caution applies to anything calling
+- **Commands that wait for hardware need a stand-in sensor**, and the sensor is driven at
+  the pin, not at the reading. `M109`/`M190` loop until a temperature is reached, so a
+  non-zero target would never return without one. Tests say what the sensor reads via
+  `Marlin/tests/gcode/simulated_sensors.h`, which drives a raw ADC count on the pin
+  `MarlinHAL::adc_value()` samples and lets the firmware's own pipeline turn it into
+  degrees. **Two corrections to what this file used to say here**, both of which cost time
+  on 2026-08-13:
+    - *"The ADC pipeline is dormant in this build"* — it is not, and has not been since the
+      test HAL arrived. `Temperature::isr()` runs whenever simulated time advances, so a
+      value written into `temp_hotend[0].celsius` survives only until the next conversion.
+    - *"`thermalManager.init()` crashes with SIGFPE — do not call it"* — it does not, and
+      `SimulatedHardware::ensure_ready()` has been calling it all along. That matters: `init()`
+      is what narrows `temp_range[]` from the thermistor table's ends to the configured
+      `HEATER_n_MINTEMP`/`MAXTEMP`, so the min/max checks *can* be bracketed against the
+      machine's own limits. Believing the note cost a first draft of
+      `test_temperature_errors.cpp` written against the table's ends instead.
+
+  What is true: **a changed reading takes about 300 ms of simulated time to arrive**, because
+  the ADC is oversampled 16 times and the conversion only lands when a full set is in. A test
+  that changes a sensor and asserts 50 ms later sees the old value, which looks exactly like a
+  fault that went undetected. The same caution applies to anything calling
   `planner.synchronize()` with queued moves.
 - **Simulated pins power up in a state no board is ever in.** Every `Gpio` pin reads LOW
   at reset. On a board `KILL_PIN` has a pull-up and reads HIGH — released — so the

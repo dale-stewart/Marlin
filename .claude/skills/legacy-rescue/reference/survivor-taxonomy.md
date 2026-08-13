@@ -34,6 +34,15 @@ re-checks.
   for the terminal path to be observed and returned from under test, which is a production
   surface change and belongs behind the frontier.
 
+  **Before recording that, check whether the code already has such a seam behind a build
+  option.** Software that halts on a fault very often has a mode in which it does not — a
+  grace period at start-up, a dry-run flag, a "report but continue" setting, a maintenance
+  mode — because the people who wrote it needed the same escape for their own reasons. Where
+  one exists, a configuration turns the whole cluster from blocked into ordinary at the cost
+  of one line, with nothing stubbed and no production code touched. Say plainly in the
+  configuration what it defers and what therefore stays untested: the detection usually
+  becomes assertable while the halting itself does not, and those are different claims.
+
   Check first whether the halt is the *system under test* behaving correctly or the
   *harness* being unfaithful. If the real system genuinely blocks there — waiting on an
   operator, a reset, a signal that only exists in production — then the substitute is
