@@ -195,6 +195,24 @@ fixture whose *correctness* depends on being torn down — one that switches a m
 lock, redirects a stream, starts a thread — silently stops being torn down the moment a test
 fails, which is precisely when you were about to change something.
 
+The list is longer than it first looks, because a plain value can qualify. Anything that shifts
+the **frame of reference** later assertions are expressed in — an origin, a base unit, a
+timezone, a locale, a current user — leaks the same way and is harder to recognise, because
+there is no resource to notice the absence of. The tell is a later test failing against a
+constant it never touched.
+
+**And the state to reset is not only the state your tests set.** A leak can compose out of
+behaviours that are each correct: one test sets a value, the system reacts by entering a mode,
+that mode arms a monitor, and the monitor acts on the *next* test that idles — which is where
+the damage appears, with nothing in it referring to any of the three. Resetting what the test
+touched is not enough, because the test touched the first link only.
+
+Find these by instrumenting the boundary, not by reasoning about which feature could have done
+it. Print the offending state after every test and stop at the first one that shows it; that
+names the culprit in one run, where working backwards from the symptom names candidates for an
+afternoon. Then fix it where the reaction was — the reset belongs next to whatever sets the
+first link, because the two are one leak rather than two.
+
 The damage lands in a later, unrelated test, and it is usually not a failure. Expect the suite
 to hang or to slow down rather than to report anything: a leaked mode leaves later code waiting
 on a condition nothing will now satisfy, and a leaked *scale* — anything that multiplies how

@@ -96,15 +96,41 @@ namespace {
   #endif
 
   #if HAS_Z_AXIS
-    // ...and on Z, which homes against its own minimum switch when there is no probe.
+    // ...and on Z, which homes against its own switch when there is no probe. Which end
+    // that switch is at is a property of the machine: `012-max_endstops` homes Z upward,
+    // and there the minimum switch does not exist — `Z_MIN_ENDSTOP_HIT_STATE` is not even
+    // defined. Everything below therefore names the switch Z homes to rather than the
+    // minimum one, so an assertion that Z "reached its switch" means the same thing on
+    // both machines.
+    #if Z_HOME_TO_MAX
+      #define _Z_LIMIT_PIN       Z_MAX_PIN
+      #define _Z_LIMIT_HIT_STATE Z_MAX_ENDSTOP_HIT_STATE
+      #define _Z_LIMIT_END       SimulatedAxisWithLimit::AT_MAXIMUM
+    #else
+      #define _Z_LIMIT_PIN       Z_MIN_PIN
+      #define _Z_LIMIT_HIT_STATE Z_MIN_ENDSTOP_HIT_STATE
+      #define _Z_LIMIT_END       SimulatedAxisWithLimit::AT_MINIMUM
+    #endif
     struct ZRail : SimulatedAxisWithLimit {
       ZRail(const float switch_at_mm, const float carriage_at_mm)
         : SimulatedAxisWithLimit(Z_STEP_PIN, Z_DIR_PIN, ENABLED(INVERT_Z_DIR),
-                                 Z_MIN_PIN, Z_MIN_ENDSTOP_HIT_STATE,
-                                 int32_t(switch_at_mm * SPM), int32_t(carriage_at_mm * SPM)) {}
+                                 _Z_LIMIT_PIN, _Z_LIMIT_HIT_STATE,
+                                 int32_t(switch_at_mm * SPM), int32_t(carriage_at_mm * SPM),
+                                 _Z_LIMIT_END) {}
       float mm() const { return float(position()) / SPM; }
       float lowest_mm() const { return float(lowest_reached()) / SPM; }
+      // How far it got towards its own switch, whichever end that is.
+      float towards_switch_mm() const { return float(furthest_towards_switch()) / SPM; }
     };
+
+    // Two places to put the Z switch, mirrored for a machine that homes Z upward. Both
+    // sit on the far side of a carriage parked between 8 mm and 12 mm, so the seek move
+    // finds the switch on either machine and no test has to know which one it is on.
+    #if Z_HOME_TO_MAX
+      constexpr float Z_SWITCH_NEAR = 16.0f, Z_SWITCH_FAR = 20.0f;
+    #else
+      constexpr float Z_SWITCH_NEAR = 0.0f, Z_SWITCH_FAR = 5.0f;
+    #endif
   #endif
 
   void host_sends(const char * const line) {
@@ -248,18 +274,25 @@ MARLIN_TEST(endstops, a_closed_switch_is_ignored_while_the_axis_moves_away_from_
     SimulatedMachine machine;
     EndstopsWatching watching;
 
-    ZRail z(5.0f, 1.0f);
+    // Inside the switch, and the way out of it — mirrored on a machine that homes Z up.
+    #if Z_HOME_TO_MAX
+      constexpr float switch_at = 15.0f, starts_at = 20.0f, away = 1.0f;
+    #else
+      constexpr float switch_at = 5.0f, starts_at = 1.0f, away = 20.0f;
+    #endif
+
+    ZRail z(switch_at, starts_at);
     TEST_ASSERT_TRUE_MESSAGE(z.closed(), "the Z switch should start closed");
 
-    xyze_pos_t at = motion.position; at.z = 1.0f;
+    xyze_pos_t at = motion.position; at.z = starts_at;
     motion.position = at; planner.set_position_mm(at);
 
-    xyze_pos_t target = motion.position; target.z = 20.0f;
+    xyze_pos_t target = motion.position; target.z = away;
     TEST_ASSERT_TRUE(planner.buffer_line(target, 20.0f));
     TEST_ASSERT_TRUE(SimulatedMachine::run_until_idle());
 
     TEST_ASSERT_FALSE_MESSAGE(endstops.trigger_state(), "a hit was recorded moving Z away");
-    TEST_ASSERT_FLOAT_WITHIN(0.05f, 20.0f, z.mm());
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, away, z.mm());
   }
 #endif
 
@@ -484,7 +517,7 @@ MARLIN_TEST(homing, homing_leaves_no_switch_recorded_as_hit) {
   SimulatedMachine machine;
   XRail x(0.0f, 20.0f);
   TERN_(HAS_Y_AXIS, YRail y(0.0f, 20.0f));
-  TERN_(HAS_Z_AXIS, ZRail z(0.0f, 8.0f));
+  TERN_(HAS_Z_AXIS, ZRail z(Z_SWITCH_NEAR, 8.0f));
   machine_is_at(20.0f, 20.0f, 8.0f);
 
   motion.set_axis_never_homed(X_AXIS);
@@ -511,7 +544,7 @@ MARLIN_TEST(homing, each_axis_homes_against_its_own_switch) {
   SimulatedMachine machine;
   XRail x(1.0f, 25.0f);
   TERN_(HAS_Y_AXIS, YRail y(3.0f, 25.0f));
-  TERN_(HAS_Z_AXIS, ZRail z(5.0f, 12.0f));
+  TERN_(HAS_Z_AXIS, ZRail z(Z_SWITCH_FAR, 12.0f));
   machine_is_at(25.0f, 25.0f, 12.0f);
 
   motion.set_axis_never_homed(X_AXIS);
@@ -531,7 +564,7 @@ MARLIN_TEST(homing, each_axis_homes_against_its_own_switch) {
     TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.5f, 3.0f, y.lowest_mm(), "Y should have reached the Y switch");
   #endif
   #if HAS_Z_AXIS
-    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.5f, 5.0f, z.lowest_mm(), "Z should have reached the Z switch");
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.5f, Z_SWITCH_FAR, z.towards_switch_mm(), "Z should have reached the Z switch");
   #endif
 }
 

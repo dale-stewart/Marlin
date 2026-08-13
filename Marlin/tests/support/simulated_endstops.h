@@ -31,7 +31,8 @@
  *
  *   - each rising edge on STEP moves the carriage one step, in whichever direction the
  *     DIR pin is asserting (through the axis's INVERT_*_DIR, the way a driver reads it);
- *   - the switch is closed whenever the carriage is at or past the trip point;
+ *   - the switch is closed whenever the carriage is at or past the trip point, "past"
+ *     meaning towards whichever end of the rail the switch is mounted on;
  *   - the pin is driven to the configured `*_ENDSTOP_HIT_STATE` when closed, and away
  *     from it when not.
  *
@@ -52,8 +53,26 @@
 
 #include "src/HAL/TEST/hardware/Gpio.h"
 
+/**
+ * The name of the Z limit switch this machine has.
+ *
+ * Not every machine has both. `Z_MIN_ENDSTOP_HIT_STATE` and `STR_Z_MIN` describe a switch
+ * that does not exist on a printer homing Z upward, and the first is not even defined
+ * there — a test naming it does not fail, it fails to compile. Anything asserting about
+ * "the Z switch" should say it this way.
+ */
+#if Z_HOME_TO_MAX
+  #define STR_Z_LIMIT STR_Z_MAX
+#else
+  #define STR_Z_LIMIT STR_Z_MIN
+#endif
+
 class SimulatedAxisWithLimit : public Peripheral {
 public:
+
+  // Which end of the rail the switch is mounted on, i.e. which way the carriage has to
+  // travel to close it. Spelled the same way the firmware spells it, as a home direction.
+  enum SwitchEnd : int8_t { AT_MINIMUM = -1, AT_MAXIMUM = 1 };
 
   /**
    * @param step_pin      the axis's STEP pin, watched for pulses
@@ -64,12 +83,14 @@ public:
    * @param hit_state     the level that pin takes when the switch is closed
    * @param trip_steps    where the switch closes, in steps from the origin
    * @param start_steps   where the carriage starts, in steps from the origin
+   * @param end           the end of the rail the switch is at, defaulting to the minimum
    */
   SimulatedAxisWithLimit(const pin_t step_pin, const pin_t dir_pin, const bool dir_inverted,
                          const pin_t limit_pin, const uint8_t hit_state,
-                         const int32_t trip_steps, const int32_t start_steps)
+                         const int32_t trip_steps, const int32_t start_steps,
+                         const SwitchEnd end = AT_MINIMUM)
     : step_pin(step_pin), dir_pin(dir_pin), dir_inverted(dir_inverted),
-      limit_pin(limit_pin), hit_state(hit_state),
+      limit_pin(limit_pin), hit_state(hit_state), end(end),
       trip_steps(trip_steps), carriage_steps(start_steps),
       lowest_steps(start_steps), highest_steps(start_steps) {
     Gpio::attachPeripheral(step_pin, this);
@@ -105,7 +126,14 @@ public:
 
   // Start the record again from where the carriage is now.
   void forget_extremes() { lowest_steps = highest_steps = carriage_steps; }
-  bool closed() const { return carriage_steps <= trip_steps; }
+  bool closed() const {
+    return end == AT_MAXIMUM ? carriage_steps >= trip_steps : carriage_steps <= trip_steps;
+  }
+
+  // How far the carriage got in the direction that closes the switch. Which extreme that
+  // is depends on the end the switch is at, and an assertion about "it reached its switch"
+  // means this one whichever machine it is running on.
+  int32_t furthest_towards_switch() const { return end == AT_MAXIMUM ? highest_steps : lowest_steps; }
 
   // How many times the switch went from open to closed — a homing sequence bumps twice.
   uint16_t closures() const { return closure_count; }
@@ -129,6 +157,7 @@ private:
   const bool dir_inverted;
   const pin_t limit_pin;
   const uint8_t hit_state;
+  const SwitchEnd end;
   const int32_t trip_steps;
   int32_t carriage_steps;
   int32_t lowest_steps, highest_steps;

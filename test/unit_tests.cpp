@@ -30,6 +30,9 @@
 #include "unit_tests.h"
 #include "src/module/temperature.h"
 #include "src/module/planner.h"
+#include "src/module/motion.h"
+#include "src/module/printcounter.h"
+#include "src/gcode/queue.h"
 #include "tests/support/simulated_hardware.h"
 #include <stdio.h>
 #include <string>
@@ -219,6 +222,38 @@ static void quiesce_simulated_peripherals() {
   TERN_(HAS_HEATED_BED, thermalManager.setTargetBed(0));
   TERN_(HAS_HEATED_CHAMBER, thermalManager.setTargetChamber(0));
 
+  /**
+   * ...and nothing printing, which is the same leak one step downstream.
+   *
+   * Setting a hot target *starts the print job timer* — that is the firmware's rule, not
+   * the harness's — so any test that heats the nozzle and does not explicitly stop the
+   * job leaves the machine claiming to be printing for every test after it. Zeroing the
+   * target above does not stop the timer.
+   *
+   * That is not cosmetic on a machine with a filament sensor. `should_monitor_runout()`
+   * is `did_pause_print || printingIsActive()`, so a leaked job arms the sensor, and the
+   * first later test that lets the machine idle gets `FILAMENT_RUNOUT_SCRIPT` injected
+   * into the command queue — from a test that never mentioned filament. The failure then
+   * lands two files away, on whichever test asserts that the queue starts empty, and the
+   * suite hangs after it. Defect #48; it was latent for as long as no test between the
+   * heater tests and the queue tests happened to idle.
+   */
+  if (print_job_timer.isRunning() || print_job_timer.isPaused()) print_job_timer.stop();
+
+  /**
+   * Leave nothing queued to run, either.
+   *
+   * The block buffer below is motion the machine still intends to make; this is the same
+   * thing one level up — commands it still intends to *read*. A leftover command runs at
+   * some arbitrary later point, inside a test that did not ask for it, and the injection
+   * queue is worse than the ring buffer because nothing in the report names it — which is
+   * why the two injection slots are cleared by hand: `GCodeQueue::clear()` empties only
+   * the ring buffer.
+   */
+  queue.clear();
+  queue.injected_commands_P = nullptr;
+  queue.injected_commands[0] = '\0';
+
   // A card told to refuse writes stays that way until something says otherwise, and a
   // test that fails while injecting the fault never reaches its own cleanup. Clearing it
   // here rather than in a scope guard is the same reasoning as the heater targets above.
@@ -269,6 +304,24 @@ static void quiesce_simulated_peripherals() {
   else LOOP_DISTINCT_AXES(i)
     if (planner.steps_per_mm(AxisEnum(i)) != settled_steps_per_mm[i])
       planner.set_steps_per_mm(AxisEnum(i), settled_steps_per_mm[i]);
+
+  /**
+   * Leave the origin where it was.
+   *
+   * The home offset shifts the whole coordinate system at the next home, so a test that
+   * sets one and then fails hands every later test a machine whose origin has moved. The
+   * symptom lands nowhere near the cause: one M428 assertion failed under
+   * `012-max_endstops`, and four tests later `G28_puts_the_origin_wherever_the_switch_is`
+   * expected `X_MIN_POS` and got -5, with nothing wrong with it.
+   *
+   * Same `longjmp` as the heater targets and the resolution above, and the same answer.
+   * Zero rather than a recorded baseline, because zero is what `Motion::home_offset` is
+   * defined as and no fixture here establishes another.
+   */
+  #if HAS_HOME_OFFSET
+    LOOP_NUM_AXES(i)
+      if (motion.home_offset[i] != 0) motion.set_home_offset(AxisEnum(i), 0);
+  #endif
 
   /**
    * Leave no peripheral pointing at a dead object.

@@ -134,7 +134,7 @@ MARLIN_TEST(reporting_commands, M119_reports_every_switch_the_machine_has) {
 
   TEST_ASSERT_TRUE_MESSAGE(state_of(report, STR_X_MIN) != "<absent>", "X min should be reported");
   TEST_ASSERT_TRUE_MESSAGE(state_of(report, STR_Y_MIN) != "<absent>", "and Y min");
-  TEST_ASSERT_TRUE_MESSAGE(state_of(report, STR_Z_MIN) != "<absent>", "and Z min");
+  TEST_ASSERT_TRUE_MESSAGE(state_of(report, STR_Z_LIMIT) != "<absent>", "and the Z switch");
 }
 
 #if ENABLED(AUTO_REPORT_TEMPERATURES)

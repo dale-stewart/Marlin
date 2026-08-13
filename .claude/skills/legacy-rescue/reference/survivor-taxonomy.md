@@ -65,6 +65,20 @@ re-checks.
   comparison against zero are unkillable when the operand cannot be negative, and the same
   goes for a range check on a value the type already bounds. Neither is a gap in the tests,
   and neither is worth a second attempt once it has been named.
+- **Reaching a dead branch is not the same as separating it — look for the second reason before
+  building the variant.** When a correction branch cannot run because its guard can never hold,
+  the obvious fix is a configuration in which the guard does hold. That is often only half the
+  work. The same setting that disables the guard may also *collapse the correction*: where the
+  general formula and the special case are written in terms of a quantity the configuration pins
+  to a neutral value, the corrected result equals the uncorrected one, and the branch is a no-op
+  even when it runs. Every mutant of the guard then survives for the second reason after the
+  first is fixed, and nothing in the report tells the two apart.
+
+  So work out what the branch would *compute* if it ran, and check that it differs, before
+  deciding what the variant has to change. The one you need is whichever separates the two
+  expressions, and that may be a different setting from the one that reaches the line. Where it
+  is the same setting, say so — that is why one configuration line bought two things, and the
+  next person should not have to re-derive it.
 - **A source-level mutator edits text; check the text still means something different.** Where
   a language has a preprocessor, macro system, or code generator between the source and what
   runs, a mutant can be erased before it reaches the compiler. Changing an argument that is

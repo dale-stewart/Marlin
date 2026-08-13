@@ -561,6 +561,61 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**`M206_M428.cpp` rescued (2026-08-13), and it took a configuration rather than a test:
+40% -> 95% line and 57.4% raw under the default config, 100% line and 87.3% raw / 100%
+killable under `012-max_endstops`.**
+
+The gap was the whole of `M428` — the command that says "the spot I am at now is home".
+The 29 survivors it left were all on one line, and classifying them is the useful part,
+because the obvious diagnosis was wrong twice over:
+
+    if (!WITHIN(diff[i], -20, 20) && motion.home_dir((AxisEnum)i) > 0)
+
+**Two independent reasons, and fixing the first alone buys nothing.** Every axis here homed
+to its minimum, so `home_dir` was always -1 and the branch was dead — that much is the usual
+story. But `base_home_pos` was therefore always **0**, which makes the correction
+`diff[i] = -position[i]` textually different from and numerically identical to the general
+`diff[i] = base_home_pos(i) - position[i]` on the line above. So the branch is a *no-op even
+when forced to run*, and a configuration that only reached it would have killed nothing. The
+variant had to move `base_home_pos` as well, which `Z_HOME_DIR 1` does for free —
+`Z_HOME_POS` becomes `Z_MAX_POS`. One line of configuration bought both. That rule is now in
+`survivor-taxonomy.md`.
+
+The behaviour it unblocks is the one the command's own comment describes: on a machine whose Z
+switch is at the top, the useful place to stand when setting a Z offset is at the bed, and the
+bed is the length of the axis away from the reference point. M428 measures from **zero** there
+instead of from the endstop. Three tests state it — near the bed, near the switch, and the band
+between them that is too far from both — and the third is what stops a firmware that corrects
+unconditionally from passing.
+
+**The nine that remain are equivalent, in two families.** Five widen the guard to include the
+minimum-homing axes, where the correction is still a no-op because `X_HOME_POS` and
+`Y_HOME_POS` are zero; that reason is now a `static_assert` in the test file rather than a
+comment, so it fails the day it stops being true. Four are +/-1 mutants of the `-20, 20` bounds
+on that line, and they are equivalent for a prettier reason: the band in which they differ is
+`|diff|` just over 20, which puts the carriage near `Z_HOME_POS -/+ 20` — and the *corrected*
+value there is `-179.x`, refused by the range check on the line below. Both arms refuse, so
+nothing separates them. The bounds on line 89 are a separate copy and are bracketed from both
+sides.
+
+**Making Z home upward meant the simulated rail had to grow an end.**
+`SimulatedAxisWithLimit::closed()` was `carriage_steps <= trip_steps` — a minimum switch, and
+nothing else was expressible. It now takes a `SwitchEnd`, and `furthest_towards_switch()` is the
+direction-aware companion to `lowest_reached()`, so "it reached its switch" means the same thing
+on both machines. Note the other half of that: with `Z_HOME_DIR 1` the firmware does not define
+`Z_MIN_ENDSTOP_HIT_STATE` **at all**, so a fixture naming it does not fail, it fails to compile.
+`STR_Z_LIMIT` in `simulated_endstops.h` is how a test should name the Z switch from now on.
+
+Two harness defects fell out, both found by the new configuration and both fixed —
+**#47**, a home offset left behind by a failing test moving the origin for every test after it
+(the same `longjmp` as the heater targets; two of that run's five failures were collateral), and
+**#48**, which is worth reading in full: a heated nozzle starts the print job timer, a running
+job arms the filament sensor, and the sensor injects `M600` into the next test that idles. Three
+correct behaviours composing into contamination, latent until a new test happened to sit between
+the heater tests and the queue tests. The tell was `queue___starts_empty` failing two files away
+and the suite hanging after it, and what found it in one run was printing the injected string at
+every test boundary rather than reasoning about which feature could have produced it.
+
 **`011-shared_enable` unblocked the dead two thirds of `M17_M18_M84.cpp` (2026-08-12):
 33% -> 84% line, and the mutant population over that file went from 38 testable to 104.**
 
@@ -1057,13 +1112,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 675,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 684,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**eleven** configs in `test/`, reporting **606, 617, 624, 676, 677, 615, 612, 629, 672, 664**. The counts above vary
+**twelve** configs in `test/`, reporting **684, 698, 708, 755, 755, 693, 690, 710, 750, 745, 684, 687**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -1196,6 +1251,7 @@ Configurations in `test/`:
 | `009-parser_consumers` | the last reachable consumers of the parser's global state — five files no other configuration compiles |
 | `011-shared_enable` | a board where X and Y share one driver enable pin — the first configuration here with any enable overlap, which makes two thirds of `M17_M18_M84.cpp` reachable at all |
 | `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing. Output is observable, **input is not** — see below |
+| `012-max_endstops` | `Z_HOME_DIR 1` — the first machine here that homes an axis to its *maximum*, which is what makes `home_dir(axis) > 0` reachable and `base_home_pos(axis)` non-zero |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).

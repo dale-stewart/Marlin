@@ -27,6 +27,7 @@
 
 #include "../test/unit_tests.h"
 #include "src/module/endstops.h"
+#include "../support/simulated_endstops.h"
 #include "../gcode/serial_capture.h"
 #include <string>
 #include <stdio.h>
@@ -113,7 +114,13 @@ MARLIN_TEST(endstops, each_switch_is_reported_from_its_own_pin) {
   const Switch switches[] = {
     { X_MIN_PIN, X_MIN_ENDSTOP_HIT_STATE, STR_X_MIN },
     { Y_MIN_PIN, Y_MIN_ENDSTOP_HIT_STATE, STR_Y_MIN },
-    { Z_MIN_PIN, Z_MIN_ENDSTOP_HIT_STATE, STR_Z_MIN }
+    // The Z switch this machine has. `012-max_endstops` homes Z upward and so has no
+    // minimum switch at all — `Z_MIN_ENDSTOP_HIT_STATE` is not even defined there.
+    #if Z_HOME_TO_MAX
+      { Z_MAX_PIN, Z_MAX_ENDSTOP_HIT_STATE, STR_Z_MAX }
+    #else
+      { Z_MIN_PIN, Z_MIN_ENDSTOP_HIT_STATE, STR_Z_MIN }
+    #endif
   };
   constexpr size_t COUNT = sizeof(switches) / sizeof(switches[0]);
 
@@ -158,10 +165,10 @@ MARLIN_TEST(endstops, the_report_lists_the_switches_in_axis_order) {
 
   const size_t x = report.find(STR_X_MIN),
                y = report.find(STR_Y_MIN),
-               z = report.find(STR_Z_MIN);
+               z = report.find(STR_Z_LIMIT);
 
   TEST_ASSERT_TRUE_MESSAGE(x != std::string::npos && y != std::string::npos && z != std::string::npos,
-    "all three minimum switches should be named");
+    "all three switches should be named");
   TEST_ASSERT_TRUE_MESSAGE(x < y, "X should be reported before Y");
   TEST_ASSERT_TRUE_MESSAGE(y < z, "and Y before Z");
 }
