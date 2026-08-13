@@ -550,6 +550,46 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**`M17_M18_M84.cpp` rescued (2026-08-12): 17% -> 33% line, 50% -> 81.6% raw, 100% killable.**
+Both figures are over the same 27-line covered set, so they are directly comparable, and the
+line figure is the one that needs explaining: **two thirds of this file is dead on this
+board.** `do_enable()` and `try_to_disable()` handle machines where two axes share one
+enable pin — warning about the axis that came on, or stayed on, as a side effect — and
+`any_enable_overlap()` is a `constexpr` over the pin assignments that is *false* here. That
+is a configuration gap and no amount of testing closes it; it needs a board in `test/` whose
+axes share a pin.
+
+The behaviours that are reachable are worth having, because the failure modes are physical:
+`M18 X` must leave Z holding or the gantry drops, and `M18 S<n>` is a *setting* rather than
+a command to switch off now. Three survivors needed inputs nothing else in the suite
+produces:
+
+- **`reset_stepper_timeout()` is invisible until time has passed.** Deleting it survived
+  every assertion on the stored period, because the period is right either way. What it
+  changes is *when the clock starts*: without it, setting a timeout on an already-idle
+  machine gives one that has effectively already expired.
+- **`planner.synchronize()` in `M18 <axis>` needs a move long enough to see.** Same shape as
+  `M0`'s, and the same consequence — release a motor with a move still queued and the
+  carriage coasts while the firmware believes it arrived.
+- **`E` on its own means every extruder, and only a multi-extruder build can say so.** On
+  one extruder, "all of them" and "number zero" are the same outcome, so mutating the
+  has-a-value test to *always* survives — reading a missing value gives 0, and extruder 0 is
+  all of them. Third instance of "the behaviour needs a machine the measured build is not".
+
+**A survivor turned out to be a redundant guard, and reading the callee is what settled it.**
+`M17`'s `if (e < EXTRUDERS)` has mutants that widen it, and they survive because
+`Stepper::enable_extruder()` is a `switch` over the valid indices — an out-of-range index
+matches no case and does nothing. Register #30's category, verified by reading
+`stepper.cpp:735` rather than inferred from the score.
+
+**And that reading found #43.** `disable_extruder()` is *not* symmetric with it: it calls
+`mark_axis_disabled()` — a `CBI` on a shift count taken straight from the command — *before*
+the switch that would have ignored the index, and `M18`'s path has no bound check at all
+where `M17`'s does. The consequence was measured rather than argued: `M18 E99` leaves the
+mask unchanged here, because x86 masks the shift to 6 and bit 6 belongs to no stepper in
+this build. Benign by accident, on a property of the host's shift instruction. The probe
+that established that was written, run, and deleted.
+
 **`host_actions.cpp` rescued (2026-08-12): 13% -> 76% line, 91.9% raw / 100% killable.**
 The one genuine gap the `feature/` survey found, and it stayed a gap because it looked like
 a formatting file. It is not: it is the protocol a machine with no screen uses to ask a
@@ -850,7 +890,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 623,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 638,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
