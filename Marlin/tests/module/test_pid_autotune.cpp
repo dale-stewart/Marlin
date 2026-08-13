@@ -1041,5 +1041,147 @@ MARLIN_TEST(pid_autotune, a_tune_abandons_the_target_the_print_had_set) {
   TEST_ASSERT_EQUAL(0, thermalManager.degTargetHotend(0));
 }
 
-#endif // PIDTEMP
 
+// ---------------------------------------------------------------------------
+// The bed — see test/014-pid_bed.ini
+// ---------------------------------------------------------------------------
+
+/**
+ * `PID_autotune()` is one function serving three heaters, and the heater it is serving
+ * changes the constants it uses.
+ *
+ *     const millis_t relay_delay = (isbed || ischamber) ? 5000UL : 3000UL;
+ *     pf = (ischamber || isbed) ? 0.2f      : 0.6f,
+ *     df = (ischamber || isbed) ? 1.0f/3.0f : 1.0f/8.0f;
+ *
+ * With `PIDTEMPBED` off — which is every other configuration here — `isbed` is a
+ * compile-time false and each of those true arms is unreachable. Not untested:
+ * unreachable. Forty-seven mutants across eleven lines survived for that one reason,
+ * thirteen of them on the `df` line alone.
+ *
+ * The distinction is physical rather than cosmetic. A bed has far more thermal mass than a
+ * nozzle, so it is held at each relay level for five seconds instead of three, and it is
+ * given the *conservative* Ziegler-Nichols factors: a proportional gain a third of the
+ * hotend's and a derivative term nearly three times larger relative to it. Tune a bed with
+ * the hotend's numbers and you get a bed that oscillates around its target for the whole
+ * print.
+ *
+ * These tests do not repeat the hotend's twenty; they assert the three things that differ.
+ */
+#if ENABLED(PIDTEMPBED) && HAS_HEATED_BED
+
+namespace {
+
+  struct SavedBedPID {
+    raw_pid_t was;
+    SavedBedPID() : was({ thermalManager.temp_bed.pid.p(),
+                          thermalManager.temp_bed.pid.i(),
+                          thermalManager.temp_bed.pid.d() }) {}
+    ~SavedBedPID() {
+      thermalManager.temp_bed.pid.set(was);
+      thermalManager.setTargetBed(0);
+    }
+  };
+
+}
+
+/**
+ * The bed is tuned with the bed's factors, not the hotend's.
+ *
+ * `Ku` and `Tu` are the measurement; `pf` and `df` are the judgement applied to it, and
+ * they are the whole difference between the two heaters. Asserting the applied gains
+ * against the *reported* `Ku` and `Tu` separates the judgement from the measurement — a
+ * mutant that changed how the oscillation was measured would move both sides together and
+ * be invisible here, which is what the hotend's own relay tests are for.
+ *
+ * The hotend's factors are named in the failure messages so that a run using them is
+ * reported as what it is rather than as an unexplained number.
+ */
+MARLIN_TEST(pid_autotune, the_bed_is_tuned_with_the_beds_own_factors) {
+  SimulatedMachine machine;
+  SimulatedBed bed;
+  SavedBedPID saved;
+
+  bed.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E-1 S70 C3 U1");
+
+  TEST_ASSERT_TRUE_MESSAGE(report.Ku.size() > 0, "the bed tune should report a Ku");
+  const double Ku = report.Ku.back(), Tu = report.Tu.back();
+
+  const float p = thermalManager.temp_bed.pid.p(),
+              i = thermalManager.temp_bed.pid.i(),
+              d = thermalManager.temp_bed.pid.d();
+
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, float(0.2 * Ku), p,
+    "the bed's proportional gain should be 0.2*Ku, not the hotend's 0.6*Ku");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, float(2.0 * (0.2 * Ku) / Tu), i,
+    "and its integral gain 2Kp/Tu");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, float((0.2 * Ku) * Tu / 3.0), d,
+    "and its derivative gain Kp*Tu/3, not the hotend's Kp*Tu/8");
+
+  // Between themselves, with the period eliminated: Ki*Kd is Kp^2 * 2/3 for the bed where
+  // it is Kp^2/4 for the hotend, and that identity holds at full precision rather than at
+  // the two decimals Tu was reported to.
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, p * p * 2.0f / 3.0f, i * d,
+    "the bed's three gains should stand in the bed's relation to each other");
+}
+
+/**
+ * ...and the numbers it publishes are the numbers it applied.
+ *
+ * The report is what an operator copies into their configuration, so a tune that applied
+ * one set and printed another would be worse than one that failed.
+ */
+MARLIN_TEST(pid_autotune, the_bed_reports_the_gains_it_applied) {
+  SimulatedMachine machine;
+  SimulatedBed bed;
+  SavedBedPID saved;
+
+  bed.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E-1 S70 C3 U1");
+
+  TEST_ASSERT_TRUE(report.Kp.size() > 0);
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, float(report.Kp.back()), thermalManager.temp_bed.pid.p());
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, float(report.Ki.back()), thermalManager.temp_bed.pid.i());
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, float(report.Kd.back()), thermalManager.temp_bed.pid.d());
+}
+
+/**
+ * The bed holds each relay level for five seconds, where the hotend holds three.
+ *
+ * `relay_delay` is the minimum time at one power level before the controller is allowed to
+ * switch, and it exists because a heater with a lot of thermal mass lags: switch on the
+ * temperature alone and the measured period is the sensor's noise rather than the bed's
+ * response. Asserting it needs the *time* the tune took, since the delay is a floor on how
+ * short a half-cycle can be — three cycles cannot be done in less than six half-periods of
+ * five seconds each.
+ */
+MARLIN_TEST(pid_autotune, the_bed_is_held_at_each_relay_level_for_its_own_minimum) {
+  SimulatedMachine machine;
+  SimulatedBed bed;
+  SavedBedPID saved;
+
+  bed.starts_at(SimulatedHeater::AMBIENT_C);
+  time_passes_ms(400);
+
+  AutotuneReport report;
+  autotune_run(report, "M303 E-1 S70 C3 U0");
+
+  TEST_ASSERT_TRUE_MESSAGE(report.Tu.size() > 0, "the bed tune should report a period");
+
+  // Each reported period is two relay holds, so no period can be shorter than twice the
+  // bed's own delay. The hotend's 3000 ms would allow 6 s periods; the bed's 5000 does not.
+  for (const double tu : report.Tu)
+    TEST_ASSERT_TRUE_MESSAGE(tu >= 2.0 * 5.0,
+      "a bed relay period should be at least twice the bed's five second hold");
+}
+
+#endif // PIDTEMPBED && HAS_HEATED_BED
+
+#endif // PIDTEMP

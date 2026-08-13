@@ -32,6 +32,7 @@
 
 #include "../test/unit_tests.h"
 #include "src/module/planner.h"
+#include "src/module/temperature.h"
 #include "src/module/motion.h"
 #include "../support/simulated_machine.h"
 #include "src/gcode/gcode.h"
@@ -394,10 +395,34 @@ namespace {
     return -(e * e) / (LEG_MM * LEG_MM + e * e);
   }
 
+  /**
+   * Extrusion that reaches the planner, at one millimetre out per millimetre in.
+   *
+   * Two settings, and the second is the one that used to be assumed. `e_factor` is the
+   * flow multiplier. `allow_cold_extrude` decides whether the E part of a move survives
+   * at all: `Planner::buffer_line()` calls `tooColdToExtrude()` and, if the nozzle is
+   * below EXTRUDE_MINTEMP, sets `position.e = target.e` and zeroes the E steps — silently,
+   * with no complaint on any channel and `buffer_line()` still returning true. Every
+   * assertion about an extruding corner then reads as a travel corner.
+   *
+   * These tests used to inherit that allowance from whichever earlier test had last set
+   * it, which is not a precondition at all. `014-pid_bed` is what exposed it: three new
+   * tests earlier in the run changed what was left behind, and two corner tests began
+   * reporting the travel-corner value in a configuration that has nothing to do with
+   * corners. A fixture has to state every setting the behaviour depends on.
+   */
   struct PlainExtrusion {
     float was_e_factor;
-    PlainExtrusion() { was_e_factor = planner.e_factor[0]; planner.e_factor[0] = 1.0f; }
-    ~PlainExtrusion() { planner.e_factor[0] = was_e_factor; planner.clear_block_buffer(); }
+    bool was_cold_ok;
+    PlainExtrusion() {
+      was_e_factor = planner.e_factor[0]; planner.e_factor[0] = 1.0f;
+      was_cold_ok = thermalManager.allow_cold_extrude; thermalManager.allow_cold_extrude = true;
+    }
+    ~PlainExtrusion() {
+      planner.e_factor[0] = was_e_factor;
+      thermalManager.allow_cold_extrude = was_cold_ok;
+      planner.clear_block_buffer();
+    }
   };
 
 }

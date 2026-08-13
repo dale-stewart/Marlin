@@ -622,42 +622,58 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
-**Where `PID_autotune`'s 142 survivors actually are (2026-08-13), and why the obvious
-configuration did not work.** Classified rather than attacked, because the classification is
-the finding:
+**`014-pid_bed` done (2026-08-13), and the tuning was the job.** The 47 bed and chamber
+survivors in `PID_autotune` were unreachable because `PIDTEMPBED` and `PIDTEMPCHAMBER` are off
+everywhere else, so `isbed`/`ischamber` are compile-time false and every true arm of
+`(isbed || ischamber) ? A : B` is dead — thirteen mutants on the `df` line alone, plus the
+`PER_CBH(...)` / `PER_WATCH_CBH(...)` selectors.
 
-| bucket | count | what it needs |
-|---|---|---|
-| bed and chamber arms this build compiles out | 47 | a configuration, and see below |
-| initialisers whose value is overwritten before the read that matters | ~39 | needs a probe, not a guess — see the caution below |
-| genuinely unasserted on the hotend path | ~56 | tests |
-
-The 47 are eleven lines of the same shape — `(isbed || ischamber) ? A : B`, and the
-`PER_CBH(chamber, bed, hotend)` / `PER_WATCH_CBH(...)` selectors. `PIDTEMPBED` and
-`PIDTEMPCHAMBER` are both off, so `isbed` and `ischamber` are compile-time false and every
-true arm is unreachable — all thirteen mutants on the `df` line, for instance. The behaviour
-behind them is real and different: a bed gets a five-second relay hold instead of three and
-much gentler Ziegler-Nichols factors, because tuning a bed with the hotend's numbers gives a
-bed that oscillates.
-
-**A `PIDTEMPBED` configuration is the obvious lever and it does not work as it stands.** Tried
-and reverted. Two things went wrong, and the second is the interesting one:
+Turning the option on is one line. Making the suite *work* with it on was the rest of a
+session, and it is the transferable part: **a configuration that unblocks a cluster can also
+change the plant the tests run against.** Two problems, in order:
 
 - `BED_CHECK_INTERVAL` **does not exist** under `PIDTEMPBED` — the bed is regulated every pass
-  rather than every 5 s — so two test files failed to compile. Fixed properly and kept:
-  `BED_CONTROL_PERIOD_MS` in `simulated_sensors.h` names the property instead of the macro,
-  the same move as `STR_Z_LIMIT`.
-- **The suite then hung on the first `M190`**, 528 tests in. `SimulatedBed` is 110 C at full
-  power with a 120-second time constant; the shipped bed gains are for a real 250 W silicone
-  bed — `Kp 10, Ki 0.023, Kd 305.4`, from an FOPDT model with `Tp=405`. The controller and the
-  plant are mismatched by a factor of several, so the bed never settles and `M190` never
-  returns. A test HAL where "slow" and "never" look identical makes that a hang rather than a
-  failure.
+  rather than every 5 s. Two test files failed to compile. `BED_CONTROL_PERIOD_MS` in
+  `simulated_sensors.h` names the property instead of the macro, the same move as `STR_Z_LIMIT`.
+- **The suite then hung on the first `M190`, 528 tests in.** Marlin ships `Kp 10, Ki 0.023,
+  Kd 305.4` for the bed, from an FOPDT model of a real 250 W silicone heater with `Tp = 405`.
+  `SimulatedBed` is 110 C at full power with a 120-second time constant.
 
-So the configuration is a **plant-and-controller tuning job**, not a one-line `.ini`, and it
-wants its own bed gains stated in the configuration the way `SimulatedMachine` states its own
-steps-per-millimetre. Worth doing — 47 mutants and a genuinely different control path — but it
-is a session of its own with a build-and-run per attempt. Not started.
+**The diagnosis came from tracing the plant, not from reading the gains**, and the finding is
+one worth keeping about this firmware: **`Ki` is applied per call, and `Temperature::task()`
+returns early at `updateTemperaturesIfReady()` until a full oversampled ADC set is in — so the
+PID runs about three times a second here, not once per millisecond.** At `Ki 0.023` the
+integral needs ~150 s to wind up to the 41% duty that holds 60 C; the trace showed the bed at
+50.2 C after 100 s, gaining 0.1 C/s. And `Kd 305.4` at that call rate collapsed the duty from
+full power to 45% the moment the error came inside `PID_FUNCTIONAL_RANGE`. Under a HAL where
+the test owns the clock, that is a hang rather than a failure.
+
+`Kp 15, Ki 0.20, Kd 60` reaches 60 C in ~65 s — the plant's own floor, since a 120-second time
+constant towards 110 C cannot do better — and settles at 60.4 C with **no overshoot**, which
+matters because any excursion past `TEMP_BED_HYSTERESIS` restarts `M190`'s residency timer. A
+test configuration stating its own tuning is the same move `SimulatedMachine` already makes for
+steps-per-millimetre.
+
+Three tests assert what actually differs about a bed, rather than repeating the hotend's twenty:
+the bed's Ziegler-Nichols factors (`0.2*Ku` and `Kp*Tu/3`, not `0.6*Ku` and `Kp*Tu/8`), that the
+published gains are the applied ones, and that each relay level is held for the bed's five
+seconds rather than the hotend's three.
+
+**And it exposed a latent order dependency in a completely unrelated file.** Two planner corner
+tests began reporting the *travel*-corner junction speed. `PlainExtrusion` set the flow
+multiplier but not `allow_cold_extrude`, so the tests had been inheriting that allowance from
+whichever earlier test last set it — and three new tests earlier in the run changed what was
+left behind. `Planner::buffer_line()` drops the E part of a move on a cold nozzle silently,
+with `buffer_line()` still returning true, so every assertion about an extruding corner read as
+a travel corner. The fixture now states it. A configuration that changes nothing about corners
+found this, which is the argument for having more than one.
+
+Still dark: chamber tuning. `PIDTEMPCHAMBER` needs a heated chamber, which is a different
+machine rather than a different control mode, so the `ischamber` half of those ternaries remains
+unreachable — worth knowing before reading a figure from `014` as though it covered all three.
+
+The other two buckets of the 142 are unchanged: ~39 initialisers needing a probe rather than a
+dataflow read (see the caution below), and ~56 genuinely unasserted on the hotend path.
 
 **A caution about the ~39 initialisers, because I got this wrong once already in this file.**
 The first reading was "dead stores, overwritten before use, all equivalent". That is wrong for
@@ -1309,7 +1325,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**thirteen** configs in `test/`, reporting **706, 720, 730, 777, 777, 715, 712, 732, 772, 767, 706, 709, 715**. The counts above vary
+**fourteen** configs in `test/`, reporting **706, 720, 730, 777, 777, 715, 712, 732, 772, 767, 706, 709, 715, 709**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -1444,6 +1460,7 @@ Configurations in `test/`:
 | `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing. Output is observable, **input is not** — see below |
 | `012-max_endstops` | `Z_HOME_DIR 1` — the first machine here that homes an axis to its *maximum*, which is what makes `home_dir(axis) > 0` reachable and `base_home_pos(axis)` non-zero |
 | `013-bogus_temp_grace` | `BOGUS_TEMPERATURE_GRACE_PERIOD` — a temperature error disables the heaters and **returns** instead of calling `kill()`, which is the seam register #19 asks for and it already existed in the firmware |
+| `014-pid_bed` | `PIDTEMPBED` — the bed regulated rather than switched, so `M303 E-1` can tune it and `PID_autotune`'s bed arms are reachable. **States its own bed PID gains**, matched to `SimulatedBed` rather than to a real 250 W heater; the shipped ones hang `M190` |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
