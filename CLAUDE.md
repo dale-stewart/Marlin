@@ -659,6 +659,19 @@ the bed's Ziegler-Nichols factors (`0.2*Ku` and `Kp*Tu/3`, not `0.6*Ku` and `Kp*
 published gains are the applied ones, and that each relay level is held for the bed's five
 seconds rather than the hotend's three.
 
+**Measured: the eleven bed-and-chamber lines went 47 -> 15 survivors, and every one of the 15
+is the chamber.** The three lines the tests aimed at are cleared —
+`df` 13 -> 1, `pf` 7 -> 1, `relay_delay` 6 -> 1 — and each remaining one is the `ischamber`
+operand of a disjunction whose other half now works (`(0==1) || isbed`), plus five on `:808`
+that `TERN0(PIDTEMPCHAMBER, ...)` erases outright. So **all of the bed arms are dead and the
+residue is exactly the machine this configuration is not**. The autotune region as a whole is
+142 -> 111.
+
+Do not compare the whole-file score across these two configurations: `014` reports 68.7%
+(1005/1463) and `013` 65.5% (990/1512), but `014` has no grace period, so the MINTEMP/MAXTEMP
+lines are back to being detectable only by hanging and reappear at the top of its survivor
+list. Different covered sets, different questions.
+
 **And it exposed a latent order dependency in a completely unrelated file.** Two planner corner
 tests began reporting the *travel*-corner junction speed. `PlainExtrusion` set the flow
 multiplier but not `allow_cold_extrude`, so the tests had been inheriting that allowance from
