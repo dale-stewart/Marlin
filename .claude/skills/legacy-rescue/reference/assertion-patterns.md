@@ -20,6 +20,28 @@ substantial and say nothing.
   timing, iteration counts, and the steps between a call and its result. That code runs —
   hence the coverage — but only its endpoint is observed. Ask what the code computes on
   the way, and assert a relationship the domain guarantees about it.
+- **Compare against the values the system defines, never against another of its own
+  readings.** The tempting shape, when a thing has two states, is to record it in one and
+  then in the other and assert that they differ. It reads as a proper bracketed test — both
+  sides exercised, no magic constants — and it is satisfied by exactly the fault it looks
+  like it would catch: anything that *inverts* or *offsets* the reading changes both
+  observations equally, so they still differ and the test still passes.
+
+  The same applies to any assertion phrased as a relation between two of the code's own
+  outputs: before-and-after, this-call-versus-that-call, one member of a collection against
+  another. What it constrains is internal consistency, which is the one property a
+  systematic fault preserves.
+
+  Assert the *named* values instead — the constants, strings or enumerators the code
+  publishes for those states. That is what a consumer reads, and it is what a fault has to
+  get right. Where the domain genuinely has no absolute to check against, say so in the
+  test rather than substituting a differential assertion that looks stronger than it is.
+
+  This one is hard to see by reading, because the differential version is often the more
+  elegant code. The tell is a mutation run that does not move: write the test, measure, and
+  if the score is unchanged, inject the obvious fault by hand before concluding the mutants
+  were equivalent. Two tests written this way in one session here each killed nothing, and
+  neither was noticed until the fault was injected deliberately.
 - **Read the diagnostic output the code already produces — for its properties, not its
   layout.** Code that reports on itself often computes exactly the quantity a test needs and
   then prints it: residuals, deviations, coefficients, counts. Those are the terms the

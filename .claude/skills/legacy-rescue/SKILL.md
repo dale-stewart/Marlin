@@ -235,8 +235,11 @@ assertion was weakened and no forbidden file was touched. An agent's report is a
 Relaying it unverified launders a claim into a fact, and a rescue's only product is
 trustworthy measurement. Watch specifically for an assertion that has become
 **self-consistent rather than correct** — checking a result against the same accessor
-the code under test used to produce it. It passes, it looks like a real assertion, and
-it constrains nothing.
+the code under test used to produce it, or against another of the code's own readings
+(before-and-after, one state versus the other). It passes, it looks like a real
+assertion, and it constrains nothing: a systematic fault moves both sides together.
+The tell is a mutation score that does not move when a test is added. See
+`reference/assertion-patterns.md`.
 
 **Re-run the agent's evidence, control first.** When an agent claims to have fixed an
 intermittent fault, build the unfixed version too and confirm *your* harness reproduces

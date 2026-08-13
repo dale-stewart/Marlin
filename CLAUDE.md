@@ -79,6 +79,17 @@ one. What is left on those three lines is equivalent, and equivalent *because of
 powers of two, so the `loops >= 15` and `loops == 2` near-misses are unreachable. A build with
 `MULTISTEPPING_LIMIT` of 4 would distinguish the first group.
 
+**"Compare against the values the system defines, never against another of its own readings."**
+Two tests written in one session here each killed nothing, and neither was noticed until the
+fault was injected by hand. `each_switch_is_reported_from_its_own_pin` closed each endstop in
+turn and asserted that its report differed from the same switch's *open* report;
+`M119_reports_each_switch_as_it_actually_is` did the same through the carriage. Both are
+satisfied by a comparison inverted for every switch, because that inverts both readings. The
+mutation score did not move across three runs, and the tell was exactly that — a new test
+that changes nothing has usually asserted nothing. They now compare against `STR_ENDSTOP_HIT`
+and `STR_ENDSTOP_OPEN`, the words the firmware publishes, and the same injection fails them.
+The differential version was the more elegant code, which is why it survived review.
+
 **"Watch for an assertion that is self-consistent rather than correct."** An acceptance
 test once asserted that the `M105` reply contained the formatted value of
 `thermalManager.degHotend(0)` — the same accessor `M105` formats its output from. It
