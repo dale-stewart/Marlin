@@ -228,6 +228,20 @@ And this is why an injected-fault control belongs in the harness check: it was i
 known fix and watching a green suite become one that had to be killed that exposed both leaks
 here, neither of which any passing run could have shown.
 
+**Find the caller; do not assume the obvious owner.** A test that drives a feature has to
+invoke whatever the production code actually invokes, and the function that *looks* like the
+owner is often not it — periodic work gets hung off whichever loop was convenient, so a
+temperature adjustment can be driven from the motion subsystem and a cache refresh from the
+display. Guessing costs a full build-and-run and, worse, produces a test that fails against
+working code, which reads as a defect until it is chased down.
+
+Grep for the call site before writing the test, not after it fails. The same applies to the
+*order* of set-up calls: where one setter deliberately clears the state another sets — an
+explicit command overriding an automatic mode is the usual reason — doing it in the wrong order
+switches off the thing under test in the line after enabling it, and the test then fails
+honestly against firmware that is fine. Prefer driving set-up through the same public entry
+point a user would, which gets the order right by construction.
+
 **The act of testing can destroy the instrument that measures it.** Coverage builds, profiling
 data and instrumented binaries are build artifacts, and the ordinary test targets are entitled
 to clean them — so a sequence as innocent as *measure, write tests, run the whole suite,

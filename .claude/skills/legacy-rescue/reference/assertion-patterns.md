@@ -186,11 +186,32 @@ substantial and say nothing.
   overhead you have not modelled and should not have to: assert the difference falls strictly
   between the two pure cases (all-cheap and all-expensive), which is true only if the
   threshold lies between the inputs, and needs no constant at all.
+- **A parameter test whose value coincides with the default asserts nothing about the
+  parameter.** Setting a field to the value it already holds and then checking the field is
+  satisfied by code that never performed the assignment at all — the mutant that deletes it,
+  the one that guards it out, and the one that writes it to a *different* field all pass.
+  These survive in clusters on option-parsing code, which is exactly where the natural test
+  value is the documented default because that is the number in front of you.
+
+  Pick values no default could supply, and make each parameter's value distinct from the
+  others' so a write to the wrong field is visible too. The same trap applies to any "set it
+  and read it back" test: choose the one value that could not have got there by accident.
+
 - **A magnitude needs bracketing from both sides.** "Further than before", "faster than
   before", "more than the default" pins no number — every mutant that changes the size of an
   allowance, a retry count, or a margin still satisfies it. Find the input that just succeeds
   and the input that just fails, and assert both. One test, two calls, and the quantity is
   specified instead of merely present.
+
+  **A bound is only as tight as the part of the measurement it constrains.** Where the
+  quantity you care about is one component of what the test can actually observe — a
+  timeout inside a total elapsed time, a payload inside a whole response — the other
+  components set a floor on how tight the bound can be, and a bound loose enough to
+  accommodate them will not catch a wrong value for the part you meant. Say which of the
+  two you have. "This catches a wait that runs away, not a residency of the wrong size" is
+  a useful sentence; presenting the same assertion as a bracket on the residency is not.
+  The strong version usually needs a *difference* between two runs that vary only in the
+  component of interest.
 - **A test is a claim about every configuration, not the one you measured in.** Mutation
   work is done against one build, and it is easy to write an input that is out of range
   *there* — an index the build does not have, a feature it does not compile, a limit it

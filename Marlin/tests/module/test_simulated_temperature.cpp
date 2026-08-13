@@ -237,7 +237,18 @@ MARLIN_TEST(simulated_temperature, M109_holds_the_hotend_at_the_target_for_the_r
   host_sends("M109 S200");
   const millis_t took = millis() - started;
 
-  TEST_ASSERT_TRUE(took >= SEC_TO_MS(TEMP_RESIDENCY_TIME));
+  // Bracketed from both sides, but the two sides are not equally tight and it is worth
+  // saying so. "At least the residency time" is satisfied by a wait of any length at all,
+  // including one that never ends on a real printer, so an upper bound is needed — but the
+  // measured wait here is ~45 s, of which only 10 s is residency and the rest is the
+  // simulated heater climbing the last 3 C. The bound therefore catches a wait that runs
+  // away, not a residency of the wrong size. Pinning the residency itself needs the
+  // *difference* between an undisturbed wait and one interrupted by a dip out of the
+  // hysteresis, which is a separate test and is not written yet.
+  TEST_ASSERT_TRUE_MESSAGE(took >= SEC_TO_MS(TEMP_RESIDENCY_TIME),
+    "M109 should hold at the target for the residency time");
+  TEST_ASSERT_TRUE_MESSAGE(took < SEC_TO_MS(TEMP_RESIDENCY_TIME) * 12,
+    "and should return once it has, not go on waiting");
   TEST_ASSERT_FLOAT_WITHIN(TEMP_HYSTERESIS, 200.0f, thermalManager.degHotend(0));
 
   thermalManager.setTargetHotend(0, 0);
@@ -274,7 +285,12 @@ MARLIN_TEST(simulated_temperature, M109_does_not_hold_a_hotend_that_is_already_a
   host_sends("M109 S200");
   const millis_t took = millis() - started;
 
-  TEST_ASSERT_TRUE(took < SEC_TO_MS(TEMP_RESIDENCY_TIME));
+  // The other side of the same bracket, and the tighter one. "Less than the residency time"
+  // is satisfied by a wait of nine seconds out of ten — and by the mutant that starts the
+  // timer in the *past* rather than the future, which waits two thirds of it. What this
+  // behaviour actually is, is a command that returns at once, so that is what is asserted.
+  TEST_ASSERT_TRUE_MESSAGE(took < SEC_TO_MS(TEMP_RESIDENCY_TIME) / 4,
+    "an already-hot nozzle should not be waited on at all");
 
   thermalManager.setTargetHotend(0, 0);
 }

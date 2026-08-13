@@ -622,6 +622,42 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**Autotemp rescued (2026-08-13): a whole feature with 27 survivors and no tests.**
+`M104 S<min> B<max> F<factor>` makes the nozzle track extrusion speed — the target becomes
+`min + speed * factor`, capped at `max` — and the only mention of it anywhere in the suite was
+a fixture restoring its `enabled` flag. Nine tests took it **27 -> 2 survivors, both
+equivalent**: a `TERN_` body and a `TERN0` argument reorder, each erased by the preprocessor
+because `AUTOTEMP_PROPORTIONAL` is off. 100% killable.
+
+The arithmetic is asserted on `calculate()` directly, because it is a public method taking the
+speed as an argument, so the *slope* can be stated exactly: equal speed increments give equal
+temperature increments. A single temperature would pass with the factor and the floor wrong in
+compensating directions. The cap is bracketed either side, and the rise/fall asymmetry — up in
+one step, down weighted against the previous value so the nozzle does not chase every dip — is
+asserted in both directions from the same starting point.
+
+Three things this cost, all worth keeping:
+
+- **`calculate()` keeps a function-local `static float oldt`**, so it is not a pure function and
+  one test's last call is the next test's starting point. Only the upward path is unsmoothed and
+  therefore exact, so every test drives the value up to a known point first. The state is real
+  behaviour rather than an inconvenience — it is what smooths the descent.
+- **`setTargetHotend()` disables autotemp; `_setTargetHotend()` does not.** That asymmetry is how
+  an explicit `M104` overrides the feature, and it is why the set-up has to go through the
+  command: a test that set `enabled = true` and *then* the target switched the feature off in the
+  line after enabling it. The first draft did exactly that and failed against working firmware.
+- **`autotemp_task()` is called by `Planner::check_axes_activity()`, not by
+  `Temperature::task()`** — via `manage_inactivity()` at 10 Hz. The second draft drove the
+  temperature task and also failed against working firmware. Two wrong guesses about *who calls
+  this* in one test; both were settled by grepping for the caller rather than by assuming the
+  obvious owner.
+
+**And one of the survivors was my own test's fault, which is the most reusable part.** Six
+mutants of the `S` and `B` parameter assignments survived because the test used `S210 B250` —
+the configured defaults. Deleting either assignment left the field holding exactly the value
+being asserted. **A parameter test whose value coincides with the default asserts nothing about
+the parameter.**
+
 **`013-bogus_temp_grace` partly unblocked register #19 (2026-08-13), and the seam was already in
 the firmware.** `_temp_error()` ends in `kill()`, which does not return, so the MINTEMP/MAXTEMP
 checks could be *reached* by a test but never asserted after — 63 survivors, recorded as blocked
@@ -1223,13 +1259,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 697,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 706,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**thirteen** configs in `test/`, reporting **697, 711, 721, 768, 768, 706, 703, 723, 763, 758, 697, 700, 706**. The counts above vary
+**thirteen** configs in `test/`, reporting **706, 720, 730, 777, 777, 715, 712, 732, 772, 767, 706, 709, 715**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
