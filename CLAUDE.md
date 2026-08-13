@@ -622,6 +622,71 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**`MarlinCore.cpp` rescued, and the wall it was behind was never there (2026-08-13).**
+36% -> **76% line**, and the denominator changed for a reason worth reading: `setup()` and
+`loop()` moved to `MarlinBoot.cpp`, which is excluded from coverage, so the file went from 132
+countable lines to 95 and the figure now means *of the code a test could run*. Whole-tree
+84.0% -> 85.3%; platform-agnostic 85.3% -> **86.7%**.
+
+**`kill()` returns.** That is the finding, and it retires a classification that had been shaping
+decisions here for months. Register #19 records `minkill()` as ending in
+`for (;;) hal.watchdog_refresh()` — but that is the `#else` arm. This board has a `KILL_PIN`, so
+it compiles:
+
+    while (kill_state())  hal.watchdog_refresh();   // wait for release
+    while (!kill_state()) hal.watchdog_refresh();   // wait for a press
+    hal.reboot();
+
+and `MarlinHAL::reboot()` under the test HAL has an empty body. The original measurement —
+"a probe driving `TEMP_0_PIN` to raw 1023 hangs the binary" — was accurate; the *explanation*
+was not. It hangs waiting for an operator, which is what a halted printer is supposed to do.
+Nobody had pressed the button.
+
+`tests/support/kill_button.h` is the operator: another thread, because neither loop advances
+simulated time or returns. It presses **and then releases**, because Unity's `longjmp` skips
+destructors and a fixture that left the button held would hand the next test a machine whose
+250th idle calls `kill()` — and *that* kill hangs in the first loop, waiting for a release
+nobody will perform.
+
+Six tests. The ones worth knowing:
+
+- **A plain `kill()` releases the extruder and holds the axes; `M112` releases everything.** The
+  difference is the whole point of the `steppers_off` flag — a gantry with nothing holding it up
+  drops onto the print — and asserting either alone passes against firmware that always did the
+  same thing.
+- **The release-then-press sequence is asserted with a flag, not a clock.** `kill()` returns
+  while the button is still *down*, so the pin state afterwards says nothing, and a wall-clock
+  bound would be a race. The operator sets an atomic between letting go and pressing again;
+  firmware that accepted the held button returns before it is ever true.
+
+**`pin_is_protected()` — five tests, and two findings.** It is the list of pins `M42` refuses,
+and it is what stops a G-code line turning a heater fully on or dropping a gantry. The analog
+half is a separate loop with a separate conversion (`analogInputToDigitalPin`) and is invisible
+to a test written around heater outputs. Two things the tests said that reading would not:
+
+- **A main axis contributes ENABLE, the endstops and the microstepping pins — not STEP or DIR.**
+  The extruder contributes all three. Defensible (a stray write to STEP injects one pulse; ENABLE
+  drops the gantry) and now written down rather than re-derived.
+- **`M42` is not compiled in any configuration here** — `DIRECT_PIN_CONTROL` is off. Found because
+  `M42_I_overrides_the_protection` **passed** against a firmware with no `M42` at all: it asserted
+  the *absence* of an error, and an unknown command produces `echo:Unknown command`. A negative
+  assertion is satisfied by every cause of nothing, including the command not existing. Both `M42`
+  tests are now guarded and neither runs; the predicate itself is tested directly.
+
+**The extraction, and the rule it is meant to enforce.** `MarlinBoot.cpp` holds `setup()`,
+`loop()` and `tmc_standby_setup()` — the code a test can never execute, because `setup()` brings
+up real hardware in a fixed order and `loop()` does not return. The split is not tidiness:
+
+- Before it, a third of `MarlinCore.cpp` was unreachable by construction and there was no way to
+  tell the untestable part from the untested part. `COVERAGE_EXCLUDES` in the `Makefile` names the
+  file, so excluding one is a visible argument rather than a convenience.
+- **The file is meant to shrink.** Anything in it that can be named and called belongs back where
+  it can be tested. Two pieces already moved: `report_reset_reason(mcu)` and
+  `report_firmware_identity()` were straight-line reporting inside `setup()`, and are now members
+  of `Marlin` with four tests. The reset reason is the only evidence an operator has of *why* a
+  printer restarted mid-print, and the flags are independent — a brown-out that also tripped the
+  watchdog reports both, which a chain of `else if` would not.
+
 **`014-pid_bed` done (2026-08-13), and the tuning was the job.** The 47 bed and chamber
 survivors in `PID_autotune` were unreachable because `PIDTEMPBED` and `PIDTEMPCHAMBER` are off
 everywhere else, so `isbed`/`ischamber` are compile-time false and every true arm of
@@ -1381,13 +1446,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 706,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 719,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **706, 720, 730, 777, 777, 715, 712, 732, 772, 767, 706, 709, 715, 710**. The counts above vary
+**fourteen** configs in `test/`, reporting **719, 733, 743, 790, 790, 728, 725, 745, 785, 780, 719, 722, 728, 723**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

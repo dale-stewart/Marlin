@@ -158,19 +158,34 @@ COVERAGE_DIR ?= .pio/coverage
 #   make unit-test-coverage COVERAGE_ENV=testhal_native_coverage
 COVERAGE_ENV ?= testhal_native_coverage
 
+# Sources a test can never execute, excluded so that a coverage figure means "of the code a
+# test could run" rather than being diluted by code that is not reachable by construction.
+#
+# `MarlinBoot.cpp` holds `setup()` and `loop()` — the two entry points the platform calls. A
+# test build stands in for both: `SimulatedHardware::ensure_ready()` does the bring-up and each
+# test drives `idle()` and `queue.advance()` itself. Together they were a third of
+# `MarlinCore.cpp`, which reported 36% with no way to tell the untestable part from the untested
+# part.
+#
+# Excluding a file is a claim that nothing in it can be tested, so the list is deliberately
+# short and the file it names is meant to shrink: anything in there that can be named and
+# called belongs back in a testable translation unit. Adding to this list should be an argument,
+# not a convenience.
+COVERAGE_EXCLUDES ?= --exclude 'Marlin/src/MarlinBoot.cpp'
+
 unit-test-coverage:
 	@command -v gcovr >/dev/null || (echo 'gcovr is not installed. Install it with "uv tool install gcovr" or "pipx install gcovr"' && exit 1)
 	rm -rf .pio/build/$(COVERAGE_ENV) $(COVERAGE_DIR)
 	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e $(COVERAGE_ENV)
 	@mkdir -p $(COVERAGE_DIR)/html
 	gcovr -r . .pio/build/$(COVERAGE_ENV) \
-	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' $(COVERAGE_EXCLUDES) \
 	  --txt $(COVERAGE_DIR)/summary.txt --print-summary \
 	  --html-details $(COVERAGE_DIR)/html/index.html
 	@echo ""
 	@echo "--- Platform-agnostic (excludes Marlin/src/HAL/) — the figure quoted in docs/ ---"
 	@gcovr -r . .pio/build/$(COVERAGE_ENV) \
-	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' $(COVERAGE_EXCLUDES) \
 	  --txt $(COVERAGE_DIR)/summary-platform-agnostic.txt --print-summary
 	@echo ""
 	@echo "Measured: $(COVERAGE_ENV) / config $(UNIT_TEST_CONFIG)"

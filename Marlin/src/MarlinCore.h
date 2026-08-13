@@ -94,6 +94,10 @@ public:
   // Shared function for M42 / M43
   static bool pin_is_protected(const pin_t pin);
 
+  // Extracted from setup() so they can be asserted — see MarlinBoot.cpp.
+  static void report_reset_reason(const uint8_t mcu);
+  static void report_firmware_identity();
+
   #if HAS_SUICIDE
     static void suicide() { OUT_WRITE(SUICIDE_PIN, SUICIDE_PIN_STATE); }
   #endif
@@ -112,6 +116,19 @@ public:
   }
 
 };
+
+/**
+ * What ending or abandoning an SD print does.
+ *
+ * Defined in `MarlinCore.cpp` and called from `loop()` in `MarlinBoot.cpp`. They are declared
+ * here rather than left `inline` in one translation unit because the boot file is excluded
+ * from coverage and these two are not untestable — they are ordinary work that happens to be
+ * driven from the loop. Keeping them on the testable side is the point of the split.
+ */
+#if HAS_MEDIA
+  void abortSDPrinting();
+  void finishSDPrinting();
+#endif
 
 extern Marlin marlin;
 

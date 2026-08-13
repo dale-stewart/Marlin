@@ -106,3 +106,35 @@ confirm the net still catches faults in the restructured code.
 
 Exit gate: every survivor is killed, documented as equivalent, or logged as an
 open question.
+
+## Quarantining code that cannot be tested
+
+A file whose untestable parts are mixed in with its testable ones reports a coverage figure that
+means nothing, and — worse — offers no way to tell "nobody has tested this" from "nobody can".
+Both look like a gap, and the second is not one.
+
+Move the unreachable code to its own translation unit and exclude that unit from the coverage
+calculation. Entry points the platform calls, loops that never return, bring-up sequences that
+touch real hardware in a fixed order: these are unreachable by construction, not by neglect.
+Afterwards the figure for what remains means *of the code a test could run*, which is the number
+worth acting on.
+
+Three things make this a discipline rather than a dodge:
+
+- **The exclusion list is an argument, not a convenience.** Name each excluded file where the
+  build can see it, with the reason beside it. One file with a paragraph explaining why is
+  honest; a pattern that quietly swallows a directory is how a coverage figure becomes
+  decorative.
+- **The quarantined file should only ever get smaller.** It is where work goes to be
+  unmeasurable, so anything in it that can be *named and called* belongs back on the testable
+  side. Extract-method is the tool: an entry point that reads a register and hands the value to
+  a function that decides what it means has moved the decision somewhere assertions can reach,
+  and left behind only the read and the ordering.
+- **Extract on the seam between "what the hardware says" and "what we do about it."** That
+  boundary is where the testable half almost always is, and it is usually straight-line
+  reporting or a policy decision sitting in the middle of a bring-up sequence — invisible as a
+  candidate until you go looking, because nothing about it looks separable when it is indented
+  inside four hundred lines of initialisation.
+
+The payoff is not only the number. Once the boundary is a file rather than a comment, adding to
+the untestable side becomes a visible decision that somebody has to justify.
