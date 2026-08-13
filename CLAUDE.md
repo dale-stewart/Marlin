@@ -581,6 +581,30 @@ it asks. The warning and the state disagree in the same breath. Not merely cosme
 Both are recorded and pinned; the tests state what each configuration actually does rather
 than asserting the version that passes.
 
+**And then the newly-reachable code was rescued: 59.6% -> 88.5% (92/104), 100% killable.**
+Twelve survivors remain and all twelve are equivalent here — two redundant-work guards, six
+needing an *extruder* that shares a pin (this board shares only X with Y), two on
+`any_enable_overlap()` itself which is the branch already taken, one `LCD_MESSAGE` with no
+display, one `REPEAT` over extruder overlap there is none of.
+
+What the survivors asked for was mostly **exactness in the report**, and that is the lesson:
+
+- *"Enabling X reports that Y also came on"* is not enough. Three input classes are needed,
+  because the message is a mask accumulated, then filtered against what was asked for and
+  what was already on — and each step has mutants only one class separates. One of a shared
+  pair names the other; **both** of a shared pair name nothing, which is what kills a filter
+  that ands where it should or; an axis with its own driver names nothing, which is what
+  kills an accumulator seeded with a bit instead of with zero.
+- *"The warning says 'not disabled'"* is not enough either. It is assembled from the axis
+  letter, the words, the list of axes sharing, and the full stop, each with its own mutants.
+  Asserting the whole sentence separates them. And the list must be asserted as **Y and not
+  Z**: a version that listed every enabled axis contains Y too, and would tell the user that
+  an axis on a driver of its own was somehow implicated.
+- **Naming an axis is not naming an extruder.** `selected_axis_bits()` asks
+  `parser.seen('E')` before anything else and walks the extruders in a separate loop;
+  widening either test enables the hot end on every `M17`, which no assertion about X, Y or
+  Z can see.
+
 **`endstops.cpp` closed (2026-08-12): 79% line, 24.8% -> 34.4% raw, 100% killable (54/54).**
 The raw figure is the lowest here by a distance and it is not a gap. **103 of the 157
 testable mutants are erased by the preprocessor**, 77 of them on a single line:
@@ -987,7 +1011,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 654,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 660,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 

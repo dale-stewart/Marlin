@@ -535,4 +535,163 @@ MARLIN_TEST(stepper_power, releasing_both_of_a_shared_pair_releases_them) {
   TEST_ASSERT_FALSE_MESSAGE(on(Y_AXIS), "and Y");
 }
 
+/**
+ * Naming an axis is not naming an extruder.
+ *
+ * The shared-enable path builds its axis mask in `selected_axis_bits()`, which asks
+ * `parser.seen('E')` before anything else, and then walks the extruders separately from the
+ * motion axes. Widening either test to always-true enables the extruder on every `M17`,
+ * which no assertion about X, Y or Z can see — and a hot end that quietly energises when a
+ * user asked for a carriage is a motor getting warm for no reason.
+ */
+MARLIN_TEST(stepper_power, naming_an_axis_does_not_energise_the_extruder) {
+  SimulatedMachine machine;
+  StepperPower restore;
+  all_off();
+
+  host_sends("M17 X");
+
+  TEST_ASSERT_TRUE_MESSAGE(on(X_AXIS), "M17 X should enable X");
+  #if HAS_EXTRUDERS
+    TEST_ASSERT_FALSE_MESSAGE(e_on(0), "and must not enable the extruder as well");
+  #endif
+}
+
+MARLIN_TEST(stepper_power, releasing_an_axis_does_not_release_the_extruder) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  host_sends("M17");
+  host_sends("M18 Z");
+
+  #if HAS_EXTRUDERS
+    TEST_ASSERT_TRUE_MESSAGE(e_on(0),
+      "M18 Z should leave the extruder holding - it was not asked about");
+  #endif
+}
+
+/**
+ * The side-effect report says exactly which axes came on, and says nothing when none did.
+ *
+ * Three input classes, because the message is assembled from a mask that is accumulated,
+ * then filtered against what was asked for and what was already on. Each of those steps has
+ * mutants that only one of the three separates:
+ *
+ *  - one axis of a shared pair: the other is named;
+ *  - both of a shared pair: nothing is named, because nothing came on that was not asked
+ *    for — this is what kills a filter that ands where it should or;
+ *  - an axis with a pin of its own: nothing is named, which is what kills an accumulator
+ *    seeded with a bit instead of with nothing.
+ */
+MARLIN_TEST(stepper_power, the_side_effect_report_names_exactly_what_came_on) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  {
+    all_off();
+    SerialCapture host;
+    host_sends("M17 X");
+    const std::string said = host.finish();
+    if (any_enable_overlap())
+      TEST_ASSERT_TRUE_MESSAGE(said.find("(Y also enabled)") != std::string::npos,
+        "enabling X should report Y by name, in full, as a side effect");
+  }
+  {
+    all_off();
+    SerialCapture host;
+    host_sends("M17 XY");
+    const std::string said = host.finish();
+    TEST_ASSERT_TRUE_MESSAGE(said.find("also enabled") == std::string::npos,
+      "asking for both of a shared pair means nothing came on that was not asked for");
+  }
+  {
+    all_off();
+    SerialCapture host;
+    host_sends("M17 Z");
+    const std::string said = host.finish();
+    TEST_ASSERT_TRUE_MESSAGE(said.find("also enabled") == std::string::npos,
+      "an axis with a driver of its own brings nothing else with it");
+  }
+}
+
+/**
+ * The could-not-release warning names what is holding the pin, and is a whole sentence.
+ *
+ * It is assembled in pieces — the axis letter, the words, the list of axes sharing, the full
+ * stop — and each piece has its own mutants. Asserting the assembled sentence is what
+ * separates them; asserting that the words "not disabled" appear somewhere does not.
+ */
+MARLIN_TEST(stepper_power, the_could_not_release_warning_is_a_whole_sentence) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  host_sends("M17");
+  SerialCapture host;
+  host_sends("M18 X");
+  const std::string said = host.finish();
+
+  if (any_enable_overlap()) {
+    const size_t at = said.find("X not disabled. Shared with");
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos,
+      "the warning should name the axis and say plainly that it was not released");
+    const size_t stop = said.find(".\n", at);
+    TEST_ASSERT_TRUE_MESSAGE(stop != std::string::npos,
+      "and finish the sentence, so a host reading lines gets a complete one");
+
+    // The list is what is *holding this pin*, not everything that happens to be on. Asserted
+    // as "names Y and not Z", because a version that listed every enabled axis would contain
+    // Y too and satisfy any test that only looked for it — and would tell the user that an
+    // axis on a driver of its own was somehow implicated.
+    const std::string shared = said.substr(at, stop - at);
+    TEST_ASSERT_TRUE_MESSAGE(shared.find('Y') != std::string::npos,
+      "and name what is holding the pin");
+    TEST_ASSERT_TRUE_MESSAGE(shared.find('Z') == std::string::npos,
+      "and only that - Z has a driver of its own and is not sharing anything");
+  }
+}
+
+/**
+ * Releasing both of a shared pair warns about neither, and releasing the extruder warns at
+ * all only if something really is still holding it.
+ *
+ * The bookkeeping that decides this — clearing a bit per axis actually released, and the
+ * same again for extruders — is two near-identical blocks whose mutants are invisible
+ * unless the release succeeds. Every other test here is about the case where it fails.
+ */
+MARLIN_TEST(stepper_power, a_release_that_succeeds_says_nothing) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  {
+    host_sends("M17");
+    SerialCapture host;
+    host_sends("M18 XY");
+    TEST_ASSERT_TRUE_MESSAGE(host.finish().find("not disabled") == std::string::npos,
+      "releasing both of a shared pair works, so there is nothing to warn about");
+  }
+  #if HAS_EXTRUDERS
+  {
+    host_sends("M17");
+    SerialCapture host;
+    host_sends("M18 E");
+    TEST_ASSERT_TRUE_MESSAGE(host.finish().find("not disabled") == std::string::npos,
+      "and the extruder has a driver to itself, so releasing it works too");
+    TEST_ASSERT_FALSE_MESSAGE(e_on(0), "and it really is released");
+  }
+  #endif
+}
+
+// Asking to release something that is already off does nothing and says nothing.
+MARLIN_TEST(stepper_power, releasing_an_axis_that_is_already_off_says_nothing) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  all_off();
+  SerialCapture host;
+  host_sends("M18 Z");
+
+  TEST_ASSERT_TRUE_MESSAGE(host.finish().empty(),
+    "there is nothing to release and nothing to report");
+}
+
 #endif // HAS_Y_AXIS
