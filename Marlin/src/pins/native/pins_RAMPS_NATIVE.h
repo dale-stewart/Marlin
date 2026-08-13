@@ -71,77 +71,99 @@
 //
 #define X_STEP_PIN                            54
 #define X_DIR_PIN                             55
-#define X_ENABLE_PIN                          38
+#ifndef X_ENABLE_PIN
+  #define X_ENABLE_PIN                          38
+#endif
 #ifndef X_CS_PIN
   #define X_CS_PIN                            53
 #endif
 
 #define Y_STEP_PIN                            60
 #define Y_DIR_PIN                             61
-#define Y_ENABLE_PIN                          56
+#ifndef Y_ENABLE_PIN
+  #define Y_ENABLE_PIN                          56
+#endif
 #ifndef Y_CS_PIN
   #define Y_CS_PIN                            49
 #endif
 
 #define Z_STEP_PIN                            46
 #define Z_DIR_PIN                             48
-#define Z_ENABLE_PIN                          62
+#ifndef Z_ENABLE_PIN
+  #define Z_ENABLE_PIN                          62
+#endif
 #ifndef Z_CS_PIN
   #define Z_CS_PIN                            40
 #endif
 
 #define E0_STEP_PIN                           26
 #define E0_DIR_PIN                            28
-#define E0_ENABLE_PIN                         24
+#ifndef E0_ENABLE_PIN
+  #define E0_ENABLE_PIN                         24
+#endif
 #ifndef E0_CS_PIN
   #define E0_CS_PIN                           42
 #endif
 
 #define E1_STEP_PIN                           36
 #define E1_DIR_PIN                            34
-#define E1_ENABLE_PIN                         30
+#ifndef E1_ENABLE_PIN
+  #define E1_ENABLE_PIN                         30
+#endif
 #ifndef E1_CS_PIN
   #define E1_CS_PIN                           44
 #endif
 
 #define E2_STEP_PIN                          100
 #define E2_DIR_PIN                           101
-#define E2_ENABLE_PIN                        102
+#ifndef E2_ENABLE_PIN
+  #define E2_ENABLE_PIN                         102
+#endif
 #ifndef E2_CS_PIN
   #define E2_CS_PIN                          103
 #endif
 
 #define E3_STEP_PIN                          104
 #define E3_DIR_PIN                           105
-#define E3_ENABLE_PIN                        106
+#ifndef E3_ENABLE_PIN
+  #define E3_ENABLE_PIN                         106
+#endif
 #ifndef E3_CS_PIN
   #define E3_CS_PIN                          107
 #endif
 
 #define E4_STEP_PIN                          108
 #define E4_DIR_PIN                           109
-#define E4_ENABLE_PIN                        110
+#ifndef E4_ENABLE_PIN
+  #define E4_ENABLE_PIN                         110
+#endif
 #ifndef E4_CS_PIN
   #define E4_CS_PIN                          111
 #endif
 
 #define E5_STEP_PIN                          112
 #define E5_DIR_PIN                           113
-#define E5_ENABLE_PIN                        114
+#ifndef E5_ENABLE_PIN
+  #define E5_ENABLE_PIN                         114
+#endif
 #ifndef E5_CS_PIN
   #define E5_CS_PIN                          115
 #endif
 
 #define E6_STEP_PIN                          116
 #define E6_DIR_PIN                           117
-#define E6_ENABLE_PIN                        118
+#ifndef E6_ENABLE_PIN
+  #define E6_ENABLE_PIN                         118
+#endif
 #ifndef E6_CS_PIN
   #define E6_CS_PIN                          119
 #endif
 
 #define E7_STEP_PIN                          120
 #define E7_DIR_PIN                           121
-#define E7_ENABLE_PIN                        122
+#ifndef E7_ENABLE_PIN
+  #define E7_ENABLE_PIN                         122
+#endif
 #ifndef E7_CS_PIN
   #define E7_CS_PIN                          123
 #endif

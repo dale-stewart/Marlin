@@ -550,6 +550,37 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**`011-shared_enable` unblocked the dead two thirds of `M17_M18_M84.cpp` (2026-08-12):
+33% -> 84% line, and the mutant population over that file went from 38 testable to 104.**
+
+The problem was never a missing test. `do_enable()` and `try_to_disable()` handle boards
+where two axes share a driver enable pin — tracking which axes came on as a side effect,
+and refusing to report an axis released when the shared pin is still driven — and
+`any_enable_overlap()` is a `constexpr` over the pin assignments that was false in every
+configuration. The branch calling them was dead. **The fix is a configuration, not a test**,
+and it cost one `.ini` plus `#ifndef` guards on the enable pins in
+`native/pins_RAMPS_NATIVE.h` so a configuration can point two axes at one driver.
+
+The behaviour is a physical consequence rather than a policy: one pin cannot be high for X
+and low for Y at once. So `M17 X` energises Y and has to say so, and `M18 X` cannot cut the
+current while Y is held and has to say *that*.
+
+**It found two defects immediately, and one of them by breaking a test that had always
+passed.** `M17_naming_an_extruder_the_machine_lacks_does_nothing` failed the moment the new
+configuration existed — register #45: the bound `if (e < EXTRUDERS)` is in the direct path
+only, and the shared-enable path never reads the value at all on a single-extruder machine.
+Same command, same argument, different answer depending on how the board is wired. A test
+can only be as general as the builds it runs in, and this one had run in ten builds that all
+took the same branch.
+
+Register #46 came from the second test: `M18 X` on a shared board correctly reports "X not
+disabled. Shared with Y" *and* clears X's enable flag, because `disable_axis()` marks before
+it asks. The warning and the state disagree in the same breath. Not merely cosmetic —
+`mark_axis_disabled()` under `Z_CAN_FALL_DOWN` throws away the homing.
+
+Both are recorded and pinned; the tests state what each configuration actually does rather
+than asserting the version that passes.
+
 **`endstops.cpp` closed (2026-08-12): 79% line, 24.8% -> 34.4% raw, 100% killable (54/54).**
 The raw figure is the lowest here by a distance and it is not a gap. **103 of the 157
 testable mutants are erased by the preprocessor**, 77 of them on a single line:
@@ -956,13 +987,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 651,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 654,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**ten** configs in `test/`, reporting **606, 617, 624, 676, 677, 615, 612, 629, 672, 664**. The counts above vary
+**eleven** configs in `test/`, reporting **606, 617, 624, 676, 677, 615, 612, 629, 672, 664**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -1093,6 +1124,7 @@ Configurations in `test/`:
 | `007-i2c_encoders` | `I2C_POSITION_ENCODERS`, the first consumer of `planner.settings` from outside the build to be made buildable |
 | `008-extui` | `EXTENSIBLE_UI`, which links only against a concrete display — `tests/support/stub_extui.cpp` is that display, and it records rather than discards |
 | `009-parser_consumers` | the last reachable consumers of the parser's global state — five files no other configuration compiles |
+| `011-shared_enable` | a board where X and Y share one driver enable pin — the first configuration here with any enable overlap, which makes two thirds of `M17_M18_M84.cpp` reachable at all |
 | `010-dwin` | `DWIN_CREALITY_LCD` — the first LCD driver made host-buildable; needs an `LCD_SERIAL` port and a `WString.h` that provides nothing. Output is observable, **input is not** — see below |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`

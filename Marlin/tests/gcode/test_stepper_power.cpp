@@ -51,6 +51,7 @@
 #include "serial_capture.h"
 #include <string.h>
 #include <stdio.h>
+#include <string>
 #include "../support/test_clock.h"
 
 namespace {
@@ -201,12 +202,21 @@ MARLIN_TEST(stepper_power, M18_E_disables_the_extruders_without_touching_the_oth
 }
 
 /**
- * An extruder this machine does not have is not an extruder.
+ * An extruder this machine does not have is not an extruder — on a board with its own
+ * enable pin per axis. On a board that shares one, it is. **That divergence is register
+ * #45**, and this test states both sides rather than picking the one that passes.
  *
- * `M17 E<n>` indexes an array, so the bound is the difference between enabling a stepper
- * and writing through a pointer past the end of one. The index is derived from `EXTRUDERS`
- * rather than written as a literal, so this says "the first extruder this build does not
- * have" on every configuration rather than only on the one it was written against.
+ * `M17` has two implementations. Where no two axes share a driver enable it walks the
+ * parameters directly and refuses an index past the last extruder: `if (e < EXTRUDERS)`.
+ * Where they do share, it goes through `selected_axis_bits()`, and there the value is not
+ * read at all when the machine has one extruder — `E_TERN0(parser.has_value())` is a
+ * compile-time 0 — so `E<anything>` is taken to mean every extruder and the bound never
+ * applies.
+ *
+ * So the same command with the same argument does different things depending on how the
+ * board is wired, which nothing about the command suggests. Found by adding
+ * `011-shared_enable`: the assertion below had passed in every configuration for as long as
+ * it existed, because every configuration took the same branch.
  */
 MARLIN_TEST(stepper_power, M17_naming_an_extruder_the_machine_lacks_does_nothing) {
   SimulatedMachine machine;
@@ -217,20 +227,27 @@ MARLIN_TEST(stepper_power, M17_naming_an_extruder_the_machine_lacks_does_nothing
   snprintf(cmd, sizeof(cmd), "M17 E%d", EXTRUDERS);
   host_sends(cmd);
 
-  TEST_ASSERT_EQUAL_MESSAGE(0, stepper.axis_enabled.bits,
-    "naming an extruder one past the last should enable nothing at all - checked across the "
-    "whole mask, because a bound written as <= would set the bit belonging to no stepper "
-    "and looking only at extruder zero would not see it");
+  if (!any_enable_overlap()) {
+    TEST_ASSERT_EQUAL_MESSAGE(0, stepper.axis_enabled.bits,
+      "naming an extruder one past the last should enable nothing at all - checked across "
+      "the whole mask, because a bound written as <= would set the bit belonging to no "
+      "stepper and looking only at extruder zero would not see it");
 
-  // One past the end is the boundary; further out is what separates a bound written as
-  // "less than" from one written as "not equal to". The second would let this through and
-  // set a bit for a stepper that does not exist.
-  snprintf(cmd, sizeof(cmd), "M17 E%d", EXTRUDERS + 1);
-  host_sends(cmd);
-
-  TEST_ASSERT_EQUAL_MESSAGE(0, stepper.axis_enabled.bits,
-    "and an index well past the end should leave the enable mask untouched, not set a bit "
-    "belonging to no stepper");
+    // One past the end is the boundary; further out is what separates a bound written as
+    // "less than" from one written as "not equal to".
+    snprintf(cmd, sizeof(cmd), "M17 E%d", EXTRUDERS + 1);
+    host_sends(cmd);
+    TEST_ASSERT_EQUAL_MESSAGE(0, stepper.axis_enabled.bits,
+      "and an index well past the end should leave the enable mask untouched");
+  }
+  else {
+    // LEGACY-BEHAVIOR (register #45): the shared-enable path ignores the index entirely.
+    TEST_ASSERT_TRUE_MESSAGE(e_on(0),
+      "LEGACY: on a board with a shared driver enable, an out-of-range extruder number is "
+      "read as 'all extruders' rather than refused");
+    TEST_ASSERT_FALSE_MESSAGE(on(X_AXIS),
+      "but it should still not touch the motion axes");
+  }
 }
 
 // The other side of the same bound: the last extruder the machine does have works.
@@ -425,3 +442,97 @@ MARLIN_TEST(stepper_power, releasing_an_axis_waits_for_the_move_in_progress) {
   TEST_ASSERT_FALSE_MESSAGE(on(X_AXIS), "and then X should be released");
 }
 
+
+/**
+ * A board where two axes share one driver enable pin.
+ *
+ * Everything below is unreachable on the other configurations: `any_enable_overlap()` is a
+ * `constexpr` over the pin assignments, so `do_enable()` and `try_to_disable()` — two thirds
+ * of `M17_M18_M84.cpp` — are compiled but dead unless a board actually shares a pin.
+ * `011-shared_enable` is that board, and these are the first tests to reach either function.
+ *
+ * The behaviour is a physical consequence, not a policy: one pin cannot be high for X and
+ * low for Y at the same time. So enabling X energises Y whether or not you asked, and
+ * releasing X is impossible while Y still needs holding. The firmware's job is to do the
+ * possible thing and *say* what it could not do, because a user who typed `M18 X` and got
+ * silence would reasonably believe the motor was released.
+ */
+#if HAS_Y_AXIS
+
+MARLIN_TEST(stepper_power, enabling_one_axis_says_which_others_it_switched_on_too) {
+  SimulatedMachine machine;
+  StepperPower restore;
+  all_off();
+
+  SerialCapture host;
+  host_sends("M17 X");
+  const std::string said = host.finish();
+
+  TEST_ASSERT_TRUE_MESSAGE(on(X_AXIS), "M17 X should still enable X");
+
+  if (any_enable_overlap()) {
+    TEST_ASSERT_TRUE_MESSAGE(said.find("also enabled") != std::string::npos,
+      "sharing a driver enable with Y means Y came on too, and the user has to be told");
+    TEST_ASSERT_TRUE_MESSAGE(said.find('Y') != std::string::npos,
+      "and told which axis it was, not merely that there was one");
+  }
+  else {
+    TEST_ASSERT_TRUE_MESSAGE(said.find("also enabled") == std::string::npos,
+      "with a pin of its own, nothing else came on and there is nothing to report");
+  }
+}
+
+/**
+ * And releasing one of a shared pair does not release it.
+ *
+ * This is the half with consequences. `M18 X` on a shared board cannot cut the current
+ * while Y is still enabled, so the firmware reports the axis as *not* disabled and names
+ * what is holding the pin. A machine that silently reported success here would leave
+ * someone reaching into a printer they believed was limp.
+ */
+MARLIN_TEST(stepper_power, releasing_one_of_a_shared_pair_says_it_could_not) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  host_sends("M17");                       // everything on, so the shared pin is needed
+  SerialCapture host;
+  host_sends("M18 X");
+  const std::string said = host.finish();
+
+  if (any_enable_overlap()) {
+    TEST_ASSERT_TRUE_MESSAGE(said.find("not disabled") != std::string::npos,
+      "X shares its enable with Y, which is still held, so X cannot actually be released");
+    TEST_ASSERT_TRUE_MESSAGE(said.find("Shared with") != std::string::npos,
+      "and the report should name what is holding the pin");
+    // LEGACY-BEHAVIOR (register #46): and yet the firmware marks X as disabled.
+    // `Stepper::disable_axis()` calls `mark_axis_disabled()` *before* asking
+    // `can_axis_disable()` whether the pin can actually be released, so the flag is cleared
+    // whatever the answer. The warning above and the state below therefore disagree: the
+    // machine has just said it could not release X, and believes it did.
+    TEST_ASSERT_FALSE_MESSAGE(on(X_AXIS),
+      "LEGACY: the enable flag is cleared even though the report says the axis was not "
+      "released - see register #46");
+  }
+  else {
+    TEST_ASSERT_FALSE_MESSAGE(on(X_AXIS), "with its own pin X is released and stays released");
+    TEST_ASSERT_TRUE_MESSAGE(said.find("not disabled") == std::string::npos,
+      "and there is nothing to warn about");
+  }
+}
+
+// Releasing both of a shared pair does work, which is what makes the warning above a
+// statement about the *pair* rather than about X.
+MARLIN_TEST(stepper_power, releasing_both_of_a_shared_pair_releases_them) {
+  SimulatedMachine machine;
+  StepperPower restore;
+
+  host_sends("M17");
+  SerialCapture host;
+  host_sends("M18 XY");
+  host.finish();
+
+  TEST_ASSERT_FALSE_MESSAGE(on(X_AXIS), "asking for both should release X");
+  TEST_ASSERT_FALSE_MESSAGE(on(Y_AXIS), "and Y");
+}
+
+#endif // HAS_Y_AXIS
