@@ -550,6 +550,46 @@ Two counting traps caught here, both worth remembering:
   see the gotcha above. This bit me in this very session, one hour after using the same fault
   deliberately to test `harness-validator`.
 
+**`host_actions.cpp` rescued (2026-08-12): 13% -> 76% line, 91.9% raw / 100% killable.**
+The one genuine gap the `feature/` survey found, and it stayed a gap because it looked like
+a formatting file. It is not: it is the protocol a machine with no screen uses to ask a
+person for something, and **a prompt is a sequence, not a message** — end, begin with the
+text, name each button, then show. A host builds a dialogue box by reading those in order,
+so a button emitted after `show` is a button nobody can press, and nothing about the
+individual lines says so. Nearly every assertion here is therefore about *position within
+the output* rather than presence, which is what a test of a protocol has to be.
+
+Four things worth carrying:
+
+- **`//action:` is the whole agreement.** Assert the prefix separately from anything that
+  uses it, so it fails for one reason.
+- **`if (eol)` needs both directions.** Asserting only that an unterminated action runs on
+  is satisfied by a mutant that *never* writes a newline, because then everything runs
+  together. Two tests, opposite ways.
+- **A duplicated body costs a test each.** `prompt_do` is four overloads — program-memory or
+  runtime message, each with and without a trailing character — and each has its own copy of
+  the two lines that open the prompt and emit the buttons. Covering three left the fourth's
+  copies unasserted. And **two distinct buttons are needed**, not one: with a single button
+  a mutant that names the first twice, or swaps the pair, produces output no assertion on
+  that one button can separate.
+- **The trailing character is not decoration.** `prompt_do(PROMPT_FILAMENT_RUNOUT,
+  F("FilamentRunout T"), tool)` appends the extruder number. Lose it and the host tells the
+  user a filament ran out without saying which, on exactly the machines where it matters.
+
+**"Equivalent by construction on this platform" is a distinct category and this file has the
+clearest instance of it.** The three survivors on `if (pgm)` choose between reading the
+message from program memory and from RAM — and `PSTR(str)` is `(str)` here while
+`pgm_read_byte(addr)` is a plain dereference, so **both arms are literally the same code**.
+Not "no test reaches it", not "no assertion separates it": there is nothing to separate. On
+AVR they differ and the wrong arm reads a pointer as an address in the other memory space.
+Checked in the headers rather than inferred from the score.
+
+The other three: `extra_char != '\0'` mutated to `> '\0'` is equivalent by reachable range
+(every character passed is a positive ASCII digit), and two in `handle_response()` are cases
+whose bodies the preprocessor erases in the default build — an empty case falling into
+another empty case. Those two are killable under `003` and the runner only measures default,
+which is the trap already recorded for homing and levelling.
+
 ### Sizing the `GCodeParser` migration (2026-08-11)
 
 18 files read `parser.codenum` / `codebits` / `string_arg`. Measured rather than assumed, and
@@ -810,7 +850,7 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 606,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 623,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
