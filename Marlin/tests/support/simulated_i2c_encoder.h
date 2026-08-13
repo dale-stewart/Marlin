@@ -41,7 +41,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(I2C_POSITION_ENCODERS)
+#if ENABLED(I2C_POSITION_ENCODERS)
 
 #include "src/HAL/TEST/include/Wire.h"
 #include "simulated_endstops.h"
@@ -87,4 +87,4 @@ private:
   uint8_t field = 0;                // I2CPE_MAG_SIG_GOOD
 };
 
-#endif // __PLAT_TEST__ && I2C_POSITION_ENCODERS
+#endif // ENABLED(I2C_POSITION_ENCODERS)

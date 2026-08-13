@@ -32,9 +32,7 @@
 #include "src/module/motion.h"
 #include "src/module/planner.h"
 #include "src/MarlinCore.h"
-#ifdef __PLAT_TEST__
-  #include "../support/simulated_machine.h"
-#endif
+#include "../support/simulated_machine.h"
 #include "serial_capture.h"
 #include <string.h>
 #include <stdio.h>
@@ -741,7 +739,6 @@ MARLIN_TEST(queue, a_T_command_shaped_like_M108_does_not_stop_a_wait) {
  * checks, not just "some other command", or a relational mutant (`<=`, `>=`) that
  * still agrees on that one probe survives.
  */
-#ifdef __PLAT_TEST__
 
 MARLIN_TEST(queue, characters_either_side_of_M410_do_not_stop_the_steppers) {
   CleanQueue clean;
@@ -771,9 +768,6 @@ MARLIN_TEST(queue, characters_either_side_of_M410_do_not_stop_the_steppers) {
   TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M400 should not be taken for M410");
 }
 
-#endif // __PLAT_TEST__
-
-#ifdef __PLAT_TEST__
 
 /**
  * `M410` empties the planner where it stands.
@@ -841,4 +835,3 @@ MARLIN_TEST(queue, a_command_one_character_away_from_M410_does_not_stop_the_step
   TEST_ASSERT_EQUAL_MESSAGE(planned, planner.movesplanned(), "M100 should not be taken for M410");
 }
 
-#endif // __PLAT_TEST__

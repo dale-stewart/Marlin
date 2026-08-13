@@ -38,7 +38,6 @@
  * actually driving, which needs the temperature ISR, and that only runs here.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -417,4 +416,3 @@ MARLIN_TEST(thermal_limits, a_disabled_heater_is_not_switched_back_on_by_the_con
   #endif
 }
 
-#endif // __PLAT_TEST__

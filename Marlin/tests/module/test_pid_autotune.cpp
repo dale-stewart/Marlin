@@ -43,7 +43,6 @@
  * advances, and neither exists under HAL/LINUX.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -1044,4 +1043,3 @@ MARLIN_TEST(pid_autotune, a_tune_abandons_the_target_the_print_had_set) {
 
 #endif // PIDTEMP
 
-#endif // __PLAT_TEST__

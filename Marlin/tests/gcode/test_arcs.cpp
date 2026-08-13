@@ -39,7 +39,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(ARC_SUPPORT) && HAS_Y_AXIS
+#if ENABLED(ARC_SUPPORT) && HAS_Y_AXIS
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -228,4 +228,4 @@ MARLIN_TEST(arcs, an_arc_with_no_centre_is_refused) {
     "and nothing should have been queued for it");
 }
 
-#endif // __PLAT_TEST__ && ARC_SUPPORT && HAS_Y_AXIS
+#endif // ENABLED(ARC_SUPPORT) && HAS_Y_AXIS

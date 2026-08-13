@@ -28,7 +28,6 @@
  * starts, so these would wait forever.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -448,4 +447,3 @@ MARLIN_TEST(simulated_temperature, M109_R_waits_for_the_hotend_to_cool_to_the_ta
 
 #endif // HAS_HEATED_BED
 
-#endif // __PLAT_TEST__

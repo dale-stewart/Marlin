@@ -37,7 +37,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(EXTENSIBLE_UI)
+#if ENABLED(EXTENSIBLE_UI)
 
 #include <string>
 
@@ -56,4 +56,4 @@ struct RecordedUI {
   static void reset();
 };
 
-#endif // __PLAT_TEST__ && EXTENSIBLE_UI
+#endif // ENABLED(EXTENSIBLE_UI)

@@ -52,7 +52,6 @@
 
 #include <math.h>
 
-#ifdef __PLAT_TEST__
 
 class SimulatedBedSurface : public Peripheral {
 public:
@@ -142,4 +141,3 @@ private:
   int32_t carriage_steps, highest_steps;
 };
 
-#endif // __PLAT_TEST__

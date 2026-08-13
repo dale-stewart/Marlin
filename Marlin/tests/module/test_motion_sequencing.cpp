@@ -41,7 +41,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && HAS_Z_AXIS
+#if HAS_Z_AXIS
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -229,4 +229,4 @@ MARLIN_TEST(motion_sequencing, clearance_by_an_amount_is_measured_from_the_curre
     "the same relative raise from two heights should differ by the gap between them");
 }
 
-#endif // __PLAT_TEST__ && HAS_Z_AXIS
+#endif // HAS_Z_AXIS

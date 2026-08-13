@@ -21,7 +21,7 @@
 
 #include "stub_extui.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(EXTENSIBLE_UI)
+#if ENABLED(EXTENSIBLE_UI)
 
 #include "src/lcd/extui/ui_api.h"
 
@@ -92,4 +92,4 @@ namespace ExtUI {
 
 }
 
-#endif // __PLAT_TEST__ && EXTENSIBLE_UI
+#endif // ENABLED(EXTENSIBLE_UI)

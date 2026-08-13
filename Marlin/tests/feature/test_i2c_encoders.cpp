@@ -32,7 +32,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(I2C_POSITION_ENCODERS)
+#if ENABLED(I2C_POSITION_ENCODERS)
 
 #include "../test/unit_tests.h"
 #include "../gcode/serial_capture.h"
@@ -226,4 +226,4 @@ MARLIN_TEST(i2c_encoders, calibration_leaves_the_reciprocal_agreeing_with_the_re
     "the reciprocal should agree with the resolution calibration just chose");
 }
 
-#endif // __PLAT_TEST__ && I2C_POSITION_ENCODERS
+#endif // ENABLED(I2C_POSITION_ENCODERS)

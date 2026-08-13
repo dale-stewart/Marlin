@@ -34,7 +34,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && HAS_BED_PROBE
+#if HAS_BED_PROBE
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -820,4 +820,4 @@ MARLIN_TEST(probe, deploying_an_already_deployed_probe_does_nothing) {
   probe.stow();
 }
 
-#endif // __PLAT_TEST__ && HAS_BED_PROBE
+#endif // HAS_BED_PROBE

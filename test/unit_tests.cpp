@@ -61,8 +61,8 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
 
 #if HAS_MEDIA
 
-  #include "src/sd/cardreader.h"
-  #include "tests/support/simulated_media.h"
+#include "src/sd/cardreader.h"
+#include "tests/support/simulated_media.h"
 
   /**
    * A formatted card, present from the first test.
@@ -85,9 +85,7 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
    */
 #endif // HAS_MEDIA
 
-#ifdef __PLAT_TEST__
-
-  #include "src/HAL/TEST/hardware/Gpio.h"
+#include "src/HAL/TEST/hardware/Gpio.h"
 
   // What was attached before any test ran — the baseline a test is expected to restore.
   static Peripheral *baseline_peripherals[Gpio::pin_count + 1] = { nullptr };
@@ -136,11 +134,6 @@ MarlinTest::MarlinTest(const std::string& _name, const void(*_test)(), const cha
     if (!peripheral_leaks.empty())
       TEST_FAIL_MESSAGE(("peripherals were left registered to dead objects:" + peripheral_leaks).c_str());
   }
-
-#else
-  static void record_attached_peripherals() {}
-  static void check_no_peripheral_was_left_attached(const std::string&) {}
-#endif
 
 // Install the stand-ins a test cannot opt out of, once, before the first test runs.
 /**

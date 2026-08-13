@@ -39,7 +39,6 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#ifdef __PLAT_TEST__
 
 #include "src/HAL/TEST/hardware/Gpio.h"
 
@@ -97,4 +96,3 @@ private:
   }
 };
 
-#endif // __PLAT_TEST__

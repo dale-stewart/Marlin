@@ -50,7 +50,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && BUTTON_EXISTS(EN1) && BUTTON_EXISTS(EN2) && BUTTON_EXISTS(ENC)
+#if BUTTON_EXISTS(EN1) && BUTTON_EXISTS(EN2) && BUTTON_EXISTS(ENC)
 
 #include "src/lcd/buttons.h"
 #include "test_clock.h"
@@ -124,4 +124,4 @@ private:
   }
 };
 
-#endif // __PLAT_TEST__ && BUTTON_EXISTS(EN1/EN2/ENC)
+#endif // BUTTON_EXISTS(EN1) && BUTTON_EXISTS(EN2) && BUTTON_EXISTS(ENC)

@@ -863,11 +863,21 @@ Two things fell out of the removal that are worth knowing:
   chain broke the asan env with a message pointing at an environment that no longer exists.
   The exemption is now `_native_test`, `_native_coverage`, `_native_asan` — **the name is
   the whole rule**, so a new measurement env must match it or it will not build at all.
-- **The whole-file `#ifdef __PLAT_TEST__` guards on the test files are now inert** and were
-  deliberately left in place. They document what a file needs; they no longer switch
-  anything, because the macro is always defined for a test build. That also means the trap
-  that caused the seven-day breakage is gone rather than merely avoided — a test appended
-  after a closing `#endif` now simply runs.
+- **The `__PLAT_TEST__` guards are gone from the test tree entirely.** They no longer switched
+  anything, and a guard that cannot be false is a claim about the build that is not true. Files
+  guarded on a *feature* keep that guard, narrowed: `#if defined(__PLAT_TEST__) && HAS_BED_PROBE`
+  is now `#if HAS_BED_PROBE`. The trap that caused the seven-day breakage is therefore gone
+  rather than avoided — there is no closing `#endif` left to append a test after.
+
+  **Two of them had `#else` branches, and both were worse than dead code.** In
+  `test/unit_tests.cpp` the fallback stubbed out the peripheral-leak check to nothing, so the
+  LINUX build had no guard against the fault class of register #26 — the one that cost the most
+  to diagnose. In `simulated_sensors.h` the fallback for `settle()` **wrote the expected
+  temperature straight into `thermalManager.temp_hotend[0].celsius`**, computed with the same
+  conversion the firmware uses, because the ADC pipeline is dormant there. Every temperature
+  assertion under that HAL was therefore checking a number the fixture had just placed, through
+  the same arithmetic — the self-consistency trap this file warns about, sitting inside the
+  harness rather than inside a test.
 
 ## Test, coverage, and mutation tooling
 

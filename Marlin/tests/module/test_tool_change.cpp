@@ -37,7 +37,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && HAS_MULTI_EXTRUDER
+#if HAS_MULTI_EXTRUDER
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -308,4 +308,4 @@ MARLIN_TEST(tool_change, an_unhomed_machine_changes_tools_without_moving) {
     "an unhomed machine should not move the carriage to change tools");
 }
 
-#endif // __PLAT_TEST__ && HAS_MULTI_EXTRUDER
+#endif // HAS_MULTI_EXTRUDER

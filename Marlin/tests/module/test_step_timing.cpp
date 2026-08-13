@@ -40,7 +40,6 @@
  * so none of these timings would be reproducible.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -1027,4 +1026,3 @@ MARLIN_TEST(step_timing, a_small_circle_is_taken_at_the_speed_its_radius_allows)
     "and neither should have stopped dead at every corner");
 }
 
-#endif // __PLAT_TEST__

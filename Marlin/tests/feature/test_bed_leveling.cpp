@@ -36,7 +36,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && HAS_LEVELING && ABL_PLANAR
+#if HAS_LEVELING && ABL_PLANAR
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -726,4 +726,4 @@ MARLIN_TEST(bed_leveling, a_factory_reset_discards_the_measured_plane) {
     "a factory reset should discard the plane, not just stop applying it");
 }
 
-#endif // __PLAT_TEST__ && HAS_LEVELING && ABL_PLANAR
+#endif // HAS_LEVELING && ABL_PLANAR

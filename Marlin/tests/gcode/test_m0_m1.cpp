@@ -34,7 +34,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(EXTENSIBLE_UI)
+#if ENABLED(EXTENSIBLE_UI)
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -188,4 +188,4 @@ MARLIN_TEST(m0_m1, M1_tells_the_host_M1_stopped_it) {
     "and not told M0");
 }
 
-#endif // __PLAT_TEST__ && EXTENSIBLE_UI
+#endif // ENABLED(EXTENSIBLE_UI)

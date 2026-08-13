@@ -35,7 +35,6 @@
  * everywhere and is asserted unguarded.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "src/inc/MarlinConfig.h"
@@ -54,7 +53,7 @@
 #include <chrono>
 
 #if ENABLED(EXTENSIBLE_UI)
-  #include "../support/stub_extui.h"
+#include "../support/stub_extui.h"
 #endif
 
 namespace {
@@ -302,4 +301,3 @@ MARLIN_TEST(user_wait, the_host_prompt_carries_the_message_from_the_command_line
 #endif // HOST_PROMPT_SUPPORT
 
 #endif // HAS_RESUME_CONTINUE
-#endif // __PLAT_TEST__

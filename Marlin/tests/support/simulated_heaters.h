@@ -47,7 +47,6 @@
 
 #include "simulated_hardware.h"
 
-#ifdef __PLAT_TEST__
 
 #include "src/module/temperature.h"
 
@@ -231,4 +230,3 @@ private:
   };
 #endif
 
-#endif // __PLAT_TEST__

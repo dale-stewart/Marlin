@@ -41,7 +41,6 @@
  * Test-HAL only: none of this is reproducible when time is the wall clock.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -547,4 +546,3 @@ MARLIN_TEST(endstops, a_move_that_starts_against_a_closed_switch_is_abandoned_at
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, moved, "the carriage moved further into the switch");
 }
 
-#endif // __PLAT_TEST__

@@ -36,7 +36,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && HAS_EXTRUDERS && ANY(PREVENT_COLD_EXTRUSION, PREVENT_LENGTHY_EXTRUDE)
+#if HAS_EXTRUDERS && ANY(PREVENT_COLD_EXTRUSION, PREVENT_LENGTHY_EXTRUDE)
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -245,4 +245,4 @@ MARLIN_TEST(extrusion_guards, the_extrusion_limit_is_measured_after_the_flow_rat
 
 #endif // PREVENT_LENGTHY_EXTRUDE
 
-#endif // __PLAT_TEST__ && HAS_EXTRUDERS && (PREVENT_COLD_EXTRUSION || PREVENT_LENGTHY_EXTRUDE)
+#endif // HAS_EXTRUDERS && ANY(PREVENT_COLD_EXTRUSION, PREVENT_LENGTHY_EXTRUDE)

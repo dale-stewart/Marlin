@@ -34,7 +34,6 @@
  * advances.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -258,4 +257,3 @@ MARLIN_TEST(heater_wait_reports, M109_R_gives_up_on_a_hotend_that_is_not_cooling
 
 #endif // HAS_HEATED_BED
 
-#endif // __PLAT_TEST__

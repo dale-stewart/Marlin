@@ -34,7 +34,7 @@
 #include "../test/unit_tests.h"
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(DWIN_CREALITY_LCD)
+#if ENABLED(DWIN_CREALITY_LCD)
 
 #include "src/lcd/dwin/creality/dwin.h"
 #include "src/lcd/dwin/common/dwin_api.h"
@@ -110,4 +110,4 @@ MARLIN_TEST(dwin_display, changing_the_resolution_at_the_panel_leaves_the_recipr
 
 #endif // EDITABLE_STEPS_PER_UNIT
 
-#endif // __PLAT_TEST__ && DWIN_CREALITY_LCD
+#endif // ENABLED(DWIN_CREALITY_LCD)

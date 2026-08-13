@@ -33,7 +33,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && HAS_BED_PROBE && ENABLED(Z_SAFE_HOMING)
+#if HAS_BED_PROBE && ENABLED(Z_SAFE_HOMING)
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -584,4 +584,4 @@ MARLIN_TEST(homing_machine, homing_leaves_no_endstop_hit_outstanding) {
     "homing touches every switch on purpose and should leave none of them recorded as a hit");
 }
 
-#endif // __PLAT_TEST__ && HAS_BED_PROBE && Z_SAFE_HOMING
+#endif // HAS_BED_PROBE && ENABLED(Z_SAFE_HOMING)

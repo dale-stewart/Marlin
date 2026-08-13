@@ -118,28 +118,21 @@ public:
    * hanging, and the caller's own assertion on the reading is what reports it.
    */
   static void settle() {
-    #ifdef __PLAT_TEST__
-      // task() reports through the serial port on error, and nothing drains it here.
-      const bool was_connected = MYSERIAL1.host_connected;
-      MYSERIAL1.host_connected = false;
-      // task() does nothing at all while Marlin is still starting up.
-      const MarlinState was_state = marlin.state;
-      if (marlin.is(MF_INITIALIZING)) marlin.setState(MF_RUNNING);
+    // task() reports through the serial port on error, and nothing drains it here.
+    const bool was_connected = MYSERIAL1.host_connected;
+    MYSERIAL1.host_connected = false;
+    // task() does nothing at all while Marlin is still starting up.
+    const MarlinState was_state = marlin.state;
+    if (marlin.is(MF_INITIALIZING)) marlin.setState(MF_RUNNING);
 
-      for (uint16_t i = 0; i < SETTLE_LIMIT_MS; i++) {
-        if (settled()) break;
-        HAL_test_advance_millis(1);
-        thermalManager.task();
-      }
+    for (uint16_t i = 0; i < SETTLE_LIMIT_MS; i++) {
+      if (settled()) break;
+      HAL_test_advance_millis(1);
+      thermalManager.task();
+    }
 
-      marlin.setState(was_state);
-      MYSERIAL1.host_connected = was_connected;
-    #else
-      // The pipeline is dormant here, so place the value the pipeline would have
-      // produced. Same number, quantisation included, as the test HAL settles on.
-      TERN_(HAS_HOTEND, thermalManager.temp_hotend[0].celsius = celsius_of_hotend(SimulatedHardware::adc_code(TEMP_0_PIN)));
-      TERN_(HAS_HEATED_BED, thermalManager.temp_bed.celsius = celsius_of_bed(SimulatedHardware::adc_code(TEMP_BED_PIN)));
-    #endif
+    marlin.setState(was_state);
+    MYSERIAL1.host_connected = was_connected;
   }
 
 private:

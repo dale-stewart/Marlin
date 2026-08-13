@@ -33,7 +33,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(EXTENSIBLE_UI)
+#if ENABLED(EXTENSIBLE_UI)
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -172,4 +172,4 @@ MARLIN_TEST(extui, a_display_sets_the_axis_it_names) {
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(was_y, ExtUI::getAxisSteps_per_mm(ExtUI::Y), "Y should not have");
 }
 
-#endif // __PLAT_TEST__ && EXTENSIBLE_UI
+#endif // ENABLED(EXTENSIBLE_UI)

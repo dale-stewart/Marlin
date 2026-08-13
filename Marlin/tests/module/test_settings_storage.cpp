@@ -36,7 +36,7 @@
 
 #include "src/inc/MarlinConfig.h"
 
-#if defined(__PLAT_TEST__) && ENABLED(EEPROM_SETTINGS)
+#if ENABLED(EEPROM_SETTINGS)
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -322,4 +322,4 @@ MARLIN_TEST(settings_storage, a_stored_value_that_is_not_a_number_is_not_applied
     "a stored gain that is not a number should not be loaded into the heater");
 }
 
-#endif // __PLAT_TEST__ && EEPROM_SETTINGS
+#endif // ENABLED(EEPROM_SETTINGS)

@@ -29,7 +29,6 @@
  * Test-HAL only: these deliberately hang under HAL/LINUX.
  */
 
-#ifdef __PLAT_TEST__
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
@@ -193,4 +192,3 @@ MARLIN_TEST(blocking_commands, G4_waits_the_full_interval_even_when_it_exceeds_t
 
 #endif // ARC_SUPPORT
 
-#endif // __PLAT_TEST__
