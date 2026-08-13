@@ -1388,6 +1388,30 @@ is blocked by PEP 668 on this machine).
   `movesplanned() == 0`. Nothing reports it. The tell is a queue-related assertion failing in a
   way that makes no sense — a block never delivered, a buffer never filling — and the first
   thing to print is `movesplanned()`.
+- **A loop that waits by grepping the process table waits for itself, for ever.** Every
+  measurement here is long enough to invite one, and the obvious form is broken:
+
+  ```bash
+  while pgrep -f "make unit-test-all-local" >/dev/null; do sleep 30; done   # never returns
+  ```
+
+  `pgrep -f` matches whole command lines, and this waiter's own command line contains the
+  string it is searching for. Start a second and they match each other. On 2026-08-13 **ten
+  of them piled up in one session**, every one reporting "still running" about a build that
+  had finished — and the reports were believed, so the same measurement was waited on three
+  times and a mutation run was polled long after its results were on disk. The same trap
+  had already bitten `mutation_test.py` earlier the same day.
+
+  Use `buildroot/share/scripts/wait_for.sh <path>`, which waits for the **artifact**: a
+  results file cannot match the thing looking for it, and its existence is the condition
+  that actually matters. Better still, do not add a waiter at all — run the job itself in
+  the background and let the runner report it. If you must match a process, keep the
+  pattern out of your own command line: `pgrep -f "[m]ake unit-test-all-local"`.
+
+  One caveat the script's own header repeats: **the artifact must not already exist** when
+  the job starts, or the wait returns at once and reports a job done that has not begun.
+  `make unit-test-mutation` writes its results at the end, so wait on a results path you
+  have just deleted or have not used before.
 - **Never `git add -A` after a coverage or mutation run.** Both rewrite
   `Marlin/Configuration.h`, `Configuration_adv.h` and `config.ini` for the suite they measure
   and leave them rewritten. Cleaning them before the *test* run is not enough if a measurement

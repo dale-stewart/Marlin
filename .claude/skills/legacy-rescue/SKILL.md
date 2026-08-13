@@ -222,6 +222,30 @@ change. A test edited during the refactor has stopped being evidence.
 - Timebox the loop in step 5. If the score plateaus, surface the remaining
   survivors and let the user decide.
 
+**Wait on the artifact, never on the process.** Long runs invite a polling loop, and the
+obvious one is broken in a way that is invisible until it has cost an afternoon: a loop
+that greps the process table for the job it is waiting on **matches itself**, because its
+own command line contains the text it is searching for. The first waiter then blocks
+forever, and every later one joins the pile — each waiting on the others, all of them
+reporting "still running" about a job that finished long ago. Any conclusion drawn from
+that report is wrong, and the natural response, adding another waiter, makes it worse.
+
+Two rules, in order of preference:
+
+1. **Do not add a waiter at all.** Run the job itself in the background and let the
+   runner tell you it is done. A separate poller is redundant when the job's own
+   completion is already observable, and redundancy here is what creates the deadlock.
+2. **Where you must poll, poll for the output, not the producer** — `until [ -f
+   results.json ]` rather than `while pgrep -f "the-command"`. The artifact cannot
+   accidentally match the thing looking for it, and its existence is the condition you
+   actually care about. If you truly must match a process, keep the pattern out of your
+   own command line (`pgrep -f "[t]he-command"`).
+
+The general shape is worth recognising beyond shells: **an observer that is visible to
+its own query will observe itself.** The same trap turns up in log tails that match their
+own grep, in monitors that alert on their own noise, and in a test that counts objects of
+a kind it has just constructed.
+
 **Quote a baseline with the command that produced it, never as a bare number.** That
 turns any ambiguity in the number into a false alarm rather than a silent divergence,
 and suites usually have more than one axis to vary — the environment, the
