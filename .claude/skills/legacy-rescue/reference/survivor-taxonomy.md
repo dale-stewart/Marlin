@@ -67,6 +67,24 @@ re-checks.
   unrelated to the mutants — a sentinel set past a threshold takes an abort path no `±1` mutant
   would — so read *which* tests failed rather than only how many.
 
+- **A report guarded by a once-per-process flag can be observed by at most one test, and which
+  one is the linker's choice.** Diagnostics for terminal faults are often written to fire once —
+  "the first failure is the one that matters, and we are about to stop anyway" — using a
+  function-local static or a module-level flag that nothing resets. On the real system that is
+  reasonable. In a suite where every test shares one process it means the message is spent by
+  whoever reaches it first, and every later test sees silence.
+
+  The tell is a cluster on reporting code that survives even after you have made the path
+  reachable: the *action* is assertable and the *words* are not. Confirm it by printing the
+  flag on entry rather than by reasoning about who might have set it — the culprit is usually
+  a test that has nothing to do with the subject.
+
+  **Do not fix this by ordering.** A test that passes only when it runs first will pass today,
+  fail the day a file is added ahead of it, and present as a defect in the code rather than in
+  the arrangement. Delete the test, record the flag as the reason, and note that the fix — a
+  resettable flag, or separating the reporting from the once-only action — is a production
+  change and belongs behind the frontier.
+
 - **A value can be computed, correct, and then discarded.** Where two limits are combined by
   taking the smaller — a clamp, a `min`, a cap applied on top of another — the losing one has
   no effect at all. Its line is covered, its arithmetic runs, and every mutation of it survives

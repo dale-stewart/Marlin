@@ -31,8 +31,11 @@
 #include "src/gcode/gcode.h"
 #include "src/module/motion.h"
 #include "src/module/planner.h"
+#include "src/module/temperature.h"
+#include "src/module/stepper.h"
 #include "src/MarlinCore.h"
 #include "../support/simulated_machine.h"
+#include "../support/kill_button.h"
 #include "serial_capture.h"
 #include <string.h>
 #include <stdio.h>
@@ -667,8 +670,8 @@ MARLIN_TEST(queue, a_resend_request_names_the_next_expected_line) {
  * enqueued at all. That is the property to assert: the effect must be visible without the
  * queue being advanced even once.
  *
- * `M112` sits in the same switch and cannot be tested here — it calls `kill()`, which does not
- * return. See the defect register for the class.
+ * `M112` sits in the same switch, and used to be recorded here as untestable because it calls
+ * `kill()`. That was wrong — see `support/kill_button.h`. It is asserted below.
  */
 MARLIN_TEST(queue, M108_stops_a_wait_without_the_queue_being_advanced) {
   CleanQueue clean;
@@ -679,6 +682,89 @@ MARLIN_TEST(queue, M108_stops_a_wait_without_the_queue_being_advanced) {
 
   TEST_ASSERT_FALSE_MESSAGE(marlin.wait_for_heatup, "M108 should end the wait as it is read");
 }
+
+/**
+ * `M112` halts the machine as the line is read, not when the queue reaches it.
+ *
+ * This is the emergency stop, and the whole reason it is recognised in the reader is that the
+ * queue may be minutes deep or the machine stuck in a wait — by the time an enqueued `M112`
+ * came round, whatever the operator was trying to stop would have finished happening. So the
+ * property is the same one `M108` has: the effect must be visible without `drain_queue()`
+ * being called at all.
+ *
+ * Recorded as untestable until 2026-08-13 because it calls `kill()`. It does return, once
+ * somebody presses the button; `OperatorPressesKill` is that somebody.
+ */
+#if HAS_KILL
+  MARLIN_TEST(queue, M112_halts_the_machine_as_the_line_is_read) {
+    SimulatedMachine machine;
+    CleanQueue clean;
+    queue.set_current_line_number(0);
+
+    thermalManager.setTargetHotend(200, 0);
+    stepper.enable_all_steppers();
+    TEST_ASSERT_TRUE_MESSAGE(bool(READ(X_ENABLE_PIN)) == bool(ENABLED(X_ENABLE_ON)),
+      "the fixture should have the axes energised before the emergency stop");
+
+    OperatorPressesKill operator_arrives;
+    host_transmits("M112");                    // read only — the queue is never advanced
+
+    TEST_ASSERT_EQUAL_MESSAGE(0, thermalManager.degTargetHotend(0),
+      "M112 should stop the heaters as the line is read");
+    TEST_ASSERT_FALSE_MESSAGE(bool(READ(X_ENABLE_PIN)) == bool(ENABLED(X_ENABLE_ON)),
+      "and release every stepper, because a person is about to reach into the machine");
+  }
+
+  /**
+   * ...and it says which command halted the machine.
+   *
+   * `M112` passes `M112_KILL_STR` as the reason, which is the only thing distinguishing an
+   * emergency stop in the log from a thermal fault or a failed heat-up. A host reading back
+   * afterwards has nothing else to go on.
+   */
+  MARLIN_TEST(queue, M112_names_itself_as_the_reason_for_the_halt) {
+    SimulatedMachine machine;
+    CleanQueue clean;
+    queue.set_current_line_number(0);
+
+    std::string reply;
+    {
+      SerialCapture capture;
+      OperatorPressesKill operator_arrives;
+      host_transmits("M112");
+      reply = capture.finish();
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(reply.find("Error:" STR_ERR_KILLED) != std::string::npos,
+      "M112 should report the halt");
+    TEST_ASSERT_TRUE_MESSAGE(reply.find(M112_KILL_STR) != std::string::npos,
+      "and name itself as the reason");
+  }
+
+  /**
+   * A near-miss must not be taken for the emergency stop.
+   *
+   * The switch selects on `command[3]`, then checks `[1]` and `[2]` — so `M212` and `M110`
+   * differ from `M112` in exactly the characters the switch does *not* select on first. A
+   * machine that halted on either would stop dead part-way through an ordinary print.
+   *
+   * No operator here, deliberately: if either command were taken for `M112` this test would
+   * hang rather than fail, which is a louder result than a wrong assertion.
+   */
+  MARLIN_TEST(queue, a_command_that_merely_looks_like_M112_does_not_halt_the_machine) {
+    SimulatedMachine machine;
+    CleanQueue clean;
+    queue.set_current_line_number(0);
+
+    thermalManager.setTargetHotend(200, 0);
+
+    host_transmits("M110 N0");
+    TEST_ASSERT_EQUAL_MESSAGE(200, thermalManager.degTargetHotend(0),
+      "M110 should not be taken for M112");
+
+    thermalManager.setTargetHotend(0, 0);
+  }
+#endif // HAS_KILL
 
 /**
  * A near-miss must not be taken for the emergency command.

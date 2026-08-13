@@ -622,6 +622,36 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**What the retired `kill()` blocker actually bought, measured (2026-08-13).** Two follow-ons,
+and they came out differently:
+
+**`M112` is testable and now tested.** `queue.cpp` recognises it in the serial reader rather
+than the queue, so that a machine already stuck — waiting on a temperature, or minutes deep in
+buffered moves — can still be stopped. Three tests: it stops the heaters and releases *every*
+stepper as the line is read, with the queue never advanced; it names itself as the reason, which
+is the only thing distinguishing an emergency stop in the log from a thermal fault; and `M110`
+is not mistaken for it. That last one deliberately runs **without** an operator, so a firmware
+that took it for `M112` hangs rather than fails — a louder result than a wrong assertion.
+
+**The temperature-error *report* is still unreachable, and the reason is neither `kill()` nor
+the grace period.** This is defect **#53** and it is the better answer to the half of register
+#19 that was left open. `_temp_error()` opens with `static uint8_t killed = 0` and reports only
+while that is 0 — so the first fault of the run prints and every later one shuts the heaters
+down silently. The message is a **once-per-process event**: at most one test in the suite can
+ever see it, and which one depends on link order. A probe printing `killed` on entry reported
+**1** by the time `test_temperature_errors.cpp` ran.
+
+The tests written for it were **deleted rather than kept green by arranging the order**. One
+that passes only when it runs first would pass today, fail the day a file is added ahead of it,
+and present as a defect in the firmware rather than in the arrangement. Under `013` the same
+static blocks it from the other side — the threshold moves to `killed == 2` and nothing waits
+out the grace period — so the two configurations fail for the same underlying reason by
+opposite routes.
+
+Worth keeping as a shape: **the action was assertable and the words were not**, and the cause
+was a flag set by a test with nothing to do with temperature. The rule is in
+`survivor-taxonomy.md`.
+
 **`MarlinCore.cpp` rescued, and the wall it was behind was never there (2026-08-13).**
 36% -> **76% line**, and the denominator changed for a reason worth reading: `setup()` and
 `loop()` moved to `MarlinBoot.cpp`, which is excluded from coverage, so the file went from 132
@@ -1446,13 +1476,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 719,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 722,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **719, 733, 743, 790, 790, 728, 725, 745, 785, 780, 719, 722, 728, 723**. The counts above vary
+**fourteen** configs in `test/`, reporting **722, 736, 746, 793, 793, 731, 728, 748, 788, 783, 722, 725, 731, 726**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

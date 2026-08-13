@@ -55,12 +55,14 @@
 
 #include "../test/unit_tests.h"
 #include "../support/simulated_machine.h"
+#include "../support/kill_button.h"
+#include "../gcode/serial_capture.h"
 #include "../gcode/simulated_sensors.h"
 #include "src/module/temperature.h"
 #include "src/module/printcounter.h"
 #include "src/MarlinCore.h"
 
-#if BOGUS_TEMPERATURE_GRACE_PERIOD && HAS_HOTEND
+#if HAS_HOTEND && BOGUS_TEMPERATURE_GRACE_PERIOD
 
 namespace {
 
@@ -392,4 +394,44 @@ MARLIN_TEST(temperature_errors, the_cold_limit_sits_one_reading_above_the_config
   }
 #endif
 
-#endif // BOGUS_TEMPERATURE_GRACE_PERIOD && HAS_HOTEND
+// ---------------------------------------------------------------------------
+// What the host is told — and why no test can assert it
+// ---------------------------------------------------------------------------
+
+/**
+ * The report is a once-per-process event, so at most one test in the whole run could ever
+ * see it — and which one depends on link order. Defect #53.
+ *
+ * This was worth chasing because retiring the `kill()` blocker (register #19) looked as though
+ * it should have opened the message up: in the default build the *first* temperature error
+ * reports and then calls `loud_kill()`, and `kill()` now returns once an operator presses the
+ * button. The shutdown is asserted above under `013`; the message should have been assertable
+ * here.
+ *
+ * It is not, and the reason is neither `kill()` nor the grace period:
+ *
+ *     void Temperature::_temp_error(...) {
+ *       static uint8_t killed = 0;
+ *       if (marlin.isRunning() && killed == TERN(HAS_BOGUS_TEMPERATURE_GRACE_PERIOD, 2, 0)) {
+ *         ... the report ...
+ *
+ * `killed` is a function-local static. Once anything anywhere in the process has taken a
+ * temperature error, every later one is silent for the rest of the run. A probe printing
+ * `killed` on entry reports **1** by the time this file executes, so the one report this
+ * process was ever going to make had already been spent by an earlier test.
+ *
+ * A test that only passes when it happens to run first is worse than no test: it would pass
+ * today, fail the day a file is added ahead of it, and the failure would look like a defect in
+ * the code rather than in the ordering. So the tests that were written here are deleted rather
+ * than kept green by arranging the order, and the finding is recorded instead.
+ *
+ * Under `013` the same static is what makes the report unreachable from the other side: the
+ * grace period moves the reporting threshold to `killed == 2`, and `killed` only advances past
+ * 1 once the grace expires, which nothing in a test run waits an hour for.
+ *
+ * What would fix it is a production change — the flag wants to be resettable, or the reporting
+ * wants to be separable from the once-only kill — and that is behind the frontier.
+ */
+
+#endif // HAS_HOTEND && BOGUS_TEMPERATURE_GRACE_PERIOD
+
