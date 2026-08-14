@@ -222,6 +222,36 @@ without touching any fixture. A skipped destructor then leaks a small allocation
 corrupting the process. Make the registry a list rather than a single slot — these things nest,
 because a helper opens one while its caller already holds one.
 
+**Where the system special-cases a dimension, check that your fixture configures it.** Many
+systems have one axis, column, channel or tier that the rest of the code treats differently — and
+the helper that means "all of them" usually excludes it, because it was written for the ordinary
+ones. A fixture that sets limits by iterating that helper leaves the special one at whatever its
+storage was zero-initialised to.
+
+The failure mode is what makes this expensive: **an unset limit does not refuse the operation, it
+scales it.** Zero throughput, zero acceleration, zero batch size — the code takes the correct path,
+produces the correct result, and arrives in the correct state, arbitrarily slowly. Nothing throws
+and nothing asserts. What you see is a suite that stopped finishing, usually first noticed in an
+unrelated test whose duration depends on accumulated state.
+
+Two habits make it cheap instead. Set the whole configuration in one loop over the widest
+enumeration available rather than several loops over narrower ones — the bug here lived in the gap
+between two such loops that differed by exactly one element. And when a value is a *limit*, prefer
+a fixture that fails loudly on zero to one that inherits it.
+
+**When one operation is slow and a related one is not, look for what the fast path selects that
+the slow path does not.** The decisive measurement in the case above was not removing things until
+the problem went away — every removal left it unchanged — but *adding* an ordinary operation
+alongside the suspect one. The combined operation was 1000× faster than the suspect alone, which
+is only possible if the two take different branches, and that named the branch immediately.
+
+Reach for this when narrowing by subtraction has stalled: if A is slow and B is fast, try A+B. A
+combination that is faster than one of its parts is a strong signal that a special case exists,
+and it points at the exact predicate. Along the way, test whether the cost **scales with the
+size of the work**; a cost that is constant across a tenfold change of input is a fixed wait or a
+fixed misconfiguration, not a slow algorithm, and that distinction rules out half the candidates
+in one run.
+
 **A plausible mechanism that fits every symptom is not a diagnosis.** The failure above had an
 obvious explanation available: another fixture in the same test leaked a value that shifts the
 frame of reference, which is a documented fault class, was genuinely present, and accounted for

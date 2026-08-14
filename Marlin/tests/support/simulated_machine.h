@@ -63,14 +63,54 @@ public:
 
     release_kill_button();
 
+    /**
+     * Every axis, extruders included — and the loop macro is the whole point.
+     *
+     * This used to set steps-per-millimetre with `LOOP_LOGICAL_AXES` and the limits with
+     * `LOOP_NUM_AXES`, which differ by exactly one thing: `NUM_AXES` excludes E. So the extruder
+     * was given a resolution and **no maximum feedrate or acceleration at all** — and
+     * `planner.settings` is a zero-initialised static, so what it kept was zero.
+     *
+     * A ceiling of zero does not refuse the move. The planner scales the whole move down until
+     * its worst axis is inside its limit, so the block is queued, the stepper takes exactly the
+     * right number of steps, and the machine arrives at the right place — at about
+     * 0.00007 mm/s. Measured: a 2 mm retract cost **27,487,964 ms of simulated time**, seven and
+     * a half hours, while the identical 2 mm move on X through the same call took 152 ms.
+     *
+     * Nothing failed. The suite got slower, and a test elsewhere that dwells for "the clock so
+     * far" began dwelling for forty-five simulated hours and timed out — which is where it
+     * finally surfaced, in a file that has nothing to do with extrusion. This is why the
+     * "leaked scale" note in `quiesce_simulated_peripherals()` warns that the symptom of a wrong
+     * scale is a suite that stops finishing rather than one that fails.
+     *
+     * `LOOP_DISTINCT_AXES` is the right one for all three arrays: it covers the per-extruder
+     * entries as well, which `LOOP_LOGICAL_AXES` does not when `DISTINCT_E_FACTORS` is on.
+     */
     was_settings = planner.settings;
-    LOOP_LOGICAL_AXES(i) planner.settings.axis_steps_per_mm[i] = STEPS_PER_MM;
-    LOOP_NUM_AXES(i) {
+    LOOP_DISTINCT_AXES(i) {
+      planner.settings.axis_steps_per_mm[i] = STEPS_PER_MM;
       planner.settings.max_feedrate_mm_s[i] = 300.0f;
       planner.settings.max_acceleration_mm_per_s2[i] = 3000;
     }
+    /**
+     * Three accelerations, and a move uses exactly one of them.
+     *
+     * `planner.cpp` picks per move: `travel_acceleration` when nothing is extruded,
+     * `retract_acceleration` when *only* the extruder moves, and `acceleration` otherwise. This
+     * fixture used to set two of the three, so an E-only move — a retract, an unretract, a purge,
+     * everything the filament-change feature is made of — was planned with an acceleration of
+     * **zero**, because `planner.settings` is a zero-initialised static.
+     *
+     * Zero acceleration does not refuse the move either. It plans it at about one step per
+     * second: a 2 mm retract took **171,932 ms of simulated time**, and the *same* 2 mm of
+     * extrusion combined with a 2 mm X move took 152 ms — because adding an XYZ component
+     * changes which of the three constants the planner reaches for. That difference is what
+     * finally identified it, after the distance-scaling test showed the cost was a fixed wait
+     * rather than a slow move.
+     */
     planner.settings.acceleration = 3000;
     planner.settings.travel_acceleration = 3000;
+    planner.settings.retract_acceleration = 3000;
     planner.settings.min_feedrate_mm_s = 0;
     planner.settings.min_travel_feedrate_mm_s = 0;
     planner.refresh_positioning();

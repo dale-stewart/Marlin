@@ -72,6 +72,7 @@ entries exist precisely because a figure was quoted wrong, or a wall reported th
 | [core-and-commands.md](docs/rescue-log/core-and-commands.md) | `MarlinCore.cpp`, `kill()`, and the individual command files, several of which needed a configuration rather than a test |
 | [agents.md](docs/rescue-log/agents.md) | What validating each subagent taught, including the two errors that mattered more than the passes |
 | [embedded-platforms.md](docs/rescue-log/embedded-platforms.md) | What emulating the embedded targets would actually cost, staged. None of it done |
+| [pause-and-filament.md](docs/rescue-log/pause-and-filament.md) | `feature/pause.cpp` — the filament change, and the fixture fault that made every extruder-only move take hours |
 | [survey-2026-08-14.md](docs/rescue-log/survey-2026-08-14.md) | **What is left, measured.** Only 128 of 799 source files are compiled by any configuration — so every whole-tree figure is over a sixth of the tree. Ranked candidates |
 
 Behaviour found and recorded rather than changed is in `docs/defect-register.md`, and the skill
@@ -116,7 +117,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 817, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 749, 759, 802, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

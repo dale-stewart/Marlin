@@ -33,6 +33,10 @@
 #include "src/module/motion.h"
 #include "src/module/printcounter.h"
 #include "src/gcode/queue.h"
+#include "src/feature/pause.h"
+#if HAS_FILAMENT_SENSOR
+  #include "src/feature/runout.h"
+#endif
 #include "tests/support/simulated_hardware.h"
 #include "tests/gcode/serial_capture.h"
 #include <stdio.h>
@@ -303,6 +307,42 @@ static void quiesce_simulated_peripherals() {
    */
   #if HAS_HOME_OFFSET
     LOOP_NUM_AXES(i) motion.set_home_offset(AxisEnum(i), 0);
+  #endif
+
+  /**
+   * ...and leave nothing claiming to be paused.
+   *
+   * `did_pause_print` is a mode rather than a value: while it is non-zero the machine reports
+   * itself paused and the next `pause_print()` anywhere returns false without doing anything.
+   * A test that pauses and then fails leaks that to every test after it, and the damage is a
+   * *silent no-op* rather than a failure — the later test pauses, nothing happens, and its
+   * assertions quietly describe a machine that never moved.
+   */
+  #if ENABLED(ADVANCED_PAUSE_FEATURE)
+    did_pause_print = 0;
+  #endif
+
+  /**
+   * ...and put the filament sensors back to the state they power up in.
+   *
+   * A simulated pin reads LOW at reset, which `FIL_RUNOUT_STATE` defines as *no filament*, and
+   * tests that need a loaded machine drive them the other way. Left driven, the next test to ask
+   * the sensor a question gets the previous test's answer — which is how
+   * `runout___poll_runout_states` came to expect 7 and read 0, two files away from the test that
+   * moved them.
+   *
+   * Reset rather than saved-and-restored: LOW is what the hardware gives at power-on, and a test
+   * that wants filament says so itself.
+   */
+  #if HAS_FILAMENT_SENSOR
+    WRITE(FIL_RUNOUT_PIN, FIL_RUNOUT_STATE);
+    #if NUM_RUNOUT_SENSORS >= 2
+      WRITE(FIL_RUNOUT2_PIN, FIL_RUNOUT_STATE);
+    #endif
+    #if NUM_RUNOUT_SENSORS >= 3
+      WRITE(FIL_RUNOUT3_PIN, FIL_RUNOUT_STATE);
+    #endif
+    runout.reset();
   #endif
 
   /**

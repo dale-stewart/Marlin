@@ -21,6 +21,7 @@ there, or a test was written against a fixture note that had stopped being true.
 | [core-and-commands.md](core-and-commands.md) | `MarlinCore.cpp`, `kill()`, and the individual command files |
 | [agents.md](agents.md) | What validating each subagent taught |
 | [embedded-platforms.md](embedded-platforms.md) | What emulating the embedded targets would cost |
+| [pause-and-filament.md](pause-and-filament.md) | `feature/pause.cpp`, and the fixture fault beneath it |
 | [survey-2026-08-14.md](survey-2026-08-14.md) | What is left, measured — the evidence base for choosing a target |
 
 ## Where a finding goes
