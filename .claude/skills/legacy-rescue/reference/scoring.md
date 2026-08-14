@@ -15,6 +15,20 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
 
   Two runs at different timeouts are no more comparable than two runs over different
   covered-line sets. Store both in the results, and print both next to the score.
+- **Do not estimate a run's duration from its first minute.** A parallel mutation run opens with
+  every worker doing a cold compile at once, so the early rate is several times below the steady
+  state and extrapolating it overstates the total badly — ours read as six hours during warm-up
+  and finished in one. That matters because the number gets used to decide whether to abandon the
+  run. Sample the rate twice, a couple of minutes apart, once workers are saturated, and quote
+  the second; and if you have already given a figure from the first sample, correct it explicitly
+  rather than letting it stand.
+
+  Budget for the target rather than for the tool. Per-mutant cost is dominated by rebuilding the
+  file *and* relinking the whole suite, so a large module in a large binary can cost an order of
+  magnitude more per mutant than a small one — and the generated mutants are a full copy of the
+  source each, which for a big file is gigabytes. Put them somewhere with room, and check the
+  runner reports the *restricted* population ("N on M covered lines") rather than the whole file,
+  which is the signal that the coverage build it needed was actually found.
 - **State a *failing* test leaves behind turns kills into timeouts.** Many frameworks
   abandon a failed test by jumping out of it rather than returning, which skips the
   test's own cleanup and any scope-based teardown it was relying on. Under mutation that

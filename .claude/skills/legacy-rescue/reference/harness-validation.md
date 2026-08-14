@@ -201,6 +201,39 @@ timezone, a locale, a current user — leaks the same way and is harder to recog
 there is no resource to notice the absence of. The tell is a later test failing against a
 constant it never touched.
 
+**When the fixture started a thread, the leak is not state — it is memory, and the between-tests
+hook cannot fix it.** Everything above says "put the restoration where the jump lands". That
+advice fails exactly once, and the case it fails on is the most damaging one. A fixture that
+starts a background worker usually gives it a pointer to the fixture — to accumulate into, to
+signal through — and the fixture lives on the test's stack. When the jump discards that frame
+without joining the worker, the worker keeps writing into memory that is about to be handed to
+whatever runs next. The between-tests hook cannot rescue this by calling the fixture's own
+cleanup, because reaching the fixture at all means dereferencing the dead frame.
+
+The symptom is a crash *after* the first failing test, taking the rest of the run with it — so
+the suite reports a fraction of its tests and every failure after the first is invisible. It is
+easy to misread as "the failure cascaded", and easy to leave unfixed for a long time, because it
+only fires when a test fails and a suite that is green never shows it. Ours had been live for as
+long as the file it affected had existed.
+
+The fix is ownership, not sequencing: give the worker its own reference-counted state so it
+never touches the fixture, and keep a registry of live sessions the hook can stop and join
+without touching any fixture. A skipped destructor then leaks a small allocation instead of
+corrupting the process. Make the registry a list rather than a single slot — these things nest,
+because a helper opens one while its caller already holds one.
+
+**A plausible mechanism that fits every symptom is not a diagnosis.** The failure above had an
+obvious explanation available: another fixture in the same test leaked a value that shifts the
+frame of reference, which is a documented fault class, was genuinely present, and accounted for
+every symptom. Acting on it changed nothing, because it was not the cause. One backtrace named
+the real one immediately and named something in a different file.
+
+Where a fault is *reproducible*, spend the ten minutes on the debugger or the sanitizer before
+spending an hour on the theory. Reasoning is what you fall back on when the fault will not stand
+still; it is not the cheaper option when it will. And when a defensive fix is kept anyway — it
+was correct hygiene, just not the fix — say so where it lives, or the next reader takes it for
+the explanation and stops looking.
+
 **And the state to reset is not only the state your tests set.** A leak can compose out of
 behaviours that are each correct: one test sets a value, the system reacts by entering a mode,
 that mode arms a monitor, and the monitor acts on the *next* test that idles — which is where
@@ -270,7 +303,7 @@ Grep for the call site before writing the test, not after it fails. The same app
 *order* of set-up calls: where one setter deliberately clears the state another sets — an
 explicit command overriding an automatic mode is the usual reason — doing it in the wrong order
 switches off the thing under test in the line after enabling it, and the test then fails
-honestly against firmware that is fine. Prefer driving set-up through the same public entry
+honestly against a system that is fine. Prefer driving set-up through the same public entry
 point a user would, which gets the order right by construction.
 
 **The act of testing can destroy the instrument that measures it.** Coverage builds, profiling

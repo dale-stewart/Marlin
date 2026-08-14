@@ -843,6 +843,31 @@ Three things to carry:
   crashed the binary scored KILLED — correctly, since the suite did detect it. The baseline was
   green, so no survivor could have been mis-scored the other way.
 
+**The up-directory row, and two wrong arms before a right one (2026-08-14).**
+
+Second item off the survivor list: 28 mutants on the two lines computing `hasUpDir`, alive
+because **every existing test of that screen runs at the card root**, where the term is zero and
+disappears. A test that never leaves the default state cannot see a correction that only applies
+outside it.
+
+Two arms now, and both earlier attempts at the second one are the useful part:
+
+- **A root arm that asserted "pressing the row after Back does not climb above the root" was
+  dropped, not fixed.** It is satisfied by every implementation, because `cdup()` at the root is
+  already a no-op — so the mutant it was aimed at survives it. It also *failed against correct
+  firmware*, because the row after Back at the root is simply the card's first entry and the test
+  had just put a folder there. Two faults in one assertion: unable to fail for the right reason,
+  able to fail for the wrong one.
+- **Pressing the far clamp inside the folder also killed nothing.** Dropping `hasUpDir` from
+  `filenum = select_file.now - 1 - hasUpDir` makes the index at the clamp one *past* the end, and
+  `selectFileByIndexSorted()` leaves `card.filename` untouched rather than reporting a different
+  file — so the wrong answer and the right answer read identically. **An off-by-one is only
+  visible on a row where both answers are in range**, which here is two rows below Back: Back,
+  then `..`, then the first file. That version fails against the injection.
+
+Both arms are separately probed and catch different faults: forcing `hasUpDir` to 0 fails the
+go-up arm, dropping it from the index fails the offset arm.
+
 **Home offsets and Advanced Settings, 60% -> 65%, and a new defect (2026-08-14).**
 
 The home-offset menu is pure navigation, so the shared walk is the right instrument again — the

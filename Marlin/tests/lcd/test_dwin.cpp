@@ -655,6 +655,121 @@ MARLIN_TEST(dwin_display, the_panel_is_redrawn_only_where_something_changed) {
 
 
 /**
+ * Inside a folder, one row means "up", and at the root no row does.
+ *
+ * The list has a variable prologue: row 0 is always Back, row 1 is `..` *only* when the machine
+ * is inside a folder, and the file under row `n` is therefore `n - 1 - hasUpDir`. That trailing
+ * term is the whole of this test's subject. When it is wrong the panel highlights one name and
+ * opens its neighbour — which on a printer means starting the wrong job, and a print is hours.
+ *
+ * The mutation run asked for this: twenty-eight survivors sat on the two lines that compute it,
+ * because every existing test of this screen runs at the card root, where `hasUpDir` is zero and
+ * the term disappears. **A test that never leaves the default state cannot see a correction that
+ * only applies outside it.**
+ *
+ * Two arms, and the second is the one that pins the arithmetic rather than the row. The first
+ * says the row after Back leaves the folder; the second says the *far* end still opens the
+ * folder's last entry, which is the same claim the root test makes one offset along. An
+ * implementation with `hasUpDir` stuck at 1, or dropped altogether, gets the near row right and
+ * every file row wrong by one — so the near row alone is not enough.
+ *
+ * The root arm this test first had was dropped rather than fixed, and why is worth keeping: it
+ * asserted that pressing the row after Back at the root does not climb above it. That is
+ * satisfied by every implementation, because `cdup()` at the root is already a no-op — so the
+ * mutant it was aimed at survives it. It also failed against correct firmware, because the row
+ * after Back at the root is simply the card's first entry, and this test had just put a folder
+ * there. The root case is covered by `both_ends_of_the_file_list_lead_where_they_should`.
+ *
+ * The rows are reached by winding hard onto the Back clamp and stepping off it, so nothing here
+ * assumes which way the knob turns; which clamp is Back is asked rather than assumed, and
+ * pressing Back to find out is free because it only returns to the main menu.
+ */
+MARLIN_TEST(dwin_display, inside_a_folder_one_row_goes_up_and_the_files_sit_below_it) {
+  SimulatedMachine machine;
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+  constexpr uint8_t ROOM = 40;
+
+  card.cdroot();
+  {
+    MediaFile root = card.getroot(), made;
+    made.mkdir(&root, "PANELDIR");
+    made.close();
+  }
+  card.cd("PANELDIR");
+  put_file("AINNER.GCO");
+  put_file("ZINNER.GCO");
+  card.cdroot();
+
+  // Which clamp is Back? Free to ask — pressing Back only returns to the main menu.
+  checkkey = ID_SelectFile;
+  for (uint8_t i = 0; i < ROOM; i++) { knob.turn_clockwise(pump); checkkey = ID_SelectFile; }
+  knob.click(pump);
+  const bool back_is_clockwise = (checkkey == ID_MainMenu);
+
+  const auto go_to_the_row_after_back = [&] {
+    checkkey = ID_SelectFile;
+    for (uint8_t i = 0; i < ROOM; i++) {
+      if (back_is_clockwise) knob.turn_clockwise(pump); else knob.turn_counterclockwise(pump);
+      checkkey = ID_SelectFile;
+    }
+    if (back_is_clockwise) knob.turn_counterclockwise(pump); else knob.turn_clockwise(pump);
+    checkkey = ID_SelectFile;
+  };
+
+  // Inside the folder, that row goes up.
+  card.cd("PANELDIR");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.workDirIsRoot,
+    "this half of the test is about a machine inside a folder");
+
+  go_to_the_row_after_back();
+  knob.click(pump);
+
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.workDirIsRoot,
+    "the row after Back should be '..' inside a folder, and should leave the folder");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(),
+    "and should not have opened anything on the way out");
+
+  // ...and the far end still lands on the folder's last entry, one row further down than it
+  // would be at the root. This is the half that separates a wrong `hasUpDir` from a right one.
+  card.cd("PANELDIR");
+  const uint16_t inner = card.get_num_items();
+  TEST_ASSERT_TRUE_MESSAGE(inner >= 2,
+    "the folder needs at least two entries, or 'the last one' cannot be told from 'the first'");
+
+  // Read the expectation before acting: `selectFileByIndexSorted` is what the driver uses too,
+  // and calling it afterwards would overwrite the evidence with the answer.
+  card.selectFileByIndexSorted(0);
+  const std::string first_in_folder(card.filename);
+  card.selectFileByIndexSorted(1);
+  const std::string second_in_folder(card.filename);
+  TEST_ASSERT_TRUE_MESSAGE(first_in_folder != second_in_folder,
+    "the two entries must be distinguishable or an off-by-one cannot be seen");
+
+  // Two rows below Back — under "Back" and under ".." — is the folder's *first* entry.
+  //
+  // The first version of this arm pressed the far clamp instead, and an implementation that
+  // drops `hasUpDir` from the index passed it: at the clamp the wrong index is one *past* the
+  // end, and `selectFileByIndexSorted` leaves `card.filename` alone rather than reporting a
+  // different file. An off-by-one is only visible on a row where both answers are in range.
+  go_to_the_row_after_back();
+  if (back_is_clockwise) knob.turn_counterclockwise(pump); else knob.turn_clockwise(pump);
+  checkkey = ID_SelectFile;
+  knob.click(pump);
+
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(first_in_folder.c_str(), card.filename,
+    "two rows below Back should be the folder's first entry: Back, then '..', then the files");
+
+  card.abortFilePrintNow();
+  card.cdroot();
+  checkkey = ID_MainMenu;
+}
+
+/**
  * Both ends of the file list, and neither is assumed.
  *
  * The list is one row of "Back" followed by the card's items, so the file under row `n` is

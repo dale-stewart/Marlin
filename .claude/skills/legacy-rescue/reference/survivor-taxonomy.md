@@ -169,6 +169,29 @@ re-checks.
   discarding the same slot — and check one by changing its value wholesale rather than trusting
   the pattern. Then report the score with them excluded, because the raw number will otherwise
   say the file is untested when the part of it that can be tested is fine.
+- **In presentation code, most survivors are killable only by transcribing the code, and that is
+  a judgement to record rather than a gap to close.** Where a module's job is to render — to place
+  things on a screen, lay out a document, emit a drawing — the majority of its lines are literal
+  geometry and style: positions, sizes, colours, fonts, and the arithmetic between them. Driving
+  the module *executes* all of it, so line coverage climbs freely, while nothing asserts any of
+  it. Expect the two numbers to diverge further here than anywhere else: ours came out at 65%
+  line and 9% mutation, with four fifths of the survivors on lines that call a drawing primitive.
+
+  The reason not to close it is not that the faults are harmless — a value drawn in the
+  background colour, or off the edge, is a screen that lies, and that is the module's whole
+  purpose. It is that the only assertion available is a copy of the expression under test, which
+  is the self-consistency trap applied to thousands of lines: it would pin the layout so firmly
+  that no one could ever change it, and it would still not check that the result is *legible*.
+
+  So write the trade down next to the number, as a decision with a cost, not as a property of the
+  file. A bare low score reads as neglect and invites someone to "fix" it by transcription. Three
+  assertion shapes stay available and are worth taking: **content rather than position** (the
+  words that appeared, not where), **volume rather than content** (a pass with nothing to say
+  emits nothing — which pins the change-detection that makes the module usable), and
+  **destination rather than appearance** (choosing this control led there). Then separate the
+  presentation survivors from the rest and report what remains, because that residue is the part
+  a test can still help with.
+
 - **A survivor may mean the test exists but not in the build you measured.** Where a suite is
   compiled per configuration, a test excluded by a build guard does not fail, does not appear,
   and does not run — so its subject shows up in the report as unasserted. The mutation score is
