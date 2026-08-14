@@ -1,7 +1,9 @@
-# Interrupting a print: `feature/pause.cpp`
+# Interrupting a print: `pause.cpp` and `e_parser.cpp`
 
-The filament change — park, wait for a person, come back — and the fixture faults that had to be
-cleared before any of it could run.
+The two ways a print stops early — the filament change that means to come back, and the emergency
+stop that does not. Both were at 0%, and both were named by the
+[survey](survey-2026-08-14.md). Includes the fixture faults that had to be cleared before either
+could run at all.
 
 Part of the rescue log — see [README.md](README.md) for the index and `CLAUDE.md` for the rules
 that apply to every session.
@@ -99,8 +101,48 @@ the first E-only move in this suite's history to expose it.
 sensors to their power-on state. The second is not hypothetical: the pause fixture drives those
 pins, and `runout___poll_runout_states` read the leftovers two files away — expecting 7, reading 0.
 
+## `feature/e_parser.cpp`: 0% -> 63%, and defect #59
+
+The other target the survey named, and the cheapest thing in this repository to test properly:
+`EmergencyParser::update(state, c)` is a **pure state machine** over a state and one byte. No
+hardware, no clock, no fixture — the tests feed it strings and read the flags. 44 of 69 lines from
+eight tests, and the whole `003` configuration 83.7% -> 84.6%.
+
+It is also the code with the least excuse for being untested. It reads the serial stream character
+by character *ahead of the queue*, so that a machine wedged in a two-hour print with a full command
+buffer can still be stopped. It is the last thing between a runaway printer and the mains.
+
+Two properties that pull against each other: recognise the handful of emergency commands in a
+stream of arbitrary G-code, and recognise as little else as possible. **Writing the second half is
+what found the defect** — the test asserting that near-misses do nothing failed on its first run.
+
+**Defect #59: a longer command number beginning with an emergency command triggers it.** `M1121`
+halts the machine; `M4100` requests a quickstop; `M5240` abandons the print. Once the machine
+reaches a terminal state such as `EP_M112`, the outer `switch` has no case for it, so every further
+character falls to `default:` — which acts only `if (ISEOL(c))` and otherwise leaves the state
+alone.
+
+That stickiness is *wanted*. It is what lets `M112 ; stop now` and `M410 S1` work, and the same
+code cannot tell a trailing digit from a trailing semicolon. So the test pins **both halves**: the
+trailing digit that should not fire and the trailing comment that should, because a fix that broke
+the commented form would be worse than the defect. Latent, because none of `M1121`, `M4100`,
+`M1080`, `M5240` is a real command and no host sends one — but a file can contain one, and the
+consequence is a print halted at a line that meant nothing.
+
+**The flags are latches, and that cost a third leak.** `killed_by_M112` is read by the queue, which
+halts the machine; nothing clears it but the code that acts on it. The one failing assertion above
+skipped its fixture's destructor and left it set, and the run went from 767 tests in 13 s to **186
+in eleven minutes** — a halted machine still answers, so it presents as the suite grinding rather
+than failing. The reset now lives in `quiesce_simulated_peripherals()` alongside the others, and it
+was verified by injection: with a deliberately failing parser test, the suite completes all 767 in
+11.8 s.
+
+That is the third time in one session that a fixture outliving its test presented as something
+other than a failure — after `SerialCapture`'s thread (#57) and the runout pins. The pattern is
+worth more than any of the three individually: **anything a test sets that the firmware treats as a
+mode belongs in the between-tests hook, not in a destructor.**
+
 ## Not done
 
-`feature/e_parser.cpp` — 69 lines, 0%, the emergency parser that recognises `M108`, `M112` and
-`M410` in the serial stream *before* the queue, so a machine already stuck can still be stopped.
-It was the second target named by the survey and is still untouched.
+The `M876` prompt-answer path in the parser, and answering the "Purge More / Resume" menu as a host
+would — both need a test standing in for a host rather than for a person.

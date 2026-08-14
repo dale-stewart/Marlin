@@ -34,6 +34,9 @@
 #include "src/module/printcounter.h"
 #include "src/gcode/queue.h"
 #include "src/feature/pause.h"
+#if ENABLED(EMERGENCY_PARSER)
+  #include "src/feature/e_parser.h"
+#endif
 #if HAS_FILAMENT_SENSOR
   #include "src/feature/runout.h"
 #endif
@@ -320,6 +323,25 @@ static void quiesce_simulated_peripherals() {
    */
   #if ENABLED(ADVANCED_PAUSE_FEATURE)
     did_pause_print = 0;
+  #endif
+
+  /**
+   * ...and nothing left claiming an emergency.
+   *
+   * The emergency parser's flags are latches: the queue reads `killed_by_M112` and halts the
+   * machine, and nothing clears it but the code that acts on it. A test that raises one and then
+   * fails skips its own cleanup, and every later test runs against a machine that has been told
+   * to stop — which presents as the suite grinding to a halt rather than as a failure, because a
+   * halted machine still answers.
+   *
+   * Found exactly that way: one failing assertion in the parser tests took the run from 759 tests
+   * in 13 s to 186 in eleven minutes.
+   */
+  #if ENABLED(EMERGENCY_PARSER)
+    EmergencyParser::killed_by_M112 = false;
+    EmergencyParser::quickstop_by_M410 = false;
+    TERN_(HAS_MEDIA, EmergencyParser::sd_abort_by_M524 = false);
+    EmergencyParser::enable();
   #endif
 
   /**
