@@ -739,6 +739,40 @@ instead of toggling the language fails the language test and nothing else.
   at one clamp and asks whether that was Back, which is free because pressing Back only returns
   to the main menu.
 
+**Home offsets and Advanced Settings, 60% -> 65%, and a new defect (2026-08-14).**
+
+The home-offset menu is pure navigation, so the shared walk is the right instrument again — the
+distinction the Prepare menu made is a real one, not a reason to stop using the helper.
+
+**The editor's one division is the whole test.** `hmiHomeOffN()` commits `posScaled / 10`, which
+is the entire relationship between the number a person reads off the screen and the number the
+firmware acts on. Lose it and a 0.2 mm correction becomes 2 mm — on Z, the difference between a
+nudge and driving the nozzle into the bed, with the panel still showing what the operator meant.
+**Two points, not one**, because a single value cannot separate a scale factor from an offset: a
+driver storing `posScaled - 225` satisfies any test that only ever edits 250. The other axes are
+asserted unchanged in the same test, since a driver that wrote every edit into X would pass every
+assertion about X.
+
+**Defect #56: Advanced Settings draws a "Bed PID" row that does nothing.** The row's *position*
+and its *behaviour* are decided by two different conditions that disagree — `ADVSET_CASE_BEDPID`
+is `ADVSET_CASE_HEPID + ENABLED(HAS_HEATED_BED)`, keyed on *having* a bed, `itemAdvBedPID()` is
+drawn with no guard at all, and the arm that acts on it is `#if ENABLED(PIDTEMPBED)`, keyed on
+*regulating* the bed with PID. The same mismatch sits one row up between `HAS_HOTEND` and
+`PIDTEMP`. A thermostat-switched bed is Marlin's default and is every configuration here that
+builds this driver, so the row is inert on every machine measured. Selecting it does nothing at
+all — no message, no screen, nothing to tell it from a dead encoder.
+
+Two things about how that one is tested are worth carrying:
+
+- **It presses the far clamp rather than walking.** One row below is Nozzle PID, whose arm *is*
+  compiled and starts a ten-cycle autotune that would rewrite the hotend's gains for every test
+  after it. Winding to the clamp passes over that row without pressing it. **A walk is only safe
+  where every row is safe to press**, and this is the menu where that stops being true.
+- **The test is guarded on the defect's own precondition** (`HAS_HEATED_BED && DISABLED(PIDTEMPBED)`),
+  so a build that resolves the mismatch stops running it rather than starting to fail it. And
+  because the assertion is a negative one, it was verified by giving the row an arm: the test
+  fails, which is what says it can see the difference at all.
+
 **`dwin.cpp`: 8% -> 35% from eleven tests, and the plan for the rest was wrong.**
 161 -> 710 covered lines; the whole `010-dwin` build 60.2% -> 67.4%.
 
@@ -1745,7 +1779,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 814, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 817, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

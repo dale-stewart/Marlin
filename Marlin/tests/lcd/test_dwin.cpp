@@ -1279,6 +1279,194 @@ MARLIN_TEST(dwin_display, the_language_row_swaps_the_two_rather_than_setting_one
 #endif // HAS_HOTEND && HAS_HEATED_BED && HAS_PREHEAT
 
 // ---------------------------------------------------------------------------
+// Home offsets, and a row in Advanced Settings that does nothing
+// ---------------------------------------------------------------------------
+
+#if HAS_HOME_OFFSET
+
+namespace {
+
+  /**
+   * Puts the home offsets back.
+   *
+   * Register #47 is exactly this fixture missing: a test that left a home offset behind moved
+   * the origin for every test that ran after it, and the failures surfaced somewhere else
+   * entirely. Unity's failure path is a `longjmp`, so the restore has to be a destructor.
+   */
+  struct HomeOffsets {
+    xyz_pos_t was;
+    HomeOffsets() : was(motion.home_offset) {}
+    ~HomeOffsets() {
+      LOOP_NUM_AXES(a) motion.set_home_offset((AxisEnum)a, was[(AxisEnum)a]);
+      checkkey = ID_MainMenu;
+    }
+  };
+
+}
+
+/**
+ * The home-offset menu leads to one editor per axis.
+ *
+ * Pure navigation, so the shared walk is the right instrument here — unlike the Prepare menu
+ * above, every row of this one goes somewhere. The failure it catches is the usual transposed
+ * pair, and it matters more here than in most menus: the three rows look identical, the editors
+ * they open look identical, and the only thing distinguishing them is which axis the committed
+ * number lands on. Somebody correcting a Y offset and moving Z instead would find out at the
+ * next print, from the nozzle.
+ */
+MARLIN_TEST(dwin_display, the_home_offset_menu_leads_to_one_editor_per_axis) {
+  SimulatedMachine machine;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  HomeOffsets saved;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  const std::vector<uint8_t> forwards = { ID_AdvSet, ID_HomeOffX, ID_HomeOffY, ID_HomeOffZ };
+  const std::vector<uint8_t> seen = walk_a_menu(knob, pump, ID_HomeOff, forwards.size());
+  panel.finish();
+
+  the_walk_visited(seen, forwards, "Home Offset");
+}
+
+/**
+ * The panel edits tenths of a millimetre and the machine stores millimetres.
+ *
+ * `hmiHomeOffN()` commits `posScaled / 10`, and that single division is the whole relationship
+ * between what a person reads off the screen and what the firmware acts on. Lose it and a 0.2 mm
+ * correction becomes 2 mm; on Z that is the difference between a nudge and driving the nozzle
+ * into the bed, and the panel would go on displaying the number the operator meant.
+ *
+ * Two values rather than one, because a single point cannot tell a scale factor from an offset:
+ * a driver that stored `posScaled - 225` would satisfy any test that only edited 250. Two points
+ * fix both, and the ratio is the claim.
+ *
+ * The other axes are asserted unchanged in the same breath. A driver that wrote every edit into
+ * X would pass every assertion above about X, and the transposition is the failure this menu is
+ * most prone to — three rows that differ only in which field they touch.
+ */
+MARLIN_TEST(dwin_display, the_home_offset_editor_stores_millimetres_for_the_axis_it_names) {
+  SimulatedMachine machine;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  HomeOffsets saved;
+
+  const auto pump = [] { dwinHandleScreen(); };
+
+  LOOP_NUM_AXES(a) motion.set_home_offset((AxisEnum)a, 0);
+
+  // Two points on X, which pin the scale and rule out a constant offset.
+  checkkey = ID_HomeOffX; hmiValues.homeOffsScaled.x = 250; knob.click(pump);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(25.0f, motion.home_offset.x,
+    "the panel shows tenths of a millimetre and the machine should store millimetres");
+
+  checkkey = ID_HomeOffX; hmiValues.homeOffsScaled.x = 100; knob.click(pump);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(10.0f, motion.home_offset.x,
+    "and the same division at a second value, so this is a ratio and not a coincidence");
+
+  #if HAS_Z_AXIS
+    // Z has its own row, its own field and its own tighter limit, so it needs its own point.
+    checkkey = ID_HomeOffZ; hmiValues.homeOffsScaled.z = 15; knob.click(pump);
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(1.5f, motion.home_offset.z,
+      "and the Z row should store Z");
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(10.0f, motion.home_offset.x,
+      "without disturbing the axis edited before it");
+  #endif
+  #if HAS_Y_AXIS
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, motion.home_offset.y,
+      "and an axis never edited should still be where it started");
+  #endif
+
+  panel.finish();
+}
+
+#if HAS_HEATED_BED && DISABLED(PIDTEMPBED)
+
+/**
+ * LEGACY-BEHAVIOR: defect #56 — Advanced Settings draws a "Bed PID" row that does nothing.
+ *
+ * The row's position and the row's behaviour are decided by two different conditions, and they
+ * disagree. `ADVSET_CASE_BEDPID` is `ADVSET_CASE_HEPID + ENABLED(HAS_HEATED_BED)` — keyed on
+ * *having* a bed — and `itemAdvBedPID()` is drawn with no guard at all, while the arm that acts
+ * on it is `#if ENABLED(PIDTEMPBED)` — keyed on *regulating* the bed with PID. A machine with a
+ * bed switched on a thermostat, which is Marlin's default and every configuration in `test/`
+ * that builds this driver, therefore lists a menu item that cannot do anything.
+ *
+ * The same mismatch exists one row up, between `HAS_HOTEND` and `PIDTEMP`.
+ *
+ * What a person experiences is a control that does not work: they select Bed PID, press, and the
+ * panel sits there. There is no message, no progress screen, nothing to distinguish it from a
+ * dead encoder — and the next thing anyone does with a dead control is press it harder. Register
+ * #56.
+ *
+ * The test presses the *far clamp* rather than walking, deliberately. One row below it is Nozzle
+ * PID, whose arm **is** compiled and starts a ten-cycle autotune that would rewrite the hotend's
+ * gains for every test after it. Winding to the clamp passes over that row without pressing it.
+ * The guard on this test is the defect's own precondition, so a configuration that fixed the
+ * mismatch by enabling `PIDTEMPBED` would stop running it rather than start failing it.
+ */
+MARLIN_TEST(dwin_display, the_advanced_settings_menu_offers_a_row_that_does_nothing) {
+  SimulatedMachine machine;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  HomeOffsets saved;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+  constexpr uint8_t ROOM = 16;
+
+  // Which clamp is Back? Free to ask: pressing Back only returns to the Control menu, and
+  // pressing the far clamp is the inert row this test is about.
+  checkkey = ID_AdvSet;
+  for (uint8_t i = 0; i < ROOM; i++) { knob.turn_clockwise(pump); checkkey = ID_AdvSet; }
+  knob.click(pump);
+  const bool back_is_clockwise = (checkkey == ID_Control);
+
+  const auto wind = [&](const bool towards_back) {
+    checkkey = ID_AdvSet;
+    for (uint8_t i = 0; i < ROOM; i++) {
+      if (towards_back == back_is_clockwise) knob.turn_clockwise(pump);
+      else knob.turn_counterclockwise(pump);
+      checkkey = ID_AdvSet;
+    }
+  };
+
+  // The menu responds at all: Back leaves it, and the row next to Back opens the offsets.
+  wind(true);
+  knob.click(pump);
+  TEST_ASSERT_EQUAL_MESSAGE(ID_Control, checkkey,
+    "the row at one clamp should be Back, which is what anchors the rest of this test");
+
+  wind(true);
+  checkkey = ID_AdvSet;
+  if (back_is_clockwise) knob.turn_counterclockwise(pump); else knob.turn_clockwise(pump);
+  knob.click(pump);
+  TEST_ASSERT_EQUAL_MESSAGE(ID_HomeOff, checkkey,
+    "and the row beside it should open the home offsets, so presses are being delivered");
+
+  // ...and the row at the other end is not.
+  wind(false);
+  knob.click(pump);
+  panel.finish();
+
+  TEST_ASSERT_EQUAL_MESSAGE(ID_AdvSet, checkkey,
+    "the last row of Advanced Settings is drawn but has no arm compiled, so pressing it "
+    "leaves the panel exactly where it was (defect #56)");
+}
+
+#endif // HAS_HEATED_BED && DISABLED(PIDTEMPBED)
+
+#endif // HAS_HOME_OFFSET
+
+// ---------------------------------------------------------------------------
 // The position readout
 // ---------------------------------------------------------------------------
 
