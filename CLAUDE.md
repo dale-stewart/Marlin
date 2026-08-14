@@ -739,6 +739,69 @@ instead of toggling the language fails the language test and nothing else.
   at one clamp and asks whether that was Back, which is free because pressing Back only returns
   to the main menu.
 
+**`dwin.cpp` mutation tested at last (2026-08-14): 65% line, and 9.3% mutation.**
+
+| | |
+|---|---|
+| covered lines | 1305 of 1985 countable |
+| mutants generated | 32585 |
+| ...on covered lines | 11148 |
+| build failures | 2765 (25%, excluded — never produced a testable program) |
+| testable | 8383 |
+| killed | 769 + 10 timeouts |
+| **score** | **779/8383 = 9.3%** |
+
+Measured alone under `010-dwin`, coverage build rebuilt immediately beforehand — the runner
+reported "on 1305 covered lines" rather than "on all lines", which is the tell that the
+restriction applied. Lowest score anywhere in this fork by a wide margin, and **the gap between
+65% and 9.3% is the point of having run it at all.**
+
+**83% of the 7604 survivors are on lines that call a drawing primitive** — pixel coordinates,
+colour constants, font ids, `MBASE`/`EBASE` row arithmetic. Every earlier note here said the
+primitives were "covered without being pinned, which is exactly the right relationship"; that was
+correct and this is its cost stated as a number rather than as a preference. The top fifteen
+clusters are without exception expressions like `(DWIN_WIDTH - w) / 2` and `x + 8 * 3` inside a
+`dwinDraw*` call.
+
+**That judgement should be recorded as a judgement, not as a fact about the file.** A display
+driver's output *is* its behaviour: a nozzle temperature drawn at the wrong coordinate, or in the
+background colour, is a panel that lies, and nothing in this suite would notice. What makes
+pinning it the wrong trade here is that the assertion would be a transcription of the code — the
+self-consistency trap at scale — not that the fault would be harmless. The three assertion shapes
+this file already uses are the affordable substitutes: **content not position** (`???`,
+`Nozzle is too cold`), **volume not content** (`updateVariable` sends 0 bytes when nothing
+changed), and **destination not appearance** (the menu walks).
+
+**The other 17% is 1281 survivors spread over 371 lines with no cluster larger than 17**, which
+by this fork's own convention is the signal to stop. Four things in it are genuinely addressable
+and worth knowing before anyone reads the 9.3% as neglect:
+
+- **The four scroll guards** (`select_X.now > MROWS && > index_X`, 68 survivors across the file,
+  menu and file lists) are *not* addressable. They move `index_X`, which decides what is drawn;
+  `select_X.now` — the row a press dispatches on — is unaffected either way. That is exactly why
+  the menu walks pressed every row and killed none of them. Same category as the drawing.
+- **The up-directory entry in the file list** (`:1887`, `:2252`, 28 survivors) is real and
+  untested: inside a subdirectory one row means "up", and pressing it must leave the directory
+  rather than open a file. The existing file-list test only ever runs at the card root.
+- **The home-offset limits** (`:3698-3700`, 36 survivors) are real and cheap. `±500, ±500, ±20`
+  in tenths — Z is clamped to 2 mm where X and Y get 50 — and `LIMIT()` runs only on the *turn*
+  path, which the editor test never takes because it clicks without turning. Z's tighter clamp is
+  a safety property worth a test in its own right.
+- **The change-detection cache** (`:1757` and neighbours) is reachable by the volume assertion
+  already written for `updateVariable`, extended per field.
+
+**A quarter of the mutants would not compile**, which is high and worth expecting on this kind of
+file: the driver is dense with macro-built identifiers and `constexpr` table initialisers, and a
+source-level mutator edits text without regard for whether the result is still C++. They are
+excluded from the denominator, correctly — a mutant that never became a program was never a test
+of anything.
+
+Cost, for planning: 32585 mutants took **4.5 GB** on `/mnt/md0` and the run took about an hour at
+a steady 200 mutants/minute across 31 workers. Each mutant recompiles a 4356-line translation
+unit *and* relinks a binary of 817 tests, so this is several times the per-mutant cost of any
+other target measured here. The first rate reading was taken during the workers' cold start and
+suggested six hours; **do not extrapolate a mutation ETA from the first minute.**
+
 **Home offsets and Advanced Settings, 60% -> 65%, and a new defect (2026-08-14).**
 
 The home-offset menu is pure navigation, so the shared walk is the right instrument again — the
