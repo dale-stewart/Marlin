@@ -642,6 +642,27 @@ a design decision and a bug. The acceleration test asserts
 `max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
 millimetre value, which is right in both the working and the broken version.
 
+**The menu walk is now a shared helper, which is the point of doing a second one.**
+`walk_a_menu(knob, pump, screen, rows)` winds hard against the clamp, walks back pressing at
+every row, and returns where each press led. Every remaining HMI handler in this driver is the
+same shape — a `switch` on the cursor with one arm per row — so the pattern is the deliverable
+rather than any single test.
+
+Three things it deliberately does not assume, each of which was a bug in an earlier draft
+somewhere in this file: **which way the knob turns** (inverted between the main menu and the
+file list), **how far one turn moves the cursor**, and **that the knob is read at all between
+turns** (the menus go through `get_encoder_state()` and its 20 ms gate; the value editors do
+not).
+
+First use: the Control menu, five rows to five distinct screens in drawn order. Worth asserting
+again one level down rather than assuming, because this is a second hand-written `switch` with
+its own row constants and the way these fail is two arms transposed — you press Motion and get
+the temperature editor, and nothing about the code looks different when that happens.
+
+Checked rather than assumed before walking it: `EEPROM_SETTINGS` is off under `010-dwin`, so
+Save, Load and Reset are not compiled and the walk cannot fire `settings.reset()` part-way
+through the suite. With EEPROM on this test would have to skip those rows rather than press them.
+
 **`dwin.cpp`: 8% -> 35% from eleven tests, and the plan for the rest was wrong.**
 161 -> 710 covered lines; the whole `010-dwin` build 60.2% -> 67.4%.
 
@@ -1648,7 +1669,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 806, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 807, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

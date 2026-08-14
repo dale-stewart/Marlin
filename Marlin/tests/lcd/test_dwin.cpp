@@ -53,6 +53,54 @@
 #include <string.h>
 #include <vector>
 
+namespace {
+
+  /**
+   * Walk a menu end to end, pressing at every row, and report where each press led.
+   *
+   * The pattern the main-menu test arrived at, factored out because every remaining HMI handler
+   * in this driver is the same shape: a `switch` on the cursor with one arm per row. Three
+   * things it deliberately does not assume, each of which was a bug in an earlier draft
+   * somewhere in this file:
+   *
+   *   - **Which way the knob turns.** It is inverted between the main menu and the file list.
+   *     Winding hard against the clamp reaches a known end whichever way it is wired.
+   *   - **How far one turn moves the cursor.** Bounded by the clamp rather than by a count.
+   *   - **That the knob is read at all between turns.** The menus go through
+   *     `get_encoder_state()`, which ignores everything for `ENCODER_WAIT_MS` after each
+   *     accepted event, so the pump has to let the clock move or every turn after the first is
+   *     swallowed.
+   *
+   * `checkkey` is restored to `screen` before each press, so a row that navigates away does not
+   * end the walk. Rows that do something instead of navigating — inject a command, save
+   * settings — simply leave it unchanged and are reported as the screen itself.
+   */
+  template <typename Pump>
+  std::vector<uint8_t> walk_a_menu(SimulatedEncoder &knob, Pump &&pump,
+                                   const uint8_t screen, const uint8_t rows) {
+    const uint8_t sweep = rows * 2 + 8;
+
+    checkkey = screen;
+    for (uint8_t i = 0; i < sweep; i++) knob.turn_counterclockwise(pump);
+
+    std::vector<uint8_t> seen;
+    for (uint8_t i = 0; i < sweep; i++) {
+      checkkey = screen;
+      knob.click(pump);
+      if (seen.empty() || seen.back() != checkkey) seen.push_back(checkkey);
+      checkkey = screen;
+      knob.turn_clockwise(pump);
+    }
+    checkkey = screen;
+    knob.click(pump);
+    if (seen.empty() || seen.back() != checkkey) seen.push_back(checkkey);
+
+    checkkey = ID_MainMenu;
+    return seen;
+  }
+
+}
+
 MARLIN_TEST(dwin_display, a_status_message_reaches_the_panel) {
   SerialCapture panel(LCD_SERIAL);
   dwinStatusChanged("RESCUED");
@@ -670,6 +718,54 @@ MARLIN_TEST(dwin_display, both_ends_of_the_file_list_lead_where_they_should) {
 }
 
 #endif // HAS_MEDIA
+
+// ---------------------------------------------------------------------------
+// The Control menu
+// ---------------------------------------------------------------------------
+
+/**
+ * Every row of the Control menu leads to its own screen.
+ *
+ * The same claim as the main menu, one level down, and it is worth making again rather than
+ * assuming: this is a second hand-written `switch` with its own row constants, and the way these
+ * go wrong is two arms transposed — you press Motion and get the temperature editor. Nothing
+ * about the code looks different when that happens.
+ *
+ * Under `010-dwin` the destructive rows are not compiled: `EEPROM_SETTINGS` is off, so Save,
+ * Load and Reset are absent and the walk cannot fire `settings.reset()` part-way through the
+ * suite. That is checked rather than assumed — with EEPROM on, this test would need to skip
+ * those rows rather than press them.
+ */
+MARLIN_TEST(dwin_display, every_control_menu_row_leads_to_its_own_screen) {
+  SimulatedMachine machine;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  const std::vector<uint8_t> seen = walk_a_menu(knob, pump, ID_Control, 6);
+  panel.finish();
+
+  // Back, Temperature, Motion, Advanced Settings, Info — in the order the rows are drawn.
+  const uint8_t forwards[] = { ID_MainMenu, ID_TemperatureID, ID_Motion, ID_AdvSet, ID_Info };
+  constexpr size_t COUNT = sizeof(forwards) / sizeof(forwards[0]);
+
+  char msg[200];
+  snprintf(msg, sizeof(msg), "the Control menu should lead to %u distinct screens, saw %u",
+           unsigned(COUNT), unsigned(seen.size()));
+  TEST_ASSERT_EQUAL_MESSAGE(COUNT, seen.size(), msg);
+
+  const bool ascending = seen.front() == forwards[0];
+  for (size_t k = 0; k < COUNT; k++) {
+    const uint8_t expect = ascending ? forwards[k] : forwards[COUNT - 1 - k];
+    snprintf(msg, sizeof(msg), "row %u should lead to screen %u, led to %u",
+             unsigned(k), unsigned(expect), unsigned(seen[k]));
+    TEST_ASSERT_EQUAL_MESSAGE(expect, seen[k], msg);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // The position readout
