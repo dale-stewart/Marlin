@@ -43,6 +43,9 @@
 #include "src/MarlinCore.h"
 #include "../gcode/serial_capture.h"
 #include "../support/simulated_encoder.h"
+#include "../support/simulated_machine.h"
+#include "../gcode/simulated_sensors.h"
+#include "src/module/temperature.h"
 #include "src/sd/cardreader.h"
 #include <string.h>
 #include <vector>
@@ -297,6 +300,66 @@ MARLIN_TEST(dwin_display, the_main_menu_pages_lead_to_four_different_screens_in_
              unsigned(k), unsigned(expect), unsigned(seen[k]));
     TEST_ASSERT_EQUAL_MESSAGE(expect, seen[k], msg);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Keeping the panel's numbers agreeing with the machine
+// ---------------------------------------------------------------------------
+
+/**
+ * The panel is redrawn only where something changed.
+ *
+ * `updateVariable()` runs on every UI pass and holds a `static` cache of each displayed value —
+ * the two temperatures, their targets, the fan, the flow, the feedrate, the babystep offset.
+ * Every one is compared and only redrawn on a difference. That is not an optimisation to be
+ * traded away: the link to the panel is a 128-byte buffer that the firmware busy-waits on, so a
+ * screen redrawn wholesale on every pass would spend the print blocking on it. It is the same
+ * property `SerialCapture` needs a second thread for.
+ *
+ * The assertion is on *how much* came out rather than on what it said. Decoding the DWIN wire
+ * format would pin the protocol — pixel positions, font ids, the lot — and none of that is the
+ * behaviour under test. Traffic volume is: a pass with nothing to say must cost less than a
+ * pass with something to say.
+ *
+ * The caches are process-wide statics, so the first call after anything else has touched the
+ * machine reports everything. Priming is therefore part of the arrangement rather than
+ * defensive padding.
+ */
+MARLIN_TEST(dwin_display, the_panel_is_redrawn_only_where_something_changed) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+
+  checkkey = ID_MainMenu;
+
+  // Prime: whatever the caches were holding, get them agreeing with the machine now.
+  { SerialCapture panel(LCD_SERIAL); updateVariable(); panel.finish(); }
+
+  size_t quiet = 0, quiet_again = 0, after_change = 0;
+
+  { SerialCapture panel(LCD_SERIAL); updateVariable(); quiet = panel.finish().size(); }
+  { SerialCapture panel(LCD_SERIAL); updateVariable(); quiet_again = panel.finish().size(); }
+
+  // Not merely "the same" — *nothing*. Measured rather than assumed: a settled machine costs
+  // 0 bytes and a changed hotend target costs 42, so this is the strong form of the claim
+  // rather than a bound that a wasteful implementation could also satisfy.
+  TEST_ASSERT_EQUAL_MESSAGE(0, quiet,
+    "a pass over a machine that has not changed should send the panel nothing at all");
+  TEST_ASSERT_EQUAL_MESSAGE(0, quiet_again,
+    "and should keep sending nothing: the cache should settle, not oscillate");
+
+  const celsius_t was = thermalManager.degTargetHotend(0);
+  thermalManager.setTargetHotend(was + 40, 0);
+
+  { SerialCapture panel(LCD_SERIAL); updateVariable(); after_change = panel.finish().size(); }
+
+  char msg[160];
+  snprintf(msg, sizeof(msg),
+           "a changed target should reach the panel: quiet pass was %u bytes, changed pass %u",
+           unsigned(quiet), unsigned(after_change));
+  TEST_ASSERT_TRUE_MESSAGE(after_change > quiet, msg);
+
+  thermalManager.setTargetHotend(was, 0);
+  { SerialCapture panel(LCD_SERIAL); updateVariable(); panel.finish(); }
 }
 
 // ---------------------------------------------------------------------------

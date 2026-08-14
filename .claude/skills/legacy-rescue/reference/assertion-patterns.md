@@ -197,6 +197,25 @@ substantial and say nothing.
   others' so a write to the wrong field is visible too. The same trap applies to any "set it
   and read it back" test: choose the one value that could not have got there by accident.
 
+- **When a comparison passes first time, check whether the strong form was available.**
+  `after > before`, `result is non-empty`, `it took longer` — these are easy to write and easy
+  to satisfy. Print the actual values once. Very often the real relationship is exact: the
+  quiet case is *zero*, not merely smaller; the retry count is *three*, not merely more than
+  one. An inequality that happens to hold looks identical to a specification in a green run,
+  and only one of them fails when the code gets worse.
+
+  This is the cheap counterpart to bracketing a magnitude: one probe, one build, and the
+  assertion goes from "something happened" to "this happened".
+
+- **Where the output is a protocol you do not want to pin, assert its volume instead of its
+  content.** Code that talks to a device emits a format full of things that are not the
+  behaviour under test — addresses, coordinates, opcodes, framing. Decoding it makes the test a
+  second implementation of the protocol and breaks it whenever the layout changes for reasons
+  nobody cares about. But *how much* was said is often exactly the contract: a cache that only
+  emits on change sends nothing when nothing changed, a batching layer sends one message for
+  many inputs, a throttle sends fewer than it was given. Count the bytes, or the messages, and
+  assert the relationship.
+
 - **Do not encode the harness's own conventions in an assertion — assert the invariant that
   survives them.** Driving a device through a simulated input has two properties that feel like
   facts and are not: which way its directions map, and how much one call of your fixture moves

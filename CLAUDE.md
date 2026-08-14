@@ -642,6 +642,23 @@ a design decision and a bug. The acceleration test asserts
 `max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
 millimetre value, which is right in both the working and the broken version.
 
+**`updateVariable()` — the panel is redrawn only where something changed, and the assertion is
+traffic rather than pixels.** It runs on every UI pass and holds a `static` cache of each
+displayed value: two temperatures, their targets, the fan, the flow, the feedrate, the babystep
+offset. That is not an optimisation to trade away — the link to the panel is a 128-byte buffer
+the firmware busy-waits on, so a screen redrawn wholesale every pass would spend the print
+blocking on it, which is the same property `SerialCapture` needs a second thread for.
+
+**Measured: a settled machine costs 0 bytes and a changed hotend target costs 42.** The first
+version asserted only `changed > quiet`, which a wasteful implementation would also satisfy;
+probing the actual numbers turned it into `quiet == 0`, which is the real claim. Worth doing
+whenever a comparison passes on the first try — the strong form is often available and the
+weak one looks identical in a green run.
+
+Asserting volume rather than content is deliberate. Decoding the DWIN wire format would pin
+pixel positions and font ids, none of which is the behaviour under test; "a pass with nothing
+to say sends nothing" is.
+
 **The menus rate-limit the knob and the value editors do not, which is why a navigation test
 needs the clock.** `hmiMainMenu()` reads through `get_encoder_state()`, which ignores everything
 for `ENCODER_WAIT_MS` (20 ms) after each accepted event; `hmiStepXYZE()` and its siblings call
@@ -1559,7 +1576,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 799, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 800, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
