@@ -228,6 +228,25 @@ And this is why an injected-fault control belongs in the harness check: it was i
 known fix and watching a green suite become one that had to be killed that exposed both leaks
 here, neither of which any passing run could have shown.
 
+**A flag that looks like a variant selector may be a filter, and the difference is silent.**
+Test runners often have an option that *narrows what runs* and a separate mechanism that
+*changes what is built*, and their spellings can be almost identical. Reach for the wrong one
+and the suite executes against whatever configuration was last generated — usually the one you
+wanted, because you set it up by hand a moment earlier, which is exactly what makes the mistake
+survive. The tell is two supposedly different variants reporting the **same test count**.
+
+Use the project's own variant target rather than the filter, and prefer one that regenerates
+the configuration as part of running. Where a figure matters, quote the command beside it: a
+number produced by the wrong invocation is not wrong-looking, it is just about something else.
+
+**A constant that describes the environment is not a constant to test against.** Buffer sizes,
+widths, capacities and limits are frequently derived from the presence of hardware — a display,
+a network interface, a card slot — and collapse to a degenerate value when it is absent. A test
+that inherits one as a default parameter is asserting about the configuration rather than about
+the code, and it will say something different in every variant. Where the behaviour under test
+is a *rule*, state the size in the test; where it is *what fits*, that is a different test and
+should say so.
+
 **Find the caller; do not assume the obvious owner.** A test that drives a feature has to
 invoke whatever the production code actually invokes, and the function that *looks* like the
 owner is often not it — periodic work gets hung off whichever loop was convenient, so a

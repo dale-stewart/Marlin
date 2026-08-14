@@ -622,6 +622,28 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**`marlinui.cpp`: the message-template expander (2026-08-13). 44% -> 67% under `010-dwin`.**
+
+The default configuration's 22% was mostly *not compiled* — the file is 72 countable lines
+without a display and 179 with one, so `010-dwin` is where it can be measured at all.
+
+`expand_u8str_P()` is what turns a localised template into a message, and its contract is
+written at the top of `language_en.h`: `$` inserts a string, `{` gives the tool's zero-based
+index, `~` the same tool one-based, `*` that with an `E` in front, `@` an axis letter. **Four
+different numberings of the same tool**, which is exactly the kind of thing that is easy to get
+wrong and impossible to notice — a fault here does not crash anything, it tells somebody to
+check the wrong nozzle or moves the wrong axis in a prompt they are about to agree to.
+
+Nine tests, every one an exact string rather than a substring, because `contains("E1")` is
+satisfied by `"E11"` and the off-by-one between the three tool forms is precisely what a loose
+assertion misses. The templates are written as literals rather than taken from `language_en.h` —
+asserting `MSG_MOVE_N` against `MSG_MOVE_N` would be comparing the code to itself.
+
+Two process findings on the way, both now gotchas above: `pio test -f <name>` is a *test-name*
+filter and not a configuration selector, and **`MAX_MESSAGE_SIZE` is 1 without a display**. The
+second is what made the first visible — the tests passed under a run I believed was the default
+config and failed the moment `pio run -t marlin_default` rebuilt it properly.
+
 **What the retired `kill()` blocker actually bought, measured (2026-08-13).** Two follow-ons,
 and they came out differently:
 
@@ -1476,13 +1498,13 @@ baseline test counts, so a mismatch shows up as "the tree is wrong" instead of a
 mysterious build failure. Both agents that hit this reset the worktree branch themselves
 and reported it.
 
-**Test counts as of `unit-test-coverage`:** `testhal_native_test` 722,
+**Test counts as of `unit-test-coverage`:** `testhal_native_test` 731,
 `acceptance_native_test` 37 — each measured with `pio run -t marlin_default -e <env>`, i.e.
 against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **722, 736, 746, 793, 793, 731, 728, 748, 788, 783, 722, 725, 731, 726**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 792, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -1642,6 +1664,21 @@ is blocked by PEP 668 on this machine).
   `movesplanned() == 0`. Nothing reports it. The tell is a queue-related assertion failing in a
   way that makes no sense — a block never delivered, a buffer never filling — and the first
   thing to print is `movesplanned()`.
+- **`pio test -e <env> -f <name>` filters *test names*, not configurations.** It looks exactly
+  like the config selector and is not one: `-f` is PlatformIO's test filter, so the build it
+  runs uses whatever `Marlin/config.ini` happens to hold. Copying a config by hand first makes
+  it *usually* right, which is worse than being obviously wrong — on 2026-08-13 two consecutive
+  runs of supposedly different configurations both reported **792 tests**, which is the tell
+  this file already records for a config that did not apply. The authoritative check is
+  `pio run -t marlin_<config> -e <env>`, which runs `restore_configs` and regenerates before
+  building. The same nine tests passed under `-f default` and then failed immediately under
+  `marlin_default`.
+- **`MAX_MESSAGE_SIZE` is 1 on a machine with no display.** The fallback arm of
+  `Conditionals-2-LCD.h`: with no wired LCD and no status message there is nowhere to put a
+  message, so the size is one character. Anything that takes it as a buffer length in a test —
+  a status string, an expanded template — will assert that "Tool 0" comes out as "T" in the
+  default build and something quite different under `010-dwin`. A test about a formatting *rule*
+  should state its own length; a test about what fits on a display is a different test.
 - **A loop that waits by grepping the process table waits for itself, for ever.** Every
   measurement here is long enough to invite one, and the obvious form is broken:
 
