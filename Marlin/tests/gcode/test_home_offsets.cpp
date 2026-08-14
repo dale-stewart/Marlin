@@ -120,7 +120,7 @@ namespace {
    * merely widens the guard to include them still changes nothing.
    *
    * If this ever fails, those survivors have become killable and the classification in
-   * CLAUDE.md is stale.
+   * docs/rescue-log/core-and-commands.md is stale.
    */
   static_assert(X_HOME_POS == 0, "the equivalence argument for M206_M428.cpp:87 assumes X homes to zero");
   #if HAS_Y_AXIS

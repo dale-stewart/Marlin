@@ -42,7 +42,8 @@
  *     can be named and called belongs in `MarlinCore.cpp` where it can be tested, and this
  *     file should be the calls and the ordering.
  *
- * See `docs/defect-register.md` and `CLAUDE.md` for what was extracted and what is left.
+ * See `docs/defect-register.md` and `docs/rescue-log/core-and-commands.md` for what was
+ * extracted and what is left.
  */
 
 
