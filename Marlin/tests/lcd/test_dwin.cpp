@@ -363,6 +363,118 @@ MARLIN_TEST(dwin_display, the_panel_is_redrawn_only_where_something_changed) {
 }
 
 // ---------------------------------------------------------------------------
+// Choosing a file
+// ---------------------------------------------------------------------------
+
+#if HAS_MEDIA
+
+namespace {
+
+  // Names must fit 8.3: this build has no long-filename support, and a longer stem is stored
+  // mangled rather than refused.
+  void put_file(const char * const name) {
+    card.openFileWrite(name);
+    card.write((void*)"G28\n", 4);
+    card.closefile();
+  }
+
+}
+
+/**
+ * Both ends of the file list, and neither is assumed.
+ *
+ * The list is one row of "Back" followed by the card's items, so the file under row `n` is
+ * `n - 1` — and `n - 1 - hasUpDir` once you are inside a folder. Every index is offset by
+ * something that is not always the same, which is exactly the arithmetic that goes wrong
+ * quietly: the panel highlights the name you wanted and opens the one above or below it.
+ *
+ * So the test leans on the knob to each extreme in turn and presses. One end must be "Back" —
+ * the only way off this screen, and a panel you cannot leave is a panel you power-cycle. The
+ * other must be the card's *last* entry: `select_file.inc(1 + fullCnt)` clamps there, and if
+ * the bound were one out the press would either open the wrong file or index past the end of
+ * the list.
+ *
+ * **Nothing here assumes which way the knob turns, or how many files are on the card**, and
+ * both of those were mistakes in earlier drafts. The direction is a property of how the fixture
+ * and the panel happen to agree — it turned out to be the opposite of the main menu's — and the
+ * card is shared: other tests leave files on it, so "the last file" is whatever the card says
+ * it is, not whatever this test wrote. Winding hard against a clamp and asking the card for its
+ * own count removes both.
+ */
+MARLIN_TEST(dwin_display, both_ends_of_the_file_list_lead_where_they_should) {
+  SimulatedMachine machine;
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  card.cdroot();
+  put_file("AAA.GCO");
+  put_file("BBB.GCO");
+  put_file("CCC.GCO");
+  card.cdroot();                     // re-read the directory now the files are there
+
+  const uint16_t items = card.get_num_items();
+  TEST_ASSERT_TRUE_MESSAGE(items >= 3, "the fixture should have put files on the card");
+
+  // What the far end *should* reach: the last entry in the card's own sorted order. Read now,
+  // because `selectFileByIndexSorted` is also what the driver uses and it overwrites
+  // `card.filename` — the first draft of this test computed the expectation afterwards and so
+  // compared the value against itself.
+  card.selectFileByIndexSorted(items - 1);
+  const std::string last_on_card(card.filename);
+  card.selectFileByIndexSorted(0);
+  const std::string first_on_card(card.filename);
+  TEST_ASSERT_TRUE_MESSAGE(first_on_card != last_on_card,
+    "this test needs the first and last entries to differ, or it cannot see an off-by-one");
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  // Press at each extreme. Which extreme is which is the panel's business, not the test's.
+  struct End { uint8_t landed_on; std::string reached_for; };
+  End ends[2];
+
+  for (uint8_t which = 0; which < 2; which++) {
+    card.cdroot();
+    checkkey = ID_SelectFile;
+    SerialCapture panel(LCD_SERIAL);
+
+    // Wind hard the other way first, so each pass starts from a known end rather than from
+    // wherever the previous press left the cursor. The number of turns is derived from the
+    // card rather than written down: this card is shared with every other test that writes a
+    // file, so a fixed count that crossed the list today would stop short tomorrow — which is
+    // how an earlier draft came to press on a file in the middle and report it as the last.
+    const uint16_t sweep = items * 2 + 8;
+    for (uint16_t i = 0; i < sweep; i++)
+      which ? knob.turn_clockwise(pump) : knob.turn_counterclockwise(pump);
+    for (uint16_t i = 0; i < sweep; i++)
+      which ? knob.turn_counterclockwise(pump) : knob.turn_clockwise(pump);
+
+    knob.click(pump);
+    panel.finish();
+
+    ends[which] = { checkkey, std::string(card.filename) };
+    card.abortFilePrintNow();        // stop anything the press started
+    checkkey = ID_MainMenu;
+  }
+
+  card.cdroot();
+
+  const bool first_is_back = ends[0].landed_on == ID_MainMenu;
+  const End &back = first_is_back ? ends[0] : ends[1];
+  const End &file = first_is_back ? ends[1] : ends[0];
+
+  TEST_ASSERT_EQUAL_MESSAGE(ID_MainMenu, back.landed_on,
+    "one end of the file list must be Back, which is the only way off this screen");
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(ID_MainMenu, file.landed_on,
+    "and the other end must be a file, not a second way out");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(last_on_card.c_str(), file.reached_for.c_str(),
+    "the far end should stop on the card's last entry, not one past it or one short");
+}
+
+#endif // HAS_MEDIA
+
+// ---------------------------------------------------------------------------
 // What the file menu calls a file
 // ---------------------------------------------------------------------------
 

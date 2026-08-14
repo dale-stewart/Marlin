@@ -228,6 +228,18 @@ And this is why an injected-fault control belongs in the harness check: it was i
 known fix and watching a green suite become one that had to be killed that exposed both leaks
 here, neither of which any passing run could have shown.
 
+**A shared fixture accumulates, so derive quantities from it rather than from what your test
+put there.** Where the suite shares one instance of something with state — a database, a
+filesystem, a card, a queue — every earlier test's leftovers are in it. A test that writes three
+records and then reasons about "the last one", or sizes a loop to the number it created, is
+describing a container it does not own. It passes today and stops passing when a file is added
+somewhere unrelated, and the failure reads as a defect in the code under test.
+
+Ask the shared thing for its own count and derive everything from that. And read any expected
+value *before* performing the action where the query that computes it is the same query the code
+uses — otherwise the computation overwrites the evidence, and the assertion compares the result
+against itself.
+
 **A flag that looks like a variant selector may be a filter, and the difference is silent.**
 Test runners often have an option that *narrows what runs* and a separate mechanism that
 *changes what is built*, and their spellings can be almost identical. Reach for the wrong one

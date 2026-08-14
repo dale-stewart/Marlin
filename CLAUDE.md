@@ -642,6 +642,31 @@ a design decision and a bug. The acceleration test asserts
 `max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
 millimetre value, which is right in both the working and the broken version.
 
+**`hmiSelectFile()` — both ends of the file list, and three assumptions that were wrong.**
+The list is one row of "Back" followed by the card's items, so the file under row `n` is
+`n - 1`, and `n - 1 - hasUpDir` once you are inside a folder. Every index is offset by something
+that is not always the same, which is the arithmetic that goes wrong quietly: the panel
+highlights the name you wanted and opens the one above or below it.
+
+The test leans on the knob to each extreme and presses. One end must be "Back" — the only way
+off that screen, and a panel you cannot leave is a panel you power-cycle; the other must be the
+card's *last* entry, because `select_file.inc(1 + fullCnt)` clamps there.
+
+**Three drafts, three wrong assumptions, and they are the useful part:**
+
+- **The knob's direction is inverted here relative to the main menu.** I had just written the
+  rule about not encoding the harness's conventions and then encoded them again. The fix is the
+  same: wind hard against a clamp and let the panel decide which end is which.
+- **The simulated card is shared across the whole run.** Other tests leave files on it, so "the
+  last file" is whatever the card says, never what this test wrote — and a fixed number of
+  detents that crossed the list today stops short tomorrow. The sweep is now derived from
+  `card.get_num_items()`. An earlier draft pressed on a file in the middle and reported it as
+  the last.
+- **The expectation has to be read before the action, not after.** `card.filename` is what the
+  driver reached for, and computing what it *should* have been calls `selectFileByIndexSorted`
+  again — which overwrites it. That draft compared the value against itself and would have
+  passed against any file at all.
+
 **`updateVariable()` — the panel is redrawn only where something changed, and the assertion is
 traffic rather than pixels.** It runs on every UI pass and holds a `static` cache of each
 displayed value: two temperatures, their targets, the fan, the flow, the feedrate, the babystep
@@ -1576,7 +1601,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 800, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 801, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
