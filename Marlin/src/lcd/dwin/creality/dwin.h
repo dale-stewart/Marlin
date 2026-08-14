@@ -260,6 +260,15 @@ void hmiInit();
 void dwinInitScreen();
 void eachMomentUpdate();
 void dwinHandleScreen();
+/**
+ * Turn a card filename into the text the file menu shows: extension removed, and truncated
+ * with a trailing ellipsis if it will not fit. Declared so it can be tested — see
+ * `tests/lcd/test_dwin.cpp`. Note `src` is not the whole story: the length is taken from
+ * `card.longest_filename()` rather than from `src` itself, which every caller happens to
+ * satisfy by passing exactly that. Defect #54.
+ */
+void make_name_without_ext(char *dst, char *src, size_t maxlen);
+
 void dwinStatusChanged(const char * const cstr=nullptr);
 void dwinStatusChanged(FSTR_P const fstr);
 

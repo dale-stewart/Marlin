@@ -197,6 +197,21 @@ substantial and say nothing.
   others' so a write to the wrong field is visible too. The same trap applies to any "set it
   and read it back" test: choose the one value that could not have got there by accident.
 
+- **Where one member of a family is suspect, pin the ones that are correct.** A defect recorded
+  against a single call site reads as "this component does not do X". Asserting its siblings —
+  the two neighbouring functions that *do* refresh the cache, validate the input, take the lock
+  — turns it into "this component does X everywhere except here", which is a much stronger
+  claim and a different diagnosis. It is the difference between a design decision and a bug, and
+  it is usually two short tests.
+
+  It also protects the fix. Whoever eventually corrects the odd one out will be editing code
+  that looks exactly like its working neighbours, and the neighbours' tests are what notice if
+  the correction is applied in the wrong place or breaks them on the way past.
+
+  Assert the *derived* thing, not the stored one: the stored value is typically right in both
+  the working and the broken version, and the whole difference is whether what depends on it was
+  brought back into step.
+
 - **A magnitude needs bracketing from both sides.** "Further than before", "faster than
   before", "more than the default" pins no number — every mutant that changes the size of an
   allowance, a retry count, or a margin still satisfies it. Find the input that just succeeds

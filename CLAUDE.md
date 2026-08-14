@@ -622,6 +622,44 @@ errors record an expiry and **return** instead of calling `loud_kill`, so the re
 becomes assertable. It would be a configuration whose safety kill is deferred, which is a
 deliberate choice rather than a free one — not taken yet.
 
+**`dwin/creality/dwin.cpp` opened (2026-08-13): the largest untouched file in the tree, and the
+first slice found two defects.** 1985 countable lines at 8% under `010-dwin`. Six tests now,
+and the value of them is not the percentage — it is which parts of a 4000-line menu driver turn
+out to be assertable at all.
+
+Three kinds of code live in it: drawing primitives that emit bytes at the panel, HMI handlers
+that are encoder state machines, and a few pure helpers. The handlers are where the behaviour
+is, because they are what **writes machine settings from the front panel**.
+
+**The value editors are the reason this file matters to the `planner.settings` migration, and
+they disagree with each other.** `hmiMaxFeedspeedXYZE()` and `hmiMaxAccelerationXYZE()` commit
+through `planner.set_max_feedrate()` and `set_max_acceleration()` — the setters that keep the
+derived limits in step. `hmiStepXYZE()`, three functions away in the same file, assigns
+`planner.settings.axis_steps_per_mm` directly and refreshes nothing. That is register #33, and
+**pinning the two correct siblings is what turns it from "this driver does not bother with
+refreshes" into "this driver refreshes everywhere except one place"** — the difference between
+a design decision and a bug. The acceleration test asserts
+`max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
+millimetre value, which is right in both the working and the broken version.
+
+**Two new defects, both in `make_name_without_ext()` — the function that decides what a file is
+called on the menu you pick a print from.**
+
+- **#54: it takes its starting index from a global rather than from the string it was passed.**
+  `strlen(card.longest_filename())` indexed into `src`. All three callers happen to pass exactly
+  that, so today it is redundant rather than dangerous — but the signature says the function
+  works on `src`, and it half does.
+- **#55: a name with no dot comes out empty.** The backwards search walks to zero and zero is
+  taken as the length, so the row is blank. **Latent**: `is_visible_entity()` only lists a file
+  whose 8.3 extension begins with `G`, and the 8.3 name is derived from the long one, so a
+  dotless file never reaches the menu. Directories skip the search entirely, which is why a
+  folder called `v1.2` keeps its dots.
+
+#55 is the one worth remembering how it was found: **the test was written for the sensible
+answer and the code did something else.** Both are pinned to what the code does, with the folder
+arm alongside the file arm so the pair says where the fault is rather than merely that there is
+one.
+
 **`marlinui.cpp`: the message-template expander (2026-08-13). 44% -> 67% under `010-dwin`.**
 
 The default configuration's 22% was mostly *not compiled* — the file is 72 countable lines
@@ -1504,7 +1542,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 792, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 798, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

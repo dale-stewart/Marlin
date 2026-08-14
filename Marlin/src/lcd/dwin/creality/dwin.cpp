@@ -1804,7 +1804,7 @@ void updateVariable() {
  * cache files here.
  */
 
-void make_name_without_ext(char *dst, char *src, size_t maxlen=MENU_CHAR_LIMIT) {
+void make_name_without_ext(char *dst, char *src, size_t maxlen) {
   char * const name = card.longest_filename();
   size_t pos        = strlen(name); // index of ending nul
 
@@ -1903,7 +1903,7 @@ void drawSDItem(const uint16_t item, int16_t row=-1) {
 
   // Draw the file/folder with name aligned left
   char str[strlen(name) + 1];
-  make_name_without_ext(str, name);
+  make_name_without_ext(str, name, MENU_CHAR_LIMIT);
   drawMenuLine(row, card.flag.filenameIsDir ? ICON_Folder : ICON_File, str);
 }
 
