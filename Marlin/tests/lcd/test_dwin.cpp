@@ -99,6 +99,33 @@ namespace {
     return seen;
   }
 
+  /**
+   * Assert that a walk visited exactly these screens, in the order the rows are drawn.
+   *
+   * The direction is taken from the walk rather than stated, for the reason the helper above
+   * gives: which way the knob turns is a property of how this fixture and this panel happen to
+   * agree, not a property of the firmware worth pinning. What *is* worth pinning is that the
+   * rows lead to these screens, all of them different, adjacent in drawn order.
+   *
+   * The count is asserted before the order so a menu that gained or lost a row fails saying so,
+   * rather than as a mismatch on whichever row happened to shift.
+   */
+  void the_walk_visited(const std::vector<uint8_t> &seen,
+                        const std::vector<uint8_t> &forwards, const char * const menu) {
+    char msg[200];
+    snprintf(msg, sizeof(msg), "the %s menu should lead to %u distinct screens, saw %u",
+             menu, unsigned(forwards.size()), unsigned(seen.size()));
+    TEST_ASSERT_EQUAL_MESSAGE(forwards.size(), seen.size(), msg);
+
+    const bool ascending = seen.front() == forwards.front();
+    for (size_t k = 0; k < forwards.size(); k++) {
+      const uint8_t expect = ascending ? forwards[k] : forwards[forwards.size() - 1 - k];
+      snprintf(msg, sizeof(msg), "%s row %u should lead to screen %u, led to %u",
+               menu, unsigned(k), unsigned(expect), unsigned(seen[k]));
+      TEST_ASSERT_EQUAL_MESSAGE(expect, seen[k], msg);
+    }
+  }
+
 }
 
 MARLIN_TEST(dwin_display, a_status_message_reaches_the_panel) {
@@ -750,22 +777,245 @@ MARLIN_TEST(dwin_display, every_control_menu_row_leads_to_its_own_screen) {
   panel.finish();
 
   // Back, Temperature, Motion, Advanced Settings, Info — in the order the rows are drawn.
-  const uint8_t forwards[] = { ID_MainMenu, ID_TemperatureID, ID_Motion, ID_AdvSet, ID_Info };
-  constexpr size_t COUNT = sizeof(forwards) / sizeof(forwards[0]);
-
-  char msg[200];
-  snprintf(msg, sizeof(msg), "the Control menu should lead to %u distinct screens, saw %u",
-           unsigned(COUNT), unsigned(seen.size()));
-  TEST_ASSERT_EQUAL_MESSAGE(COUNT, seen.size(), msg);
-
-  const bool ascending = seen.front() == forwards[0];
-  for (size_t k = 0; k < COUNT; k++) {
-    const uint8_t expect = ascending ? forwards[k] : forwards[COUNT - 1 - k];
-    snprintf(msg, sizeof(msg), "row %u should lead to screen %u, led to %u",
-             unsigned(k), unsigned(expect), unsigned(seen[k]));
-    TEST_ASSERT_EQUAL_MESSAGE(expect, seen[k], msg);
-  }
+  the_walk_visited(seen, { ID_MainMenu, ID_TemperatureID, ID_Motion, ID_AdvSet, ID_Info },
+                   "Control");
 }
+
+// ---------------------------------------------------------------------------
+// The Motion menu
+// ---------------------------------------------------------------------------
+
+/**
+ * Every row of the Motion menu opens the editor for its own limit.
+ *
+ * This is the menu that matters most to the `planner.settings` migration: its four rows are the
+ * only way a person standing at the machine can change the feedrate ceiling, the acceleration
+ * ceiling and the steps-per-millimetre — and two of those three commit through the setters that
+ * keep the derived limits in step while the third does not (register #33). Before any of that
+ * can be asserted, the row a person presses has to be the editor they get.
+ *
+ * The failure this catches is two arms transposed. Feedrate and acceleration are adjacent rows
+ * holding adjacent-looking numbers, and a machine that opened the acceleration editor when you
+ * asked for feedrate would let somebody set 3000 mm/s believing they had set 3000 mm/s². The
+ * value they typed would be accepted, stored, and wrong, and nothing would say so.
+ *
+ * The expected list is built from the same `ENABLED(CLASSIC_JERK)` the row constants use, so a
+ * build with jerk enabled asserts five rows rather than failing on four.
+ */
+MARLIN_TEST(dwin_display, every_motion_menu_row_opens_its_own_limit) {
+  SimulatedMachine machine;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  std::vector<uint8_t> forwards = { ID_Control, ID_MaxSpeed, ID_MaxAcceleration };
+  TERN_(CLASSIC_JERK, forwards.push_back(ID_MaxJerk));
+  forwards.push_back(ID_Step);
+
+  const std::vector<uint8_t> seen = walk_a_menu(knob, pump, ID_Motion, forwards.size());
+  panel.finish();
+
+  the_walk_visited(seen, forwards, "Motion");
+}
+
+// ---------------------------------------------------------------------------
+// The Temperature menu
+// ---------------------------------------------------------------------------
+
+/**
+ * Every row of the Temperature menu opens the editor for its own heater.
+ *
+ * The same claim again, and the consequence of getting it wrong is the most direct in the
+ * driver: the hotend and the bed sit next to each other, both edited as a bare three-digit
+ * number, and their safe ranges do not overlap. A machine that opened the hotend editor when
+ * the operator pressed Bed would take 220 without complaint and drive the nozzle to a
+ * temperature they never asked for.
+ *
+ * The last two rows are the preheat *settings* screens rather than actions — pressing them
+ * changes no target, which is what makes this menu safe to walk in the middle of a suite.
+ * Checked rather than assumed: the arms set `checkkey` and draw, and touch no heater.
+ */
+MARLIN_TEST(dwin_display, every_temperature_menu_row_opens_its_own_heater) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  std::vector<uint8_t> forwards = { ID_Control };
+  TERN_(HAS_HOTEND, forwards.push_back(ID_ETemp));
+  TERN_(HAS_HEATED_BED, forwards.push_back(ID_BedTemp));
+  TERN_(HAS_FAN, forwards.push_back(ID_FanSpeed));
+  #if HAS_PREHEAT
+    forwards.push_back(ID_PLAPreheat);
+    #if PREHEAT_COUNT > 1
+      forwards.push_back(ID_ABSPreheat);
+    #endif
+  #endif
+
+  const std::vector<uint8_t> seen =
+    walk_a_menu(knob, pump, ID_TemperatureID, forwards.size());
+  panel.finish();
+
+  the_walk_visited(seen, forwards, "Temperature");
+}
+
+// ---------------------------------------------------------------------------
+// The Move menu, and the one row it will not open
+// ---------------------------------------------------------------------------
+
+namespace {
+
+  #if ENABLED(PREVENT_COLD_EXTRUSION)
+    /**
+     * Restores whether the machine will extrude cold, and clears the popup's latch.
+     *
+     * Both are machine state that outlives a test. `allow_cold_extrude` is the flag `M302`
+     * sets, and the E-row test below turns it off deliberately; `hmiFlag.cold_flag` is the
+     * driver's own latch, which swallows every encoder event until it is answered — so a test
+     * that left it set would hand the next one a panel that ignores the knob.
+     */
+    struct ColdExtrusionRule {
+      bool was;
+      ColdExtrusionRule() : was(thermalManager.allow_cold_extrude) {}
+      ~ColdExtrusionRule() {
+        thermalManager.allow_cold_extrude = was;
+        hmiFlag.cold_flag = false;
+      }
+    };
+  #endif
+
+}
+
+/**
+ * Every row of the Move menu opens the mover for its own axis.
+ *
+ * Transposing two arms here moves the wrong axis, and the move menu is where a person nudges a
+ * nozzle that is already close to something — the bed, a clip, a finished part. Asking for X
+ * and getting Z is the one mistake in this driver that can drive the nozzle into the bed while
+ * the operator is watching the number they asked for go up.
+ *
+ * The extruder row is opened here with cold extrusion permitted, so that this test is about the
+ * dispatch and the next one is about the guard. Without that, the E row would trip the cold
+ * warning and the walk would report a fifth screen that is really the fourth.
+ */
+MARLIN_TEST(dwin_display, every_move_menu_row_opens_its_own_axis) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  #if ENABLED(PREVENT_COLD_EXTRUSION)
+    ColdExtrusionRule cold_rule;
+    thermalManager.allow_cold_extrude = true;
+  #endif
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  std::vector<uint8_t> forwards = { ID_Prepare, ID_MoveX, ID_MoveY, ID_MoveZ };
+  TERN_(HAS_HOTEND, forwards.push_back(ID_Extruder));
+
+  const std::vector<uint8_t> seen = walk_a_menu(knob, pump, ID_AxisMove, forwards.size());
+  panel.finish();
+
+  the_walk_visited(seen, forwards, "Move");
+}
+
+#if ALL(PREVENT_COLD_EXTRUSION, HAS_HOTEND)
+
+/**
+ * The extruder will not be moved through a cold nozzle, and the panel says why.
+ *
+ * Filament that is not molten does not go through a 0.4 mm hole. What happens instead is that
+ * the drive gear chews a flat into the filament until it can no longer grip anything at all,
+ * and the machine then cannot print until somebody dismantles the extruder. It is the most
+ * common way to break a printer from the front panel, which is why the guard exists.
+ *
+ * Two things are asserted, and one alone would not do:
+ *
+ *   - the editor **did not open**, so the knob cannot be turned into a move; and
+ *   - the panel was told *why*, in words. A refusal with no explanation reads as a dead button,
+ *     and the next thing a person does with a dead button is press it harder.
+ *
+ * The warning is asserted as the characters `Nozzle is too cold`, which is content the driver
+ * was told to display, rather than as a count of bytes — the coordinates and font ids around it
+ * are protocol this test has no business pinning.
+ *
+ * Which end of the list the extruder sits at is found rather than assumed, by the same argument
+ * as everywhere else in this file: the knob's direction is inverted between screens here. It is
+ * found with the guard *lifted*, so that probing for the row cannot trip the behaviour under
+ * test before the test has started.
+ */
+MARLIN_TEST(dwin_display, a_cold_nozzle_will_not_open_the_extruder_mover) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  ColdExtrusionRule cold_rule;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+  constexpr uint8_t SWEEP = 20;
+
+  // Which extreme is the extruder? Ask with the guard lifted, so the asking cannot trip it.
+  thermalManager.allow_cold_extrude = true;
+  bool extruder_is_clockwise = false;
+  {
+    SerialCapture quiet(LCD_SERIAL);
+    checkkey = ID_AxisMove;
+    for (uint8_t i = 0; i < SWEEP; i++) knob.turn_clockwise(pump);
+    checkkey = ID_AxisMove;
+    knob.click(pump);
+    extruder_is_clockwise = (checkkey == ID_Extruder);
+    quiet.finish();
+  }
+  // Either end is legitimate, but it must be *an* end: a probe that landed in the middle of the
+  // list would send the rest of this test at whichever row it happened to stop on.
+  TEST_ASSERT_TRUE_MESSAGE(extruder_is_clockwise || checkkey == ID_Prepare,
+    "winding hard should reach a clamp — either the extruder row or Back");
+
+  // Now the machine a person actually has: a nozzle at room temperature and no override.
+  thermalManager.allow_cold_extrude = false;
+  hmiFlag.cold_flag = false;
+  SimulatedSensors::hotend_reads(20.0f);
+  for (uint16_t i = 0; i < 400; i++) { HAL_test_advance_millis(1); thermalManager.task(); }
+  TEST_ASSERT_TRUE_MESSAGE(thermalManager.tooColdToExtrude(0),
+    "this test is about a nozzle the firmware considers too cold to extrude through");
+
+  std::string drawn;
+  {
+    SerialCapture panel(LCD_SERIAL);
+    checkkey = ID_AxisMove;
+    for (uint8_t i = 0; i < SWEEP; i++) {
+      if (extruder_is_clockwise) knob.turn_clockwise(pump); else knob.turn_counterclockwise(pump);
+      checkkey = ID_AxisMove;
+    }
+    knob.click(pump);
+    drawn = panel.finish();
+  }
+
+  TEST_ASSERT_EQUAL_MESSAGE(ID_AxisMove, checkkey,
+    "a cold nozzle should leave the panel on the move menu, not in the extruder editor");
+  TEST_ASSERT_TRUE_MESSAGE(drawn.find("Nozzle is too cold") != std::string::npos,
+    "and should say why, rather than refusing silently");
+
+  checkkey = ID_MainMenu;
+}
+
+#endif // PREVENT_COLD_EXTRUSION && HAS_HOTEND
 
 // ---------------------------------------------------------------------------
 // The position readout

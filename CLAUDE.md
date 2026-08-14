@@ -663,6 +663,40 @@ Checked rather than assumed before walking it: `EEPROM_SETTINGS` is off under `0
 Save, Load and Reset are not compiled and the walk cannot fire `settings.reset()` part-way
 through the suite. With EEPROM on this test would have to skip those rows rather than press them.
 
+**Then the other three menus, and the helper paid for itself: 35% -> 55% from four tests**
+(710 -> 1097 covered lines of 1985). Motion, Temperature and Move are each one call plus a list
+of where the rows should lead, and the assertion loop is factored out too — `the_walk_visited()`
+takes the direction from the walk rather than stating it, for the reason the helper already
+gives.
+
+**The row counts had to come from the test, not from the driver.** `MOTION_CASE_TOTAL` and
+`TEMP_CASE_TOTAL` are `#define`s inside `dwin.cpp` and invisible to a test, which looked like an
+obstacle and is not: the expected destination list already states how many rows there are, so it
+*is* the count. `walk_a_menu(..., forwards.size())` says the same thing once instead of twice.
+The lists are built with the same `ENABLED(CLASSIC_JERK)` / `HAS_HEATED_BED` / `PREHEAT_COUNT`
+the driver uses, so a build with jerk or without a bed asserts its own shape rather than failing.
+
+**Both new claims were probed, because both passed first time.** Transposing the Feedrate and
+Acceleration arms of `hmiMotion()` fails `every_motion_menu_row_opens_its_own_limit` and nothing
+else; replacing the cold-extrusion guard with `if (false)` fails
+`a_cold_nozzle_will_not_open_the_extruder_mover` and nothing else. Worth doing here in particular
+— a walk that lost its way would report a shorter list, and a shorter list compared against a
+shorter expectation is a green test about nothing.
+
+**The cold-nozzle test is the one worth reading.** Pressing the extruder row with the nozzle at
+room temperature must *not* open the mover: filament that is not molten does not go through the
+nozzle, the drive gear chews a flat into it instead, and the machine then cannot print until
+somebody dismantles the extruder. It asserts both halves — the editor did not open **and** the
+panel was told `Nozzle is too cold` — because a refusal with no explanation reads as a dead
+button, and the next thing a person does with a dead button is press it harder. That is the rule
+now in `assertion-patterns.md`: where the subject is a refusal, the announcement is the positive
+assertion that no other cause of nothing can satisfy.
+
+Which end of the list the extruder sits at is *found*, not assumed, and found with the guard
+lifted — probing for the row must not trip the behaviour under test before the test starts. The
+probe then asserts it reached a clamp at all, since one that stopped mid-list would aim the rest
+of the test at whatever row it happened to land on.
+
 **`dwin.cpp`: 8% -> 35% from eleven tests, and the plan for the rest was wrong.**
 161 -> 710 covered lines; the whole `010-dwin` build 60.2% -> 67.4%.
 
@@ -1669,7 +1703,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 807, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 811, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -1829,13 +1863,24 @@ is blocked by PEP 668 on this machine).
   `movesplanned() == 0`. Nothing reports it. The tell is a queue-related assertion failing in a
   way that makes no sense — a block never delivered, a buffer never filling — and the first
   thing to print is `movesplanned()`.
-- **gcovr can fail a whole run on a `negative_hits` parse error, and it is intermittent.** Seen
-  once on 2026-08-13 under `010-dwin`: `(ERROR) Error occurred while reading reports: Worker
-  thread raised exception` and a non-zero exit, with the summary file never written. It is
-  GCC's counter bug (gcc.gnu.org/bugzilla PR68080) and the tests that use a second thread are
-  the likely trigger. Re-running produced a clean report with no other change. If it recurs,
-  `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file` is the documented escape — but
-  check the figure against a clean run before trusting a report produced with it.
+- **gcovr fails a whole run on a `negative_hits` parse error, and the cause is now known.**
+  First seen as intermittent on 2026-08-13; it became reproducible the moment enough threaded
+  tests were in the build, and the file is `HAL/TEST/hardware/Gpio.h:77` — `valid_pin()`, which
+  inlines into every `WRITE`. Several fixtures here drive the simulated pins from a second
+  thread (the `SerialCapture` drainer, the kill button, the answer to a blocking `M0`), gcov's
+  counters are not atomic, and one increment underflows. That is GCC PR68080, and it is a
+  permanent property of measuring a threaded suite rather than a fault that comes and goes.
+
+  gcovr then abandons the **entire report** over a branch counter on one line of a HAL header,
+  while every line figure in it is unaffected. `COVERAGE_PARSE_ERRORS` in the `Makefile` is
+  `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file`, which keeps the diagnostic —
+  it names the file, so a new instance is still visible — without discarding the measurement.
+  Scoped to that one failure mode deliberately: any other parse error should still be fatal,
+  because any other parse error means the coverage data itself is not to be trusted.
+- **`make unit-test-coverage UNIT_TEST_CONFIG=` takes the short name, not the file name.** The
+  target it runs is `marlin_$(UNIT_TEST_CONFIG)`, so it is `dwin`, not `010-dwin` — the latter
+  fails with `Do not know how to make File target 'marlin_010-dwin'` after doing the whole
+  build, which is a slow way to find a typo.
 - **`pio test -e <env> -f <name>` filters *test names*, not configurations.** It looks exactly
   like the config selector and is not one: `-f` is PlatformIO's test filter, so the build it
   runs uses whatever `Marlin/config.ini` happens to hold. Copying a config by hand first makes

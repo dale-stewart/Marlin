@@ -173,19 +173,34 @@ COVERAGE_ENV ?= testhal_native_coverage
 # not a convenience.
 COVERAGE_EXCLUDES ?= --exclude 'Marlin/src/MarlinBoot.cpp'
 
+# gcov's counters are not atomic, and several tests here drive the simulated pins from a second
+# thread — the `SerialCapture` drainer, the kill button, the answer to a blocking `M0`. They all
+# go through `WRITE`, which inlines `Gpio::valid_pin()`, so two threads increment the same branch
+# counter and one of them underflows. gcovr treats a negative hit count as a parse error and
+# **aborts the whole report**, losing the run.
+#
+# This is GCC PR68080 and it is a permanent property of measuring a threaded suite, not an
+# intermittent fault: the report is abandoned over a branch counter on one line of a HAL header,
+# while every line figure in it is unaffected. `warn_once_per_file` keeps the diagnostic — it
+# names the file, so a new instance is still visible — without discarding the measurement.
+#
+# It is scoped to this one failure mode deliberately. Any other parse error should still be
+# fatal, because any other parse error means the coverage data itself is not to be trusted.
+COVERAGE_PARSE_ERRORS ?= --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
+
 unit-test-coverage:
 	@command -v gcovr >/dev/null || (echo 'gcovr is not installed. Install it with "uv tool install gcovr" or "pipx install gcovr"' && exit 1)
 	rm -rf .pio/build/$(COVERAGE_ENV) $(COVERAGE_DIR)
 	platformio run -t marlin_$(UNIT_TEST_CONFIG) -e $(COVERAGE_ENV)
 	@mkdir -p $(COVERAGE_DIR)/html
 	gcovr -r . .pio/build/$(COVERAGE_ENV) \
-	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' $(COVERAGE_EXCLUDES) \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' $(COVERAGE_EXCLUDES) $(COVERAGE_PARSE_ERRORS) \
 	  --txt $(COVERAGE_DIR)/summary.txt --print-summary \
 	  --html-details $(COVERAGE_DIR)/html/index.html
 	@echo ""
 	@echo "--- Platform-agnostic (excludes Marlin/src/HAL/) — the figure quoted in docs/ ---"
 	@gcovr -r . .pio/build/$(COVERAGE_ENV) \
-	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' $(COVERAGE_EXCLUDES) \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' $(COVERAGE_EXCLUDES) $(COVERAGE_PARSE_ERRORS) \
 	  --txt $(COVERAGE_DIR)/summary-platform-agnostic.txt --print-summary
 	@echo ""
 	@echo "Measured: $(COVERAGE_ENV) / config $(UNIT_TEST_CONFIG)"

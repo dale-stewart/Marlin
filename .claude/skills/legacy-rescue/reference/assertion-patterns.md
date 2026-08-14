@@ -133,6 +133,14 @@ substantial and say nothing.
   machine with no print running at all: the abort flag is derived from "is a file open", so no
   file meant no abort meant a green test. One line asserting the file was open turned three
   passing tests into three failing ones, which is what they should have been saying all along.
+
+  **Where the subject is a refusal, there is usually a positive assertion available beside the
+  negative one.** Code that declines to act for a reason almost always says so — raises, logs,
+  warns, returns a status, puts words in front of somebody. Asserting the announcement as well
+  as the absence gives the test one claim that no other cause of nothing can satisfy, and it
+  pins the half that actually reaches a person. A refusal delivered silently is
+  indistinguishable from a control that does not work, and the next thing anyone does with a
+  control that does not work is operate it harder. Assert the words, not only the inaction.
 - **Do not state a precondition in terms of a value the code under test may have rewritten.**
   A test that opens with "this input is only interesting if X" needs X read from something the
   behaviour does not touch. Code that corrects a value often stamps the corrected answer back
