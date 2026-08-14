@@ -72,6 +72,7 @@ entries exist precisely because a figure was quoted wrong, or a wall reported th
 | [core-and-commands.md](docs/rescue-log/core-and-commands.md) | `MarlinCore.cpp`, `kill()`, and the individual command files, several of which needed a configuration rather than a test |
 | [agents.md](docs/rescue-log/agents.md) | What validating each subagent taught, including the two errors that mattered more than the passes |
 | [embedded-platforms.md](docs/rescue-log/embedded-platforms.md) | What emulating the embedded targets would actually cost, staged. None of it done |
+| [survey-2026-08-14.md](docs/rescue-log/survey-2026-08-14.md) | **What is left, measured.** Only 128 of 799 source files are compiled by any configuration — so every whole-tree figure is over a sixth of the tree. Ranked candidates |
 
 Behaviour found and recorded rather than changed is in `docs/defect-register.md`, and the skill
 itself is `.claude/skills/legacy-rescue/`. **Findings belong in one of those three places, not
