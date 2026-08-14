@@ -46,6 +46,9 @@
 #include "../support/simulated_machine.h"
 #include "../gcode/simulated_sensors.h"
 #include "src/module/temperature.h"
+#include "src/gcode/gcode.h"
+#include "src/gcode/parser.h"
+#include "src/module/motion.h"
 #include "src/sd/cardreader.h"
 #include <string.h>
 #include <vector>
@@ -303,6 +306,211 @@ MARLIN_TEST(dwin_display, the_main_menu_pages_lead_to_four_different_screens_in_
 }
 
 // ---------------------------------------------------------------------------
+// Stopping a print, which the panel asks about first
+// ---------------------------------------------------------------------------
+
+#if HAS_MEDIA
+
+namespace {
+
+  // Names must fit 8.3: this build has no long-filename support, and a longer stem is stored
+  // mangled rather than refused.
+  void put_file(const char * const name) {
+    card.openFileWrite(name);
+    card.write((void*)"G28\n", 4);
+    card.closefile();
+  }
+
+  void send_gcode(const char * const line) {
+    static char buf[64];
+    strncpy(buf, line, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    const bool was = MYSERIAL1.host_connected;
+    MYSERIAL1.host_connected = false;
+    parser.parse(buf);
+    gcode.process_parsed_command(true);
+    MYSERIAL1.host_connected = was;
+  }
+
+  // A machine on the print screen with a job under way, which is the state every button on
+  // that screen is about. `abortFilePrintSoon()` only sets its flag when a file is open, so a
+  // pretend print has to have really opened one.
+  void a_print_is_running() {
+    card.cdroot();
+    put_file("RUNNING.GCO");
+    card.cdroot();
+    // `M23` then `M24`, the sequence a host uses. `openAndPrintFile()` looked like the direct
+    // route and left no file open at all, which made two of the three tests below pass against
+    // a machine that was not printing — see the precondition immediately after.
+    send_gcode("M23 RUNNING.GCO");
+    send_gcode("M24");
+    card.flag.abort_sd_printing = false;
+    // `abortFilePrintSoon()` sets its flag to `isFileOpen()`, so a fixture with no file open
+    // makes "the print was not aborted" true for the wrong reason — and both the asks-first and
+    // the declining test assert exactly that. Stating the precondition is what stops those two
+    // passing vacuously.
+    TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(),
+      "the fixture should have a file open, or every assertion below is about nothing");
+    checkkey = ID_PrintProcess;
+    hmiFlag.done_confirm_flag = false;
+    hmiFlag.pause_flag = false;
+  }
+
+  void stop_pretending_to_print() {
+    card.abortFilePrintNow();
+    card.flag.abort_sd_printing = false;
+    card.cdroot();
+    checkkey = ID_MainMenu;
+  }
+
+  /**
+   * Put the print screen's cursor on Stop and press it.
+   *
+   * The print screen has three entries and Stop is the last, so one extreme of the knob is
+   * Stop and the other is Setup. Which extreme is which is an agreement between this fixture
+   * and the panel rather than a property of the firmware — it is inverted between the main menu
+   * and the file list already — so this finds out by *pressing* and looking at where it landed,
+   * rather than by reading the cursor. (The cursor is file-scope in `dwin.cpp` and exporting it
+   * to satisfy a test would be the tail wagging the dog.)
+   *
+   * Landing on Setup opens the Tune menu, which is harmless and undone by putting the screen
+   * back before the second attempt.
+   */
+  template <typename Pump> bool select_stop_on_the_print_screen(SimulatedEncoder &knob, Pump &&pump) {
+    for (uint8_t attempt = 0; attempt < 2; attempt++) {
+      checkkey = ID_PrintProcess;
+      for (uint8_t i = 0; i < 8; i++)
+        attempt ? knob.turn_clockwise(pump) : knob.turn_counterclockwise(pump);
+      for (uint8_t i = 0; i < 8; i++)
+        attempt ? knob.turn_counterclockwise(pump) : knob.turn_clockwise(pump);
+      knob.click(pump);
+      if (checkkey == ID_PrintWindow) return true;      // that end was Stop
+    }
+    return false;
+  }
+
+  /**
+   * Answer the confirmation.
+   *
+   * `hmiFlag.select_flag` is the highlighted button and `drawSelectHighlight()` is the only
+   * thing that sets it, so the answer is chosen by turning until the flag says what we want.
+   * Turning rather than assigning is the point: assigning the flag would test the branch
+   * without testing that the knob can reach it.
+   */
+  template <typename Pump> void answer_the_popup(SimulatedEncoder &knob, Pump &&pump, const bool yes) {
+    for (uint8_t i = 0; i < 6 && hmiFlag.select_flag != yes; i++) {
+      knob.turn_clockwise(pump);
+      if (hmiFlag.select_flag != yes) knob.turn_counterclockwise(pump);
+    }
+    knob.click(pump);
+  }
+
+}
+
+
+/**
+ * Pressing Stop asks before it stops.
+ *
+ * A print is hours of work and a knob is easy to knock, so `hmiPrinting()` does not act on the
+ * press: it sets `checkkey = ID_PrintWindow` and draws a confirmation. Everything about that is
+ * worth pinning, because a driver that stopped immediately would look identical on the bench —
+ * you only find out the difference on a print you cared about.
+ *
+ * The card is asserted still printing afterwards, not merely the screen id: the screen changing
+ * is what the *user* sees, and the print continuing is what actually matters.
+ */
+MARLIN_TEST(dwin_display, pressing_stop_asks_before_it_stops) {
+  SimulatedMachine machine;
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  a_print_is_running();
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  bool found_stop = false;
+  { SerialCapture panel(LCD_SERIAL); found_stop = select_stop_on_the_print_screen(knob, pump); panel.finish(); }
+  TEST_ASSERT_TRUE_MESSAGE(found_stop, "one end of the print screen should be Stop");
+
+  TEST_ASSERT_EQUAL_MESSAGE(ID_PrintWindow, checkkey,
+    "pressing Stop should open a confirmation, not stop the print");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.abort_sd_printing,
+    "and the print should still be running while the question is on screen");
+
+  stop_pretending_to_print();
+}
+
+/**
+ * Saying yes stops it.
+ *
+ * `hmiFlag.select_flag` is which button the popup has highlighted, and `drawSelectHighlight()`
+ * is what sets it — so the two arms of the confirmation are reached by turning the knob before
+ * pressing, exactly as a person does. Confirming asks the card to abort, which the main loop
+ * then acts on.
+ */
+MARLIN_TEST(dwin_display, confirming_the_stop_aborts_the_print) {
+  SimulatedMachine machine;
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  a_print_is_running();
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  {
+    SerialCapture panel(LCD_SERIAL);
+    TEST_ASSERT_TRUE(select_stop_on_the_print_screen(knob, pump));
+    answer_the_popup(knob, pump, true);
+    panel.finish();
+  }
+
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.abort_sd_printing,
+    "confirming should ask the card to abort the print");
+
+  stop_pretending_to_print();
+}
+
+/**
+ * Saying no leaves it running — the arm that makes the question worth asking.
+ *
+ * A confirmation that stops the print whichever button you choose is worse than none at all: it
+ * looks like a safeguard and is a second way to lose the job. The declining arm calls
+ * `gotoPrintProcess()` and touches nothing else, so what is asserted is that the print survived
+ * *and* that the screen went back to where it was.
+ */
+MARLIN_TEST(dwin_display, declining_the_stop_leaves_the_print_running) {
+  SimulatedMachine machine;
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  a_print_is_running();
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  {
+    SerialCapture panel(LCD_SERIAL);
+    TEST_ASSERT_TRUE(select_stop_on_the_print_screen(knob, pump));
+    answer_the_popup(knob, pump, false);
+    panel.finish();
+  }
+
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.abort_sd_printing,
+    "declining should leave the print running");
+  TEST_ASSERT_EQUAL_MESSAGE(ID_PrintProcess, checkkey,
+    "and should put the print screen back");
+
+  stop_pretending_to_print();
+}
+
+#endif // HAS_MEDIA
+
+// ---------------------------------------------------------------------------
 // Keeping the panel's numbers agreeing with the machine
 // ---------------------------------------------------------------------------
 
@@ -368,17 +576,6 @@ MARLIN_TEST(dwin_display, the_panel_is_redrawn_only_where_something_changed) {
 
 #if HAS_MEDIA
 
-namespace {
-
-  // Names must fit 8.3: this build has no long-filename support, and a longer stem is stored
-  // mangled rather than refused.
-  void put_file(const char * const name) {
-    card.openFileWrite(name);
-    card.write((void*)"G28\n", 4);
-    card.closefile();
-  }
-
-}
 
 /**
  * Both ends of the file list, and neither is assumed.
@@ -473,6 +670,80 @@ MARLIN_TEST(dwin_display, both_ends_of_the_file_list_lead_where_they_should) {
 }
 
 #endif // HAS_MEDIA
+
+// ---------------------------------------------------------------------------
+// The position readout
+// ---------------------------------------------------------------------------
+
+/**
+ * An axis the machine has not homed is shown as question marks, not as a number.
+ *
+ * This is the most consequential thing on the status bar. A coordinate implies the machine
+ * knows where the tool is; before homing it does not, and the number it would print is whatever
+ * the counters happened to hold. Somebody reading `0.0` off an unhomed Z and lowering the
+ * nozzle "just a little" is the failure this display exists to prevent.
+ *
+ * `_update_axis_value()` decides per axis, from `axis_should_home()`, and blinks the marks so
+ * they cannot be mistaken for a reading. The readout is reached through `updateVariable()` —
+ * `_draw_xyz_position()` is file-scope in the driver — and it only redraws when the blink phase
+ * turns over, which is why the test walks the clock rather than calling twice.
+ *
+ * The assertion is on the characters in the byte stream, not on where they were drawn: `???`
+ * is content the panel was told to display, while the coordinates and font ids around it are
+ * protocol this test has no business pinning.
+ */
+MARLIN_TEST(dwin_display, an_axis_that_has_not_been_homed_is_shown_as_question_marks) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+
+  checkkey = ID_MainMenu;
+
+  motion.set_all_unhomed();
+
+  // The readout redraws when `millis() & 0x400` turns over, which is about every second of
+  // simulated time. Walk until it has flipped *and* is set, since the marks are drawn on the
+  // blink-on half.
+  std::string drawn;
+  for (uint16_t i = 0; i < 64 && drawn.find("???") == std::string::npos; i++) {
+    SerialCapture panel(LCD_SERIAL);
+    HAL_test_advance_millis(256);
+    updateVariable();
+    drawn = panel.finish();
+  }
+
+  TEST_ASSERT_TRUE_MESSAGE(drawn.find("???") != std::string::npos,
+    "an unhomed axis should be shown as question marks rather than a coordinate");
+
+  motion.set_all_homed();
+}
+
+/**
+ * ...and once it is homed it shows a number.
+ *
+ * The other arm, and the one that says the marks are a *statement about trust* rather than the
+ * only thing the readout can draw. Without it, a driver that printed `???.?` for every axis for
+ * ever would pass the test above and look, to anyone reading the code, entirely correct.
+ */
+MARLIN_TEST(dwin_display, a_homed_axis_is_shown_as_a_position) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+
+  checkkey = ID_MainMenu;
+  motion.set_all_homed();
+
+  // Let a few blink periods pass so the readout has certainly been redrawn since homing.
+  std::string drawn;
+  for (uint16_t i = 0; i < 16; i++) {
+    SerialCapture panel(LCD_SERIAL);
+    HAL_test_advance_millis(256);
+    updateVariable();
+    const std::string chunk = panel.finish();
+    if (!chunk.empty()) drawn += chunk;
+  }
+
+  TEST_ASSERT_TRUE_MESSAGE(drawn.find("???") == std::string::npos,
+    "a homed axis should be shown as a position, not as question marks");
+}
 
 // ---------------------------------------------------------------------------
 // What the file menu calls a file

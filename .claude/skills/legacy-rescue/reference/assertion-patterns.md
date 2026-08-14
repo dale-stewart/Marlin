@@ -125,6 +125,14 @@ substantial and say nothing.
   downstream discards degenerate input — a zero-length item, an empty batch, a no-op update —
   the guard upstream of it is unobservable by construction, and asserting emptiness pins the
   filter rather than the guard. Say so in the test, or the next reader will trust it.
+
+  **The most common cause of nothing is the fixture.** Where the test says "the thing did not
+  happen", check that the machinery which would have made it happen was actually in place —
+  and state that as an assertion in the arrangement, not as a comment. Two of three tests here
+  asserted that a print had not been aborted, and passed for months' worth of edits against a
+  machine with no print running at all: the abort flag is derived from "is a file open", so no
+  file meant no abort meant a green test. One line asserting the file was open turned three
+  passing tests into three failing ones, which is what they should have been saying all along.
 - **Do not state a precondition in terms of a value the code under test may have rewritten.**
   A test that opens with "this input is only interesting if X" needs X read from something the
   behaviour does not touch. Code that corrects a value often stamps the corrected answer back

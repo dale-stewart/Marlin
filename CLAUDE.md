@@ -642,6 +642,34 @@ a design decision and a bug. The acceleration test asserts
 `max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
 millimetre value, which is right in both the working and the broken version.
 
+**The stop confirmation, and the position readout (2026-08-13).** Eleven tests in `dwin.cpp` now.
+
+**`hmiPrinting()` / `hmiPauseOrStop()` — pressing Stop asks before it stops.** A print is hours
+of work and a knob is easy to knock, so the press opens a confirmation rather than acting. Three
+tests: it asks; confirming aborts; **declining leaves the print running**. The last is the one
+that matters — a confirmation that stops the print whichever button you choose looks like a
+safeguard and is a second way to lose the job.
+
+**Two of those three were passing against a machine that was not printing**, and the precondition
+assertion is what caught it. `abortFilePrintSoon()` sets its flag to `isFileOpen()`, so "the
+print was not aborted" is true for the wrong reason when nothing is open — and both the
+asks-first and the declining test assert exactly that negative. `card.openAndPrintFile()` looked
+like the direct route and left no file open at all; `M23` then `M24`, the sequence a host uses,
+is what the media tests already recommend and what works. **A negative assertion needs its
+fixture's preconditions stated, or it is satisfied by the fixture failing.**
+
+**`_draw_xyz_position()` — an unhomed axis is shown as `???.?`, not as a number.** The most
+consequential thing on the status bar: a coordinate implies the machine knows where the tool is,
+and before homing it does not. Somebody reading `0.0` off an unhomed Z and lowering the nozzle
+"just a little" is the failure the display exists to prevent. Both arms asserted, because a
+driver that printed question marks for every axis for ever would pass the first alone and read
+as correct.
+
+Reached through `updateVariable()` rather than by exporting `_draw_xyz_position()`, and the
+assertion is on the *characters* in the byte stream — `???` is content the panel was told to
+show, while the coordinates and font ids around it are protocol no test here has business
+pinning.
+
 **`hmiSelectFile()` — both ends of the file list, and three assumptions that were wrong.**
 The list is one row of "Back" followed by the card's items, so the file under row `n` is
 `n - 1`, and `n - 1 - hasUpDir` once you are inside a folder. Every index is offset by something
@@ -1601,7 +1629,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 801, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 806, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
