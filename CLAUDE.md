@@ -642,6 +642,25 @@ a design decision and a bug. The acceleration test asserts
 `max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
 millimetre value, which is right in both the working and the broken version.
 
+**`dwin.cpp`: 8% -> 35% from eleven tests, and the plan for the rest was wrong.**
+161 -> 710 covered lines; the whole `010-dwin` build 60.2% -> 67.4%.
+
+**The drawing primitives turned out not to need tests of their own — they are already executed
+as a consequence of the decisions being tested.** That was the standing recommendation here
+("what is left is overwhelmingly drawing primitives, where the only observable is the byte
+stream and asserting it would pin the protocol") and it does not survive measurement. Driving a
+menu draws it; the primitives are covered without being pinned, which is exactly the right
+relationship — they are exercised, and nothing asserts their coordinates.
+
+What the remaining 1275 uncovered lines actually are, by the largest spans: the
+`ENCODER_DIFF_ENTER` arms of the *other* HMI handlers — Prepare, Control, Motion, Temperature,
+AxisMove — each a dispatch switch of the same shape as `hmiMainMenu()`, and each now having a
+proven pattern to test it with. Plus the `say_*_en()` label helpers, which are pure output.
+
+So the next slice is **more menu handlers, not primitives**, and the recommendation that said
+otherwise was made by reading the function list rather than the coverage. Same mistake as
+counting a survivor bucket by lines instead of reading mutants, one level up.
+
 **The stop confirmation, and the position readout (2026-08-13).** Eleven tests in `dwin.cpp` now.
 
 **`hmiPrinting()` / `hmiPauseOrStop()` — pressing Stop asks before it stops.** A print is hours
@@ -1789,6 +1808,13 @@ is blocked by PEP 668 on this machine).
   `movesplanned() == 0`. Nothing reports it. The tell is a queue-related assertion failing in a
   way that makes no sense — a block never delivered, a buffer never filling — and the first
   thing to print is `movesplanned()`.
+- **gcovr can fail a whole run on a `negative_hits` parse error, and it is intermittent.** Seen
+  once on 2026-08-13 under `010-dwin`: `(ERROR) Error occurred while reading reports: Worker
+  thread raised exception` and a non-zero exit, with the summary file never written. It is
+  GCC's counter bug (gcc.gnu.org/bugzilla PR68080) and the tests that use a second thread are
+  the likely trigger. Re-running produced a clean report with no other change. If it recurs,
+  `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file` is the documented escape — but
+  check the figure against a clean run before trusting a report produced with it.
 - **`pio test -e <env> -f <name>` filters *test names*, not configurations.** It looks exactly
   like the config selector and is not one: `-f` is PlatformIO's test filter, so the build it
   runs uses whatever `Marlin/config.ini` happens to hold. Copying a config by hand first makes
