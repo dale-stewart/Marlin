@@ -45,6 +45,7 @@
 #include "../support/simulated_encoder.h"
 #include "src/sd/cardreader.h"
 #include <string.h>
+#include <vector>
 
 MARLIN_TEST(dwin_display, a_status_message_reaches_the_panel) {
   SerialCapture panel(LCD_SERIAL);
@@ -205,6 +206,98 @@ MARLIN_TEST(dwin_display, changing_the_feedrate_at_the_panel_stores_it_against_t
 }
 
 #endif // EDITABLE_STEPS_PER_UNIT
+
+// ---------------------------------------------------------------------------
+// Getting around the menus
+// ---------------------------------------------------------------------------
+
+/**
+ * Every main-menu page leads somewhere, and to somewhere different — in adjacency order.
+ *
+ * This is the first thing anybody does with the panel: turn the knob until the icon they want
+ * is highlighted, then press. The dispatch is a `switch` with one arm per page, so a machine
+ * that sent every press to the same screen, or that had two arms transposed, would look
+ * completely normal until you tried to use it. Pressing on one page only would leave three arms
+ * unasserted — the same shape as `each_switch_is_reported_from_its_own_pin`: the deciding
+ * element has to be moved through the collection rather than exercised once.
+ *
+ * **The test deliberately assumes neither the knob's direction nor its gearing.** A first
+ * version hard-coded both and failed twice in different ways — clockwise turned out to
+ * *decrease* the selection, and a `turn_clockwise()` call did not reliably move it one page.
+ * Neither is a property of the firmware worth pinning here; both are properties of how this
+ * fixture and this panel happen to agree, and encoding them would have made the test a
+ * statement about the harness.
+ *
+ * **The menus also rate-limit the knob, where the value editors do not.** `hmiMainMenu()` reads
+ * through `get_encoder_state()`, which ignores everything for `ENCODER_WAIT_MS` (20 ms) after
+ * each accepted event; the value editors call `encoderReceiveAnalyze()` directly and have no
+ * such gate. Under a HAL where time only moves when a test says so, that means consecutive
+ * turns are simply swallowed — the first version of this test walked the whole menu and never
+ * left the first page. Every step here lets the gate expire, which is also what a person's hand
+ * does without thinking about it.
+ *
+ * So it winds hard to one end, then walks the other way one detent at a time, clicking at each
+ * step and recording where it lands. What is asserted is the *sequence of distinct
+ * destinations*, which is exactly the claim worth making: the four screens are reachable, they
+ * are adjacent in the order the icons are drawn, and no two pages lead to the same place.
+ *
+ * `checkkey` is the observable rather than the internal selection, and it is the better one: it
+ * is *where the press took you*, which is what the user experiences, and it is already part of
+ * the driver's declared surface.
+ */
+MARLIN_TEST(dwin_display, the_main_menu_pages_lead_to_four_different_screens_in_order) {
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+
+  // Every pump lets the encoder's 20 ms gate expire, or the turns after the first are ignored.
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  // Wind hard to one end. `select_t::dec()` clamps at zero and `inc(4)` clamps at three, so
+  // enough turns either way reaches a known end whichever way round the knob is wired.
+  checkkey = ID_MainMenu;
+  for (uint8_t i = 0; i < 20; i++) knob.turn_counterclockwise(pump);
+
+  // Now walk back, clicking at every step, and collect the destinations in the order they
+  // appear. Twenty steps is far more than four pages, so the walk is bounded by the clamp
+  // rather than by a count that has to be right.
+  std::vector<uint8_t> seen;
+  for (uint8_t i = 0; i < 20; i++) {
+    checkkey = ID_MainMenu;
+    knob.click(pump);
+    if (seen.empty() || seen.back() != checkkey) seen.push_back(checkkey);
+    checkkey = ID_MainMenu;
+    knob.turn_clockwise(pump);
+  }
+
+  // One last press at the far end, in case the final turn moved onto a page not yet pressed.
+  checkkey = ID_MainMenu;
+  knob.click(pump);
+  if (seen.empty() || seen.back() != checkkey) seen.push_back(checkkey);
+
+  panel.finish();
+  checkkey = ID_MainMenu;
+
+  const uint8_t last_page = TERN(HAS_ONESTEP_LEVELING, ID_Leveling, ID_Info);
+  const uint8_t forwards[] = { ID_SelectFile, ID_Prepare, ID_Control, last_page };
+
+  char msg[200];
+  snprintf(msg, sizeof(msg), "walking the knob across the menu should visit four screens, saw %u",
+           unsigned(seen.size()));
+  TEST_ASSERT_EQUAL_MESSAGE(4, seen.size(), msg);
+
+  // Either direction of travel is fine — which way the knob turns is the panel's business —
+  // but the *order* must be the order the icons are drawn in.
+  const bool ascending = seen.front() == forwards[0];
+  for (size_t k = 0; k < 4; k++) {
+    const uint8_t expect = ascending ? forwards[k] : forwards[3 - k];
+    snprintf(msg, sizeof(msg), "screen %u along should be %u, was %u",
+             unsigned(k), unsigned(expect), unsigned(seen[k]));
+    TEST_ASSERT_EQUAL_MESSAGE(expect, seen[k], msg);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // What the file menu calls a file

@@ -642,6 +642,23 @@ a design decision and a bug. The acceleration test asserts
 `max_acceleration_steps_per_s2`, the limit the stepper actually enforces, rather than the stored
 millimetre value, which is right in both the working and the broken version.
 
+**The menus rate-limit the knob and the value editors do not, which is why a navigation test
+needs the clock.** `hmiMainMenu()` reads through `get_encoder_state()`, which ignores everything
+for `ENCODER_WAIT_MS` (20 ms) after each accepted event; `hmiStepXYZE()` and its siblings call
+`encoderReceiveAnalyze()` directly and have no such gate. Under a HAL where time only moves when
+a test says so, that means **consecutive turns are simply swallowed** — the first navigation test
+walked the whole menu and never left the first page. The pump has to advance the clock past the
+gate, which is what a person's hand does without thinking about it.
+
+**And the navigation test assumes neither the knob's direction nor its gearing**, because two
+earlier versions did and failed in two different ways: clockwise turned out to *decrease* the
+selection, and one `turn_clockwise()` call did not reliably move it one page. Neither is a
+property of the firmware worth pinning — both are properties of how this fixture and this panel
+happen to agree — so the test winds hard to one end, walks back one detent at a time clicking as
+it goes, and asserts the **sequence of distinct destinations**. That is the claim worth making:
+four screens, reachable, adjacent in the order the icons are drawn, no two pages leading to the
+same place. It would survive rewiring the encoder.
+
 **Two new defects, both in `make_name_without_ext()` — the function that decides what a file is
 called on the menu you pick a print from.**
 
@@ -1542,7 +1559,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 798, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 799, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

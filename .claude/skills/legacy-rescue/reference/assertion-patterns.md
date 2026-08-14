@@ -197,6 +197,26 @@ substantial and say nothing.
   others' so a write to the wrong field is visible too. The same trap applies to any "set it
   and read it back" test: choose the one value that could not have got there by accident.
 
+- **Do not encode the harness's own conventions in an assertion — assert the invariant that
+  survives them.** Driving a device through a simulated input has two properties that feel like
+  facts and are not: which way its directions map, and how much one call of your fixture moves
+  it. Both are agreements between your stand-in and the code, neither is a claim about the
+  system's behaviour, and writing tests against them produces failures that look like defects.
+
+  Ask what would still be true if the device were wired the other way round. Usually it is an
+  *ordering* or a *set*: the destinations are adjacent in the order they are drawn, no two
+  inputs lead to the same place, the extremes clamp rather than wrap. Reach a known state by
+  driving hard against a limit rather than by counting steps from an assumed start, then walk
+  and record what you see. The result is longer to write and does not need rewriting when
+  somebody inverts a pin.
+
+  The same caution applies to *rate limits*, which are invisible until they bite: input handlers
+  frequently ignore events for a period after accepting one. Where the clock is under the test's
+  control, a burst of input arrives inside a single instant and all but the first is discarded —
+  and the symptom is a device that appears not to respond at all, which reads as a broken
+  fixture rather than a debounce. Let time pass between steps, the way the hand that would
+  really be doing it does.
+
 - **Where one member of a family is suspect, pin the ones that are correct.** A defect recorded
   against a single call site reads as "this component does not do X". Asserting its siblings —
   the two neighbouring functions that *do* refresh the cache, validate the input, take the lock
