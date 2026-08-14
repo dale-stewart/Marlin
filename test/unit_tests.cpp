@@ -34,6 +34,7 @@
 #include "src/module/printcounter.h"
 #include "src/gcode/queue.h"
 #include "tests/support/simulated_hardware.h"
+#include "tests/gcode/serial_capture.h"
 #include <stdio.h>
 #include <string>
 
@@ -195,6 +196,8 @@ static void quiesce_simulated_peripherals() {
    * the test at fault. Marking the ports unattached here is the same state they are given at
    * power-on, and it costs nothing when the destructor did run.
    */
+  SerialCapture::release_live_captures();
+
   MYSERIAL1.host_connected = false;
   #ifdef LCD_SERIAL
     LCD_SERIAL.host_connected = false;
@@ -277,6 +280,30 @@ static void quiesce_simulated_peripherals() {
    * reason.
    */
   planner.clear_block_buffer();
+
+  /**
+   * Leave the machine's origin where it was found.
+   *
+   * A home offset shifts every coordinate the firmware reports and acts on, so a test that sets
+   * one and then *fails* hands every later test a machine whose idea of zero has moved. This is
+   * register #47, and it was recorded there as a fixture problem; it is not. A scope guard
+   * cannot fix it, because Unity's failure path is the `longjmp` described above and destructors
+   * do not run — which is precisely the case where an offset is most likely to be left behind.
+   *
+   * Added defensively rather than in response to a diagnosed failure, and the distinction is
+   * worth recording because it was got wrong here first. A failing home-offset test *did* take
+   * the suite down — 818 tests became 490 — and the leaked offset was the obvious suspect. It
+   * was not the cause: the cause was `SerialCapture`'s drainer thread writing into a discarded
+   * stack frame, and this restore changed nothing about it. A plausible mechanism that fits the
+   * evidence is not a diagnosis; the backtrace was, and it named something else entirely.
+   *
+   * Zero is the power-on state — `home_offset` is a zeroed static and `settings.reset()` puts it
+   * back there — so this is the same restore as the heater targets rather than a value invented
+   * here. Tests that are *about* home offsets set their own and are unaffected.
+   */
+  #if HAS_HOME_OFFSET
+    LOOP_NUM_AXES(i) motion.set_home_offset(AxisEnum(i), 0);
+  #endif
 
   /**
    * Leave the machine the size it was.

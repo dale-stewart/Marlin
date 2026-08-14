@@ -53,6 +53,7 @@
 #include "src/sd/cardreader.h"
 #include <string.h>
 #include <vector>
+#include <utility>
 
 namespace {
 
@@ -1382,6 +1383,92 @@ MARLIN_TEST(dwin_display, the_home_offset_editor_stores_millimetres_for_the_axis
     TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, motion.home_offset.y,
       "and an axis never edited should still be where it started");
   #endif
+
+  panel.finish();
+}
+
+/**
+ * Each axis is clamped to its own range, and Z's is the tight one.
+ *
+ * `hmiHomeOffN()` takes its bounds as arguments — `±500` for X and Y, `±20` for Z, in the tenths
+ * the panel edits — so the three editors are one function called three ways and the only thing
+ * separating them is those numbers. Fifty millimetres of home offset on X moves the origin
+ * across the bed, which is recoverable and obvious. Fifty on Z drives the nozzle through the
+ * bed, which is neither. That is why Z gets a twenty-fifth of the range, and it is the kind of
+ * asymmetry that a later edit "tidies up" into one shared constant.
+ *
+ * The mutation run is what asked for this: thirty-six survivors sat on those three lines, because
+ * `LIMIT()` runs only on the *turning* path and the editor test beside this one commits without
+ * ever turning. Coverage could not see the difference; every one of those mutants ran.
+ *
+ * **How far the knob has to turn is not asserted, and must not be.** `encoderMoveValue` is
+ * rate-multiplied — a fast turn counts for a hundred detents — so a fixed number of turns would
+ * be pinning the encoder's acceleration curve rather than the limit. The test winds until the
+ * value stops moving, which is where the clamp is whatever the step size happens to be.
+ *
+ * Both ends of each range, because a clamp written `LIMIT(v, lo, lo)` or `LIMIT(v, hi, hi)` would
+ * satisfy a test that only pushed one way.
+ */
+MARLIN_TEST(dwin_display, each_home_offset_axis_is_clamped_to_its_own_range) {
+  SimulatedMachine machine;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  HomeOffsets saved;
+
+  const auto pump = [] { dwinHandleScreen(); };
+
+  // Wind one way until the edited value stops moving — that is the clamp — then commit.
+  const auto wind_to_a_clamp_and_commit = [&](const uint8_t screen, float &field,
+                                              const bool one_way) {
+    field = 0;
+    checkkey = screen;
+    float last = field;
+    for (uint16_t i = 0; i < 4000; i++) {
+      if (one_way) knob.turn_clockwise(pump); else knob.turn_counterclockwise(pump);
+      if (field == last) break;
+      last = field;
+    }
+    checkkey = screen;
+    knob.click(pump);
+  };
+
+  /**
+   * Both ends, reported low-then-high rather than by direction.
+   *
+   * Which way the fixture's "clockwise" drives the value is an agreement between the stand-in
+   * and the driver, not a claim about the machine — the first version of this test asserted
+   * `+2` for a clockwise wind and got `-2`, which is the fifth time that assumption has been
+   * wrong in this file. What survives rewiring the encoder is that the range has two ends and
+   * where they are.
+   */
+  const auto range_of = [&](const uint8_t screen, float &field) {
+    wind_to_a_clamp_and_commit(screen, field, true);
+    const float a = field / 10;
+    wind_to_a_clamp_and_commit(screen, field, false);
+    const float b = field / 10;
+    return std::pair<float, float>(_MIN(a, b), _MAX(a, b));
+  };
+
+  LOOP_NUM_AXES(a) motion.set_home_offset((AxisEnum)a, 0);
+
+  #if HAS_Z_AXIS
+    const auto z = range_of(ID_HomeOffZ, hmiValues.homeOffsScaled.z);
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(-2.0f, z.first,
+      "Z should stop at -2 mm however far the knob is turned");
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(2.0f, z.second,
+      "and at +2 mm the other way, so the range is bounded at both ends");
+    TEST_ASSERT_EQUAL_FLOAT_MESSAGE(z.second, motion.home_offset.z,
+      "and the value the panel settled on is the one the machine stored");
+  #endif
+
+  // X is the comparison that makes Z's limit a decision rather than a global constant.
+  const auto x = range_of(ID_HomeOffX, hmiValues.homeOffsScaled.x);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(-50.0f, x.first,
+    "X should reach -50 mm - the limits are per axis, and X's is 25 times Z's");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(50.0f, x.second, "and +50 mm the other way");
 
   panel.finish();
 }

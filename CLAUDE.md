@@ -802,6 +802,47 @@ unit *and* relinks a binary of 817 tests, so this is several times the per-mutan
 other target measured here. The first rate reading was taken during the workers' cold start and
 suggested six hours; **do not extrapolate a mutation ETA from the first minute.**
 
+**Acting on that measurement found a harness defect worth more than the tests (#57).**
+
+The first item from the survivor list — the home-offset clamps — was written, and the first
+version of it failed. The suite then reported **490 tests instead of 818, ending in SIGSEGV**.
+
+The obvious suspect was the leaked home offset: a failing test skips its own destructor, so the
+origin stays shifted for everything after it, which is register #47's exact shape. That
+explanation fits the evidence completely and is **wrong**. Adding a home-offset restore to the
+quiesce changed nothing at all.
+
+The backtrace named something else: **`SerialCapture`'s drainer thread, appending to a
+`std::string` in the stack frame the `longjmp` had just discarded.** The destructor that would
+have joined it never runs on a failing test, the frame is reused by whatever comes next, and the
+process dies. It is the half of register #40 that the earlier fix did not cover — marking the
+port unattached in the quiesce stops the *hang*, but nothing stopped the *thread*, and a thread
+writing into a dead frame is by far the more serious of the two.
+
+Every test in `test_dwin.cpp` holds a `SerialCapture`, so **any** failure in that file killed the
+process and hid every later failure. That had been true for as long as the file has existed, and
+it was invisible because the file had never had a failing test outside a deliberate injection.
+
+The fix is that the drainer owns its state through a `shared_ptr` and never touches `this`, so a
+skipped destructor leaks a session rather than corrupting memory, and
+`SerialCapture::release_live_captures()` stops and joins the leftovers from the quiesce. Sessions
+are held in a list rather than one slot because captures nest.
+
+Three things to carry:
+
+- **A plausible mechanism that fits the evidence is not a diagnosis.** The home-offset story
+  explained every symptom and was the wrong answer; one backtrace settled it. That restore is
+  kept — it is correct hygiene — but its comment now says it was added defensively and was *not*
+  the cause, so nobody later reads it as the fix for this.
+- **"The suite dies at test N" is rarely about test N.** It is the third time in this fork that a
+  fixture outliving its test presented as a fault somewhere unrelated, after registers #26 and
+  #40. The pattern is always the same: `longjmp` skips a destructor, and something that should
+  have stopped keeps running.
+- **The 9.3% mutation score is unaffected, and this was checked rather than assumed.**
+  `suite_failed()` in `mutation_test.py` treats any non-zero exit as a failure, so a mutant that
+  crashed the binary scored KILLED — correctly, since the suite did detect it. The baseline was
+  green, so no survivor could have been mis-scored the other way.
+
 **Home offsets and Advanced Settings, 60% -> 65%, and a new defect (2026-08-14).**
 
 The home-offset menu is pure navigation, so the shared walk is the right instrument again — the
