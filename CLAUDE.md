@@ -697,6 +697,48 @@ lifted — probing for the row must not trip the behaviour under test before the
 probe then asserts it reached a clamp at all, since one that stopped mid-list would aim the rest
 of the test at whatever row it happened to land on.
 
+**Then the Prepare menu, 55% -> 60%, and the useful part is that `walk_a_menu()` is the wrong
+instrument for it.** The helper answers *where did each row lead*, and five of Prepare's rows do
+not lead anywhere — they release the motors, start a homing move, preheat for a material, cool
+everything down, change the language. `checkkey` is untouched by all five, so a walk collapses
+them into one entry and then compares a short list against a short expectation. That is a green
+test making a much weaker claim than it looks like. **A shared probe has a question it answers,
+and a menu that does not answer that question needs a different probe rather than a looser
+assertion.**
+
+What separates these rows is their *effect*, so `walk_the_prepare_menu()` records that instead:
+each press is preceded by putting both heaters at a marker value no row in the menu can produce,
+which turns "this row changed no temperature" into a positive observation rather than an absence.
+
+**The rows are located by effect, not by index, and that is forced rather than stylistic.**
+`PREPARE_CASE_PLA` is a `#define` inside the driver computed from four `ENABLED()` terms, so a
+test naming a number would be asserting against arithmetic it cannot see. Finding the row that
+heats to `ui.material_preset[0]` states the real claim anyway — *one row preheats for the first
+material and a different one for the second, in drawn order* — which is exactly the transposition
+worth catching. The presets are asserted to differ first, or the test is satisfied by any wiring.
+
+**The walk runs from the far clamp down to Back and stops there.** Back is the only row whose
+outcome is unambiguous from outside, so it is the anchor; stopping at it discovers the row count
+rather than stating it, and stops the walk pressing a clamped row twice — which for the language
+row would mean toggling it an unpredictable number of times.
+
+Three tests, each probed by injection: transposing the two preheat arms fails the material test
+and nothing else, cooling only the hotend fails the cooldown test and nothing else, and assigning
+instead of toggling the language fails the language test and nothing else.
+
+- **The cooldown test asserts no row half-cools.** The bed is the heater people forget — out of
+  sight under the print, silent, and holding 60 C into an empty room all night. A row that zeroed
+  only the nozzle would look right on the panel, because the number a person watches is the
+  nozzle's.
+- **The language row is asserted twice over, because assignment and a toggle agree on the way
+  out.** A driver that assigned would strand anyone who pressed it once in a menu they cannot
+  read, with no other control that helps. Two walks, there and back.
+- **And the first draft got the knob backwards again** — the fourth time in this file. The
+  fixture's `turn_clockwise()` is a phase sequence; which `ENCODER_DIFF` the firmware derives
+  from it is the firmware's business, and the walk reported a menu one row long. It now presses
+  at one clamp and asks whether that was Back, which is free because pressing Back only returns
+  to the main menu.
+
 **`dwin.cpp`: 8% -> 35% from eleven tests, and the plan for the rest was wrong.**
 161 -> 710 covered lines; the whole `010-dwin` build 60.2% -> 67.4%.
 
@@ -1703,7 +1745,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 811, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 745, 755, 802, 802, 740, 737, 757, 797, 814, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 

@@ -48,6 +48,7 @@
 #include "src/module/temperature.h"
 #include "src/gcode/gcode.h"
 #include "src/gcode/parser.h"
+#include "src/gcode/queue.h"
 #include "src/module/motion.h"
 #include "src/sd/cardreader.h"
 #include <string.h>
@@ -1016,6 +1017,266 @@ MARLIN_TEST(dwin_display, a_cold_nozzle_will_not_open_the_extruder_mover) {
 }
 
 #endif // PREVENT_COLD_EXTRUSION && HAS_HOTEND
+
+// ---------------------------------------------------------------------------
+// The Prepare menu, which is a menu of actions rather than of screens
+// ---------------------------------------------------------------------------
+
+/**
+ * `walk_a_menu()` is the wrong instrument for this one, and knowing why is the point.
+ *
+ * It answers "where did each row lead", and most of the Prepare menu's rows do not lead
+ * anywhere: they release the motors, start a homing move, preheat for a material, cool
+ * everything down, change the language. `checkkey` is untouched by five of them, so a walk would
+ * collapse those five into one entry and then compare a short list against a short expectation —
+ * a green test making a much weaker claim than it appears to.
+ *
+ * What separates these rows is their *effect*, so that is what gets recorded. Each press is
+ * preceded by putting the heaters at a marker value nothing else in the menu produces, which
+ * makes "this row changed no temperature" a positive observation rather than an absence.
+ */
+namespace {
+
+  struct RowEffect {
+    uint8_t landed_on;
+    celsius_t hotend, bed;
+    uint8_t language;
+  };
+
+  #if HAS_HOTEND && HAS_HEATED_BED
+
+    // Values no row in this menu can produce: not zero (cooldown), and not either preset.
+    constexpr celsius_t MARKER_HOTEND = 111, MARKER_BED = 77;
+
+    /**
+     * Restores everything the walk below disturbs.
+     *
+     * The language is panel state that outlives the test and has no other way back — the row
+     * *toggles*, so a walk that pressed it an odd number of times would leave every later test
+     * reading a Chinese menu. The heater targets are the usual `longjmp` hazard.
+     */
+    struct PrepareMenuState {
+      uint8_t was_language;
+      celsius_t was_hotend, was_bed;
+      PrepareMenuState()
+        : was_language(hmiFlag.language),
+          was_hotend(thermalManager.degTargetHotend(0)),
+          was_bed(thermalManager.degTargetBed()) {}
+      ~PrepareMenuState() {
+        hmiFlag.language = was_language;
+        thermalManager.setTargetHotend(was_hotend, 0);
+        thermalManager.setTargetBed(was_bed);
+        queue.clear();
+        checkkey = ID_MainMenu;
+      }
+    };
+
+    /**
+     * Press every row of the Prepare menu once, and report what each press did.
+     *
+     * The walk runs from the far clamp *down to* Back rather than up from it, and stops the
+     * moment a press lands on the main menu. That is what discovers the row count instead of
+     * stating it — the row constants are `#define`s inside the driver and invisible here — and
+     * it is also what stops the walk pressing a clamped row twice, which for the language row
+     * would mean toggling it an unpredictable number of times.
+     *
+     * Back is the anchor because it is the only row whose outcome is unambiguous from outside.
+     */
+    template <typename Pump>
+    std::vector<RowEffect> walk_the_prepare_menu(SimulatedEncoder &knob, Pump &&pump) {
+      constexpr uint8_t ROOM = 24;
+
+      // Which clamp is Back? Asked rather than assumed, and the asking is free because pressing
+      // Back only returns to the main menu. The fixture's idea of "clockwise" is a phase
+      // sequence; which direction the firmware derives from it is the firmware's business, and
+      // the first draft of this walk got it backwards and reported a menu one row long.
+      checkkey = ID_Prepare;
+      for (uint8_t i = 0; i < ROOM; i++) { knob.turn_clockwise(pump); checkkey = ID_Prepare; }
+      knob.click(pump);
+      const bool back_is_clockwise = (checkkey == ID_MainMenu);
+
+      const auto to_the_far_end = [&] {
+        checkkey = ID_Prepare;
+        for (uint8_t i = 0; i < ROOM; i++) {
+          if (back_is_clockwise) knob.turn_counterclockwise(pump); else knob.turn_clockwise(pump);
+          checkkey = ID_Prepare;
+        }
+      };
+      const auto towards_back = [&] {
+        if (back_is_clockwise) knob.turn_clockwise(pump); else knob.turn_counterclockwise(pump);
+      };
+
+      to_the_far_end();
+
+      std::vector<RowEffect> backwards;
+      for (uint8_t i = 0; i < ROOM; i++) {
+        thermalManager.setTargetHotend(MARKER_HOTEND, 0);
+        thermalManager.setTargetBed(MARKER_BED);
+        checkkey = ID_Prepare;
+
+        knob.click(pump);
+
+        backwards.push_back({ checkkey, thermalManager.degTargetHotend(0),
+                              thermalManager.degTargetBed(), hmiFlag.language });
+        if (checkkey == ID_MainMenu) break;
+
+        checkkey = ID_Prepare;
+        towards_back();
+      }
+
+      std::vector<RowEffect> rows(backwards.rbegin(), backwards.rend());
+      return rows;
+    }
+
+  #endif // HAS_HOTEND && HAS_HEATED_BED
+
+}
+
+#if HAS_HOTEND && HAS_HEATED_BED && HAS_PREHEAT
+
+/**
+ * Preheating names a material, and the row that names it is the one that heats for it.
+ *
+ * Every preset is two numbers that have to arrive together: a nozzle temperature and a bed
+ * temperature chosen for the same plastic. Transposing the two rows gives a machine that heats
+ * the bed for ABS and the nozzle for PLA, and the result is a print that will not stick — or, the
+ * other way round, a nozzle held 60 degrees above what the filament in it can take, cooking it
+ * into a blockage while the operator waits for the beep.
+ *
+ * Asserting one preset alone would pass against a driver that always preheated with the first,
+ * which is why both rows are found and both pairs are checked. The presets are asserted to differ
+ * first: with two identical presets this test would be satisfied by any wiring at all, and that
+ * is a property of the configuration rather than of the code.
+ *
+ * The rows are located by effect rather than by index. `PREPARE_CASE_PLA` is a `#define` inside
+ * the driver, computed from four `ENABLED()` terms, so a test naming a number would be asserting
+ * against an arithmetic it cannot see and would drift silently the day a feature is turned on.
+ */
+MARLIN_TEST(dwin_display, preheating_from_the_prepare_menu_uses_the_material_it_names) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  PrepareMenuState saved;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+  const std::vector<RowEffect> rows = walk_the_prepare_menu(knob, pump);
+  panel.finish();
+
+  TEST_ASSERT_TRUE_MESSAGE(rows.size() >= 2,
+    "the walk should have anchored on Back and reported every row above it");
+
+  #if PREHEAT_COUNT > 1
+    const bool presets_differ =
+      ui.material_preset[0].hotend_temp != ui.material_preset[1].hotend_temp ||
+      ui.material_preset[0].bed_temp    != ui.material_preset[1].bed_temp;
+    TEST_ASSERT_TRUE_MESSAGE(presets_differ,
+      "this test can only distinguish the two rows if the two presets differ");
+  #endif
+
+  int found_first = -1, found_second = -1;
+  for (size_t r = 0; r < rows.size(); r++) {
+    if (rows[r].hotend == ui.material_preset[0].hotend_temp &&
+        rows[r].bed    == ui.material_preset[0].bed_temp) found_first = int(r);
+    #if PREHEAT_COUNT > 1
+      if (rows[r].hotend == ui.material_preset[1].hotend_temp &&
+          rows[r].bed    == ui.material_preset[1].bed_temp) found_second = int(r);
+    #endif
+  }
+
+  TEST_ASSERT_TRUE_MESSAGE(found_first >= 0,
+    "one row should heat both the nozzle and the bed for the first material");
+  #if PREHEAT_COUNT > 1
+    TEST_ASSERT_TRUE_MESSAGE(found_second >= 0,
+      "and another should do the same for the second");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(found_first, found_second,
+      "and they should be two different rows, not one row doing both");
+    TEST_ASSERT_TRUE_MESSAGE(found_first < found_second,
+      "with the materials in the order the rows are drawn");
+  #endif
+}
+
+/**
+ * One row turns everything off, and everything means the bed as well.
+ *
+ * The bed is the heater people forget: it is out of sight under the print, it holds 60 degrees
+ * without any of the noise or smell that says a nozzle is hot, and a machine left with the bed on
+ * overnight is a machine drawing a couple of hundred watts into an empty room. A cooldown row
+ * that zeroed only the hotend would look right from the front panel — the number a person watches
+ * is the nozzle's — and would be wrong in exactly the way nobody checks.
+ *
+ * The marker values are what make this a claim about cooldown rather than about a cold machine:
+ * both heaters are given a non-zero target immediately before every press, so the only row that
+ * can report zero is one that actively cleared them.
+ */
+MARLIN_TEST(dwin_display, one_prepare_row_turns_every_heater_off) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  PrepareMenuState saved;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+  const std::vector<RowEffect> rows = walk_the_prepare_menu(knob, pump);
+  panel.finish();
+
+  int cooled = 0, half_cooled = 0;
+  for (const RowEffect &row : rows) {
+    if (row.hotend == 0 && row.bed == 0) cooled++;
+    else if (row.hotend == 0 || row.bed == 0) half_cooled++;
+  }
+
+  TEST_ASSERT_EQUAL_MESSAGE(1, cooled,
+    "exactly one row should turn both heaters off");
+  TEST_ASSERT_EQUAL_MESSAGE(0, half_cooled,
+    "and no row should turn off one heater while leaving the other running");
+}
+
+/**
+ * The language row swaps the two, rather than setting one of them.
+ *
+ * It is the only way to change the panel's language, so it has to work in both directions: a
+ * driver that assigned rather than toggled would leave anyone who pressed it once unable to get
+ * back, reading a menu they cannot follow with no other control that would help them. That is
+ * a machine returned as broken.
+ *
+ * Asserting the first press alone cannot see the difference — assignment and toggle agree on the
+ * way out — so the row is pressed twice and the language is asserted to have moved and returned.
+ * The two presses are separate walks, because a walk deliberately presses each row only once.
+ */
+MARLIN_TEST(dwin_display, the_language_row_swaps_the_two_rather_than_setting_one) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  SerialCapture panel(LCD_SERIAL);
+  SimulatedEncoder knob;
+
+  ui.backlight = true;
+  marlin.wait_for_user = false;
+  PrepareMenuState saved;
+
+  const auto pump = [] { HAL_test_advance_millis(ENCODER_WAIT_MS + 1); dwinHandleScreen(); };
+
+  const uint8_t at_the_start = hmiFlag.language;
+  const std::vector<RowEffect> first = walk_the_prepare_menu(knob, pump);
+  const uint8_t after_one_pass = hmiFlag.language;
+  const std::vector<RowEffect> second = walk_the_prepare_menu(knob, pump);
+  panel.finish();
+
+  TEST_ASSERT_EQUAL_MESSAGE(first.size(), second.size(),
+    "the two walks should have covered the same menu");
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(at_the_start, after_one_pass,
+    "one press of the language row should change the language");
+  TEST_ASSERT_EQUAL_MESSAGE(at_the_start, hmiFlag.language,
+    "and a second press should change it back, so the row is a way in and a way out");
+}
+
+#endif // HAS_HOTEND && HAS_HEATED_BED && HAS_PREHEAT
 
 // ---------------------------------------------------------------------------
 // The position readout

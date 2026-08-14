@@ -252,6 +252,21 @@ substantial and say nothing.
   fixture rather than a debounce. Let time pass between steps, the way the hand that would
   really be doing it does.
 
+- **A shared probe has a question it answers; where that question does not apply, the probe
+  weakens the claim instead of failing.** Once a family of call sites has one reusable helper —
+  the walk, the round trip, the sweep — the temptation is to point it at every member. But a
+  helper is built around an observable, and a member whose behaviour shows up somewhere else will
+  be reported by that helper as *nothing happening*. Two such members in a row collapse into one
+  observation, the result is compared against an expectation derived the same way, and everything
+  agrees. The test is green, shorter than it should be, and says almost nothing.
+
+  The tell is a member whose entry in the collected results is indistinguishable from its
+  neighbour's, or a total that is smaller than the number of things you drove. Before reusing a
+  helper, ask what each member changes and whether the helper can see it; where it cannot, that
+  member needs a different observable, not a looser assertion. Recording an effect — state before
+  and after, keyed on a marker value the subject itself cannot produce — is usually the
+  substitute, and it turns "this one did nothing" from an absence into a positive reading.
+
 - **Where one member of a family is suspect, pin the ones that are correct.** A defect recorded
   against a single call site reads as "this component does not do X". Asserting its siblings —
   the two neighbouring functions that *do* refresh the cache, validate the input, take the lock
