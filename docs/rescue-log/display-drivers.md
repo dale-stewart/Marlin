@@ -186,6 +186,29 @@ unit *and* relinks a binary of 817 tests, so this is several times the per-mutan
 other target measured here. The first rate reading was taken during the workers' cold start and
 suggested six hours; **do not extrapolate a mutation ETA from the first minute.**
 
+**And then it was closed, measured (2026-08-14): 83 survivors killed, 9.3% -> 10.3%.**
+
+Four tests written against the survivor list — the home-offset clamps, the up-directory row, and
+the per-field change cache. Counted the only way that counts: **re-running the previous run's
+survivor list**, because that population is fixed. Subtracting one run's kill count from another's
+would have been wrong, since new tests cover new lines and change the denominator.
+
+83 killed, over 22 lines, and every one of them inside a region a test aimed at — 23 on the
+home-offset limits, 21 on the up-directory arithmetic, ~39 on the change-detection guards. No
+collateral, which is the sign the tests are precise rather than broad.
+
+**Read the 10.3% carefully: it is over the *baseline* population.** A rerun reuses the stored
+mutant list and does not re-derive coverage, which is exactly what makes it the right instrument
+for "what did these tests kill" and the wrong one for "what is this file's score now". The new
+tests certainly cover lines whose mutants were never generated, so a fresh full run would have a
+larger denominator. That run was not taken: it costs an hour, and the residue is already
+classified.
+
+**`dwin.cpp` is closed.** The four addressable items from the survivor list are done and the top
+fifteen clusters are unchanged — every one a drawing primitive with pixel arithmetic, led by 69
+on a `dwinFrameAreaCopy` call. What is left is the presentation trade recorded above, and there
+is no cluster a test would help with.
+
 **Acting on that measurement found a harness defect worth more than the tests (#57).**
 
 The first item from the survivor list — the home-offset clamps — was written, and the first

@@ -54,6 +54,7 @@
 #include <string.h>
 #include <vector>
 #include <utility>
+#include <functional>
 
 namespace {
 
@@ -645,6 +646,109 @@ MARLIN_TEST(dwin_display, the_panel_is_redrawn_only_where_something_changed) {
 
   thermalManager.setTargetHotend(was, 0);
   { SerialCapture panel(LCD_SERIAL); updateVariable(); panel.finish(); }
+}
+
+/**
+ * ...and every watched value is watched on its own.
+ *
+ * The test above proves the mechanism exists; it does not prove there is one per field. A driver
+ * that cached only the hotend target and redrew the rest unconditionally would pass it, and so
+ * would one whose flow guard compared the feedrate — a copy-paste slip between eight nearly
+ * identical three-line blocks, which is exactly the shape this code is written in.
+ *
+ * So each field is moved on its own and asserted twice: the change must reach the panel, and the
+ * pass *after* it must be silent again. The two halves catch opposite faults. A guard that
+ * compares the wrong value is silent when its own field moves; a guard that is missing altogether
+ * never goes quiet. Neither is visible from one assertion.
+ *
+ * Only fields a test can set exactly are used. The two *measured* temperatures arrive through the
+ * ADC pipeline with about 300 ms of simulated latency and drift while it runs, so changing one
+ * alone is not something this test can arrange — and "exactly one field changed" is the whole
+ * premise. Nothing here advances the clock, which is what keeps them still.
+ */
+MARLIN_TEST(dwin_display, each_displayed_value_is_cached_separately) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+
+  checkkey = ID_MainMenu;
+
+  const auto pass = [] {
+    SerialCapture panel(LCD_SERIAL);
+    updateVariable();
+    return panel.finish().size();
+  };
+
+  // Prime, then confirm the machine really is settled: without this the first field's "it
+  // changed" would be satisfied by the backlog of everything else.
+  pass();
+  TEST_ASSERT_EQUAL_MESSAGE(0, pass(),
+    "the machine should be settled before any single field is moved");
+
+  struct Field { const char *name; std::function<void()> change; std::function<void()> restore; };
+
+  const celsius_t hotend_was = thermalManager.degTargetHotend(0);
+  const int16_t flow_was = planner.flow_percentage[0];
+  const int16_t feed_was = motion.feedrate_percentage;
+  #if HAS_HEATED_BED
+    const celsius_t bed_was = thermalManager.degTargetBed();
+  #endif
+  #if HAS_FAN
+    const uint8_t fan_was = thermalManager.fan_speed[0];
+  #endif
+
+  std::vector<Field> fields = {
+    { "the hotend target",
+      [&] { thermalManager.setTargetHotend(hotend_was + 40, 0); },
+      [&] { thermalManager.setTargetHotend(hotend_was, 0); } },
+    { "the flow percentage",
+      [&] { planner.flow_percentage[0] = flow_was + 7; },
+      [&] { planner.flow_percentage[0] = flow_was; } },
+    { "the feedrate percentage",
+      [&] { motion.feedrate_percentage = feed_was + 13; },
+      [&] { motion.feedrate_percentage = feed_was; } },
+    #if HAS_HEATED_BED
+      { "the bed target",
+        [&] { thermalManager.setTargetBed(bed_was + 20); },
+        [&] { thermalManager.setTargetBed(bed_was); } },
+    #endif
+    #if HAS_FAN
+      { "the fan speed",
+        [&] { thermalManager.fan_speed[0] = fan_was + 64; },
+        [&] { thermalManager.fan_speed[0] = fan_was; } },
+    #endif
+  };
+
+  char msg[200];
+  for (const Field &f : fields) {
+    f.change();
+    const size_t spoke = pass();
+    snprintf(msg, sizeof(msg), "changing %s should reach the panel, sent %u bytes",
+             f.name, unsigned(spoke));
+    TEST_ASSERT_TRUE_MESSAGE(spoke > 0, msg);
+
+    snprintf(msg, sizeof(msg), "and the pass after %s changed should be silent again", f.name);
+    TEST_ASSERT_EQUAL_MESSAGE(0, pass(), msg);
+
+    f.restore();
+    pass();                       // let the cache catch up before the next field moves
+  }
+
+  // The babystep offset is a float rather than an integer and has its own sign-handling arm,
+  // so it is moved in both directions: a guard written `> _offset` instead of `!= _offset`
+  // notices the rise and sleeps through the fall.
+  #if HAS_ZOFFSET_ITEM
+    const float offset_was = BABY_Z_VAR;
+    BABY_Z_VAR = offset_was + 0.5f;
+    TEST_ASSERT_TRUE_MESSAGE(pass() > 0, "raising the babystep offset should reach the panel");
+    TEST_ASSERT_EQUAL_MESSAGE(0, pass(), "and then settle");
+
+    BABY_Z_VAR = offset_was - 0.5f;
+    TEST_ASSERT_TRUE_MESSAGE(pass() > 0, "and lowering it should reach the panel too");
+    TEST_ASSERT_EQUAL_MESSAGE(0, pass(), "and settle again");
+
+    BABY_Z_VAR = offset_was;
+    pass();
+  #endif
 }
 
 // ---------------------------------------------------------------------------
