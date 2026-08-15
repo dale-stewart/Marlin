@@ -65,6 +65,7 @@
 #include "../support/simulated_machine.h"
 #include "../gcode/simulated_sensors.h"
 #include "../gcode/serial_capture.h"
+#include "../support/step_order.h"
 #include "src/feature/pause.h"
 #include "src/module/motion.h"
 #include "src/module/planner.h"
@@ -329,6 +330,111 @@ MARLIN_TEST(pause, an_unhomed_machine_pauses_without_parking) {
     "but the nozzle must not be sent to coordinates the machine cannot know, in X");
   TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, before.y, motion.position.y,
     "or in Y");
+}
+
+/**
+ * The filament is pulled back before the nozzle leaves the print — but only if it can be.
+ *
+ * A hot nozzle left sitting over the part oozes, and the ooze lands on whatever is below it. The
+ * retract before parking is what stops that, and it is the one part of `pause_print()` that
+ * touches the filament rather than the machine.
+ *
+ * Both arms of `if (retract && hotEnoughToExtrude(...))`, because they fail in opposite and
+ * equally expensive ways. Skipping the retract on a hot nozzle leaves a blob on the print;
+ * performing it on a cold one drives the drive gear into filament that cannot move, which is how
+ * the extruder gets chewed flat.
+ *
+ * Measured in **pulses on the step pin** rather than in `motion.position.e`. That is not
+ * fastidiousness: it is the instrument that survives the `sync_plan_position_e()` at the end of a
+ * resume, and using the same one for both halves keeps them comparable.
+ */
+MARLIN_TEST(pause, a_hot_nozzle_is_retracted_before_parking_and_a_cold_one_is_not) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  PausedMachine paused;
+
+  {
+    StepOrder steps;
+    a_machine_printing_at(PRINT_X, PRINT_Y, PRINT_Z);
+    steps.forget();
+
+    pause_print(2, the_park_point());
+    planner.synchronize();
+
+    TEST_ASSERT_TRUE_MESSAGE(steps.e.moved(),
+      "a hot nozzle should have its filament pulled back before the tool parks");
+  }
+
+  did_pause_print = 0;
+
+  {
+    // The same pause on a nozzle too cold to extrude through.
+    SimulatedSensors::hotend_reads(25.0f);
+    thermalManager.setTargetHotend(0, 0);
+    for (uint16_t i = 0; i < 500; i++) { HAL_test_advance_millis(1); thermalManager.task(); }
+    TEST_ASSERT_FALSE_MESSAGE(thermalManager.hotEnoughToExtrude(0),
+      "this half of the test is about a nozzle that cannot extrude");
+
+    StepOrder steps;
+    pause_print(2, the_park_point());
+    planner.synchronize();
+
+    TEST_ASSERT_FALSE_MESSAGE(steps.e.moved(),
+      "a cold nozzle must not be retracted - the filament cannot move and the gear chews it");
+  }
+}
+
+/**
+ * Resuming purges the length it was asked for, and the length is what varies.
+ *
+ * After a filament change the first material through the nozzle is whatever was left in it, so a
+ * purge pushes that out before printing resumes. Too little and the print restarts with the old
+ * colour; the amount is the whole parameter.
+ *
+ * Asserted as a **difference between two resumes** rather than as an absolute count, because a
+ * resume moves the filament three other times — the retract before returning, the unretract
+ * after, and the restoration of the extruder position. Subtracting one run from the other leaves
+ * exactly the purge, and the assertion is that it scales with what was asked: the steps for a
+ * 5 mm purge minus the steps for none should be 5 mm worth, at the fixture's own resolution.
+ */
+MARLIN_TEST(pause, resuming_purges_the_length_it_was_asked_for) {
+  SimulatedMachine machine;
+  SimulatedSensors sensors;
+  PausedMachine paused;
+
+  size_t without_purge = 0, with_purge = 0;
+
+  {
+    StepOrder steps;
+    a_machine_printing_at(PRINT_X, PRINT_Y, PRINT_Z);
+    pause_print(0, the_park_point());
+    planner.synchronize();
+    steps.forget();
+    resume_print(0, 0, 0, 0, 0, /*show_lcd=*/false);
+    planner.synchronize();
+    without_purge = steps.e.steps;
+  }
+
+  {
+    StepOrder steps;
+    a_machine_printing_at(PRINT_X, PRINT_Y, PRINT_Z);
+    pause_print(0, the_park_point());
+    planner.synchronize();
+    steps.forget();
+    resume_print(0, 0, 5, 0, 0, /*show_lcd=*/false);
+    planner.synchronize();
+    with_purge = steps.e.steps;
+  }
+
+  const long extra = long(with_purge) - long(without_purge);
+  const long expected = long(5.0f * SimulatedMachine::STEPS_PER_MM);
+
+  char msg[160];
+  snprintf(msg, sizeof(msg),
+           "a 5 mm purge should push 5 mm of filament: %lu steps without, %lu with, %ld extra "
+           "against %ld expected",
+           (unsigned long)without_purge, (unsigned long)with_purge, extra, expected);
+  TEST_ASSERT_INT_WITHIN_MESSAGE(long(SimulatedMachine::STEPS_PER_MM / 2), expected, extra, msg);
 }
 
 #endif // ADVANCED_PAUSE_FEATURE

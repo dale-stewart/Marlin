@@ -38,6 +38,55 @@ that the tool comes back, so the tests move the machine, pause it, and look at w
 - **An unhomed machine pauses without parking.** Coordinates mean nothing before homing, so the
   print still stops — that part is right — but the move does not happen.
 
+## Mutation tested: 38.2% raw, 25% by assertion — opened, **not** closed
+
+Six tests now. Two rounds: 27.9% raw, then 38.2%. **Quote the killed-by-assertion figure**, as for
+`temperature.cpp`: 27 of the original 57 detections were timeouts, so the honest opening number was
+14.7%, not 27.9%. It is 25% now (51 of 204).
+
+The first round's clusters were one category almost exactly — this fork's own **"separate
+needs-an-assertion from needs-an-input"**. The four original tests pass zero for every optional
+parameter, so the interesting arm of each guard had never run:
+
+| cluster | wanted |
+|---|---|
+| `:281` `purge_length > 0` | a non-zero purge |
+| `:683` `targetTemp > 0` | a resume temperature |
+| `:724` `resume_position.e < 0` | a machine paused mid-retraction |
+| `:469` `retract && hotEnoughToExtrude` | a non-zero retract |
+
+Two tests supplied two of those and killed 21 survivors:
+
+- **A hot nozzle is retracted before parking and a cold one is not.** Both arms, because they fail
+  in opposite and equally expensive ways — skipping it on a hot nozzle leaves a blob on the print,
+  performing it on a cold one drives the gear into filament that cannot move.
+- **Resuming purges the length it was asked for**, asserted as the *difference between two
+  resumes* rather than an absolute count, because a resume moves filament three other times. The
+  subtraction leaves exactly the purge, and the claim is that it scales with what was asked.
+
+**`StepOrder` grew an E span for this**, and the reason is the documented trap rather than
+convenience: `resume_print()` ends in `sync_plan_position_e()`, so `stepper.position(E_AXIS)` reads
+the same before and after and reports that no filament moved. Pulses on the step pin are re-based
+by nothing.
+
+### Why it stops here
+
+The remaining clusters need **fixtures that do not exist**, not assertions:
+
+- `:683` (12) and `:164` (7) need a nozzle that actually *heats*. The sensor here is pinned to a
+  value, and `ensure_safe_temperature(false)` spins until `|current - target| <= TEMP_WINDOW` — so
+  the moment a test raises the target, the wait can never be satisfied. Reaching these needs the
+  simulated heater plant driving the reading, not a fixed one.
+- `:724` (10) needs the machine paused *mid-retraction*, so that the saved extruder position is
+  negative and the resume has to undo it.
+- `:312` (8) needs a stand-in for the **host** answering the "Purge More / Resume" prompt — the
+  same fixture the `M876` path wants.
+- `:331` (5) is `safe_delay(100)`, which is the documented "a call with no return value and no
+  message is asserted on the clock or not at all".
+
+So `pause.cpp` is **opened, not closed**, and the honest next step for it is a fixture round rather
+than a test round.
+
 ## What it costs to run this file at all
 
 Three fixture traps, each of which presented as a **stall rather than a failure**, and each of

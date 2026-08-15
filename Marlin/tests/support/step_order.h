@@ -60,6 +60,9 @@ public:
       #if HAS_Z_AXIS
         case Z_STEP_PIN: note(z, ev.timestamp); break;
       #endif
+      #if HAS_EXTRUDERS
+        case E0_STEP_PIN: note(e, ev.timestamp); break;
+      #endif
       default: break;
     }
   }
@@ -73,10 +76,20 @@ public:
     bool moved() const { return steps > 0; }
   };
 
+  /**
+   * The extruder is counted here for a reason the position axes do not have: code that moves
+   * filament often **re-bases the E counter afterwards**, so `stepper.position(E_AXIS)` reads the
+   * same before and after and reports that nothing happened. Pulses on the pin are not re-based
+   * by anything, which makes this the only instrument that can measure a retract or a purge that
+   * ends in a `sync`.
+   */
   Span x, y, z;
+  #if HAS_EXTRUDERS
+    Span e;
+  #endif
 
   // Start again from here, for a test interested in one phase of a longer sequence.
-  void forget() { x = Span(); y = Span(); z = Span(); }
+  void forget() { x = Span(); y = Span(); z = Span(); TERN_(HAS_EXTRUDERS, e = Span()); }
 
   // Did `a` finish everything it was going to do before `b` started?
   //
