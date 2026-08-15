@@ -73,6 +73,7 @@ entries exist precisely because a figure was quoted wrong, or a wall reported th
 | [agents.md](docs/rescue-log/agents.md) | What validating each subagent taught, including the two errors that mattered more than the passes |
 | [embedded-platforms.md](docs/rescue-log/embedded-platforms.md) | What emulating the embedded targets would actually cost, staged. None of it done |
 | [pause-and-filament.md](docs/rescue-log/pause-and-filament.md) | `pause.cpp` and `e_parser.cpp` — the filament change and the emergency stop, plus the fixture fault that made every extruder-only move take hours |
+| [binary-transfer.md](docs/rescue-log/binary-transfer.md) | `binary_stream.h` — the framed packet protocol behind firmware upload. Opened, not closed |
 | [survey-2026-08-14.md](docs/rescue-log/survey-2026-08-14.md) | **What is left, measured.** Only 128 of 799 source files are compiled by any configuration — so every whole-tree figure is over a sixth of the tree. Ranked candidates |
 
 Behaviour found and recorded rather than changed is in `docs/defect-register.md`, and the skill
@@ -117,7 +118,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 767, 777, 802, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 767, 777, 805, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
