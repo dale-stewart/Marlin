@@ -15,6 +15,23 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
 
   Two runs at different timeouts are no more comparable than two runs over different
   covered-line sets. Store both in the results, and print both next to the score.
+- **Check what your mutation tool can actually see, and whether it matches what coverage sees.**
+  The two instruments usually work at different granularities: coverage is attributed to source
+  *lines* wherever they end up, while mutation is applied to a *compiled unit*. Anything that is
+  compiled indirectly — code in headers, templates, generated sources, macro-expanded bodies,
+  anything inlined from elsewhere — can therefore show a coverage figure and be entirely beyond
+  the mutation run.
+
+  That makes a score of the form "this component is N% killable" narrower than it sounds: it
+  covers the unit that was mutated, not the component. Where a language or project keeps
+  substantial logic outside the primary unit, say which part the number is about, and count how
+  much sits outside it before treating a target as closed.
+
+  Verify it rather than assume either way. Point the tool at a header (or equivalent) and see what
+  happens: exiting with a clear message is the good case, because then absence of measurement is
+  visible. Silent success on a target that was never really mutated is the bad one, and the tell
+  is a suspiciously perfect score over a suspiciously small mutant population.
+
 - **Do not estimate a run's duration from its first minute.** A parallel mutation run opens with
   every worker doing a cold compile at once, so the early rate is several times below the steady
   state and extrapolating it overstates the total badly — ours read as six hours during warm-up

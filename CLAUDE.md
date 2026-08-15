@@ -260,6 +260,30 @@ is blocked by PEP 668 on this machine).
 
 ### Gotchas that have cost real time
 
+- **Mutation cannot reach code in headers, and coverage can — so every killable score here is
+  about the `.cpp` alone.** `mutation_test.py` looks its target up in `compile_commands.json`,
+  and a header is not compiled directly, so it exits with
+  `... is not in compile_commands.json — is it compiled into this env?`. It fails loudly, which
+  is the one good thing about this: there are no silently wrong numbers, only unmeasured ones.
+
+  But `gcovr` *does* report headers, with real figures — `core/mstring.h` 73%, `core/serial.h`
+  88%, `gcode/parser.h` 81%. So inline logic in a header is coverage-visible and
+  mutation-invisible, and **any figure in the rescue log of the form "closed at N% killable"
+  covers the `.cpp` and says nothing about its header.** That qualification applies to targets
+  already declared closed: `core/serial.cpp` at 100% killable sits beside `serial.h` (96 lines)
+  and `serial_base.h` (79); `parser.cpp` at ~83% sits beside `parser.h` (303 lines, 26 branch
+  constructs); `mstring.h` is where register #41 lived.
+
+  Nine headers in this tree carry 25 or more branch constructs, and the ones that matter are
+  `binary_stream.h` (370 lines), `runout.h` (368), `parser.h` (303) and `temperature.h` (1159).
+  Before quoting a target as closed, check whether its logic is in the `.cpp` at all.
+
+  Fixing the runner is possible but not cheap. Only the *including* translation unit needs
+  rebuilding per mutant, but Marlin's headers are included by relative path, so a shadow include
+  directory does not override them — which leaves either serial in-place swapping (correct, far
+  too slow) or a per-worker copy of the source tree (fast, about a gigabyte across the workers).
+  Neither is done.
+
 - **A cold nozzle makes the *planner* drop the E part of a move, silently.**
   `planner.cpp:1850` — `tooColdToExtrude()` sets `position.e = target.e` and zeroes
   `steps_dist.e`, so the firmware's idea of the filament position advances as though the
