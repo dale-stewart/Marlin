@@ -268,4 +268,177 @@ MARLIN_TEST(emergency_parser, a_longer_command_number_starting_with_M112_also_ha
     "the same shape on M410, so this is the state machine's rule rather than one bad arm");
 }
 
+/**
+ * A carriage return ends a line as well as a newline.
+ *
+ * Hosts and files disagree about line endings — `\n`, `\r\n`, and bare `\r` all arrive in
+ * practice — and the emergency stop is the last command that should care. `ISEOL()` accepts
+ * either, and a version that only recognised `\n` would leave a whole class of senders with no
+ * emergency stop at all, silently, while working perfectly on the developer's terminal.
+ */
+MARLIN_TEST(emergency_parser, a_carriage_return_ends_the_line_too) {
+  ParserFlags flags;
+
+  feed("M112\r");
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::killed_by_M112,
+    "a bare carriage return should end the line and halt the machine");
+
+  EmergencyParser::killed_by_M112 = false;
+  feed("G1 X1\rM112\r\n");
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::killed_by_M112,
+    "and an ignored line ended by a carriage return should not swallow the next one");
+}
+
+/**
+ * A negative line number does not throw the parser off.
+ *
+ * `N-1` is what a host sends to reset the line numbering, and the parser accepts `-` inside the
+ * number for exactly that reason. It is one character in a `case` list and invisible from
+ * anywhere else — but a parser that dropped to `EP_IGNORE` on it would ignore the rest of that
+ * line, and the line a host attaches to a numbering reset is often the one that matters.
+ */
+MARLIN_TEST(emergency_parser, a_negative_line_number_is_tolerated) {
+  ParserFlags flags;
+
+  feed("N-1 M112\n");
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::killed_by_M112,
+    "a line-number reset followed by M112 should still halt the machine");
+}
+
+/**
+ * A command that diverges from an emergency command before the end is rejected.
+ *
+ * `M411` shares every state with `M410` until its final character, which is where the state
+ * machine must drop it. This is the case that separates "diverges early" from defect #59's
+ * "diverges after the number is already complete" — the first is handled correctly and the second
+ * is not, and having both pinned is what makes the register entry a statement about *where* the
+ * boundary is rather than a vague complaint.
+ */
+MARLIN_TEST(emergency_parser, a_command_that_diverges_before_the_end_is_rejected) {
+  ParserFlags flags;
+
+  feed("M411\n");
+  TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::quickstop_by_M410,
+    "M411 diverges from M410 at the last character and should be rejected");
+
+  feed("M410\n");
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::quickstop_by_M410,
+    "while M410 itself still works, so the rejection is selective rather than total");
+}
+
+/**
+ * The parser lets go of a command once it has acted on it.
+ *
+ * The terminal states are sticky by design (defect #59), so the *reset* after acting is the only
+ * thing that ends them. Without it the machine would stay in `EP_M410` for ever and fire a
+ * quickstop at the end of **every subsequent line** — one emergency command would turn into an
+ * unstoppable stutter that no later command could clear, and the printer would be unusable until
+ * power-cycled.
+ *
+ * Asserted on `M410` rather than `M112`, because a halted machine cannot demonstrate a second
+ * halt: `killed_by_M112` is already set and the assertion could not tell a repeat from the
+ * original.
+ */
+MARLIN_TEST(emergency_parser, the_parser_lets_go_of_a_command_after_acting_on_it) {
+  ParserFlags flags;
+
+  // The state must be carried from one line to the next, because that is the whole claim: the
+  // parser has to *arrive* at the second line having let go of the first. Starting the second
+  // line from a fresh state asserts nothing — which is what the first draft did, and the mutant
+  // that deletes the reset survived it.
+  const EmergencyParser::State after_the_stop = feed("M410\n");
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::quickstop_by_M410, "the quickstop should be requested");
+
+  EmergencyParser::quickstop_by_M410 = false;
+  feed("G1 X10 Y10\n", after_the_stop);
+  TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::quickstop_by_M410,
+    "an ordinary move after M410 must not request another quickstop - the parser has to have "
+    "let go of the command it already acted on");
+}
+
+/**
+ * Rubbish before the command does not become the command.
+ *
+ * Anything unrecognised sends the parser to `EP_IGNORE`, and it must stay there for the **whole**
+ * line. A version that resynchronised on the next character would find `M112` inside any line
+ * containing those characters — a filename, a comment, a checksum — and halt a print for it. The
+ * two leading characters matter: with only one, a parser that reset immediately would consume the
+ * `M` while resetting and still not fire, so the fault would hide.
+ */
+MARLIN_TEST(emergency_parser, rubbish_before_a_command_does_not_become_the_command) {
+  ParserFlags flags;
+
+  feed("XXM112\n");
+  TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::killed_by_M112,
+    "M112 embedded in an unrecognised line must not halt the machine");
+
+  feed("; M112 in a comment\n");
+  TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::killed_by_M112,
+    "nor should a commented one");
+}
+
+/**
+ * The action waits for end-of-line even when more characters arrive.
+ *
+ * A trailing character is what separates "fires when the number is complete" from "fires when the
+ * line is complete", and only the second is correct — the parser cannot know whether it is looking
+ * at `M112` or `M1120` until the line ends. This is the same claim the first test makes, one
+ * character further on, and it is the character that distinguishes the two implementations.
+ */
+MARLIN_TEST(emergency_parser, a_trailing_character_does_not_trigger_the_action_early) {
+  ParserFlags flags;
+
+  // The state has to be carried between the two halves: `feed()` starts a fresh line unless it is
+  // given somewhere to start from, and the first draft of this test began a new line for the
+  // newline — which reset the parser and asserted nothing at all.
+  const EmergencyParser::State part_way = feed("M112 ");
+  TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::killed_by_M112,
+    "M112 followed by a space and no newline has not finished arriving");
+
+  feed("\n", part_way);
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::killed_by_M112,
+    "and completing the line is what makes it act");
+}
+
+/**
+ * A digit in the wrong place is not skipped over.
+ *
+ * `M3112` and `M1312` are the two ways a stray digit can land inside the command number. Both must
+ * be abandoned outright — a parser that merely ignored the odd character and carried on matching
+ * would find `M112` inside a great deal of ordinary G-code, and each of these lines corresponds to
+ * one arm of the state machine giving up.
+ */
+MARLIN_TEST(emergency_parser, a_stray_digit_inside_the_command_number_abandons_the_line) {
+  ParserFlags flags;
+
+  for (const char * const line : { "M3112\n", "M1312\n", "M9 112\n" }) {
+    EmergencyParser::killed_by_M112 = false;
+    feed(line);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "%s should not halt the machine", line);
+    TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::killed_by_M112, msg);
+  }
+
+  // ...and M41 followed by anything other than a zero is likewise abandoned, which is the same
+  // rule one command along.
+  feed("M41 \n");
+  TEST_ASSERT_FALSE_MESSAGE(EmergencyParser::quickstop_by_M410,
+    "M41 followed by a space is not M410 and should not request a quickstop");
+}
+
+/**
+ * A line number containing a zero is still a line number.
+ *
+ * The digits are one `case` range, and a range is exactly the kind of thing that is written with
+ * an off-by-one and never noticed: every host numbers lines from 1, so `N10` is the first line
+ * where a missing `'0'` would bite — and it would bite by ignoring the rest of that line.
+ */
+MARLIN_TEST(emergency_parser, a_line_number_containing_a_zero_is_still_a_line_number) {
+  ParserFlags flags;
+
+  feed("N100 M112\n");
+  TEST_ASSERT_TRUE_MESSAGE(EmergencyParser::killed_by_M112,
+    "a line number with zeroes in it should not stop M112 being seen");
+}
+
 #endif // EMERGENCY_PARSER

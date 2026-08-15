@@ -129,6 +129,30 @@ the commented form would be worse than the defect. Latent, because none of `M112
 `M1080`, `M5240` is a real command and no host sends one — but a file can contain one, and the
 consequence is a print halted at a line that meant nothing.
 
+**Mutation tested and closed: 84.8% raw, 100% killable (67/79 testable).** Sixteen tests now,
+reached in three rounds — 69.6%, then 75.9%, then 84.8% — each round measured by re-running the
+*previous* survivor list, which is the only fixed population to count against.
+
+All twelve remaining survivors are equivalent, with reasons:
+
+- **Ten on one line.** `TERN0(GCODE_CASE_INSENSITIVE, WITHIN(c, 'a', 'z')) ? c + 'A' - 'a' : c`
+  with the option off is `0 ? ... : c` — the preprocessor erases the condition, so every mutant of
+  it and of the arithmetic computes `c`. Killable only by a configuration that accepts lowercase
+  G-code, not by any test.
+- **Two fall-throughs that reach identical code.** Deleting `case EP_IGNORE:` sends that state to
+  `default:`, which resets on end-of-line and does nothing otherwise — exactly what the case did.
+  Deleting its `break;` falls into the same `default:`, which repeats a check that has already had
+  its effect. Equivalent by construction rather than by reachable range.
+
+**Two of the tests written for this file did not kill what they were written for, and both for the
+same reason** — worth recording because the mistake is invisible in a green run. The helper
+`feed()` starts a fresh line unless given a state to continue from, so any claim about *state
+carried across a line boundary* has to thread it. The trailing-character test began a new line for
+its newline and asserted nothing; the "lets go of a command" test started the second line from
+`EP_RESET` and so could never see a missing reset. Both passed. Only the mutation run said
+otherwise — the mutant deleting `state = EP_RESET` survived a test whose entire purpose was to
+kill it.
+
 **The flags are latches, and that cost a third leak.** `killed_by_M112` is read by the queue, which
 halts the machine; nothing clears it but the code that acts on it. The one failing assertion above
 skipped its fixture's destructor and left it set, and the run went from 767 tests in 13 s to **186

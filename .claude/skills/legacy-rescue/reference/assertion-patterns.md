@@ -252,6 +252,22 @@ substantial and say nothing.
   fixture rather than a debounce. Let time pass between steps, the way the hand that would
   really be doing it does.
 
+- **A helper that resets by default cannot test what persists.** Test helpers for stateful code
+  usually take the convenient form: start from the beginning, run the input, return. That is right
+  for most cases and silently wrong for the ones that matter most — anything asserting that state
+  *carries* from one unit of input to the next. Feeding the second half from a fresh start asserts
+  only that the second half works on its own, which it does, so the test passes and says nothing.
+
+  Two tests here were written specifically to kill two mutants, passed, and killed neither: one
+  about a value surviving to the end of an input, one about a machine releasing state after acting
+  on it. Both fed their second stage from a clean start. Nothing in a green run distinguishes that
+  from a working test — the mutation score is what said so, which is the clearest case for
+  measuring rather than trusting a test you have just written.
+
+  Give the helper an optional starting state and *return* the ending one, so continuing is
+  possible and visible at the call site. Then any test whose subject is persistence has to thread
+  it explicitly, and one that does not is obvious on the page.
+
 - **A shared probe has a question it answers; where that question does not apply, the probe
   weakens the claim instead of failing.** Once a family of call sites has one reusable helper —
   the walk, the round trip, the sweep — the temptation is to point it at every member. But a
