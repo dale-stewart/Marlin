@@ -73,10 +73,26 @@ by nothing.
 
 The remaining clusters need **fixtures that do not exist**, not assertions:
 
-- `:683` (12) and `:164` (7) need a nozzle that actually *heats*. The sensor here is pinned to a
-  value, and `ensure_safe_temperature(false)` spins until `|current - target| <= TEMP_WINDOW` — so
-  the moment a test raises the target, the wait can never be satisfied. Reaching these needs the
-  simulated heater plant driving the reading, not a fixed one.
+- `:683` (12) and `:164` (7) need a nozzle that actually *heats*, and **this was attempted and
+  withdrawn** — the attempt is the useful part. The sensor in these tests is pinned to a value, and
+  `ensure_safe_temperature(false)` spins until `|current - target| <= TEMP_WINDOW`, so the moment a
+  test raises the target the wait can never be satisfied. `SimulatedHotend` — a first-order plant
+  already used by the temperature tests — looks like the answer and is not sufficient on its own:
+
+      ensure_safe_temperature -> idle -> Temperature::task -> manage_hotends
+        -> _temp_error(MSG_ERR_HEATING_FAILED) -> loud_kill -> kill -> minkill
+          -> waiting for the kill button
+
+  Raising the target arms the **heat-up watchdog**, which decides the heater has failed and kills
+  the machine — and `minkill()` then waits for an operator, so the suite stalls rather than fails.
+  A test of the resume temperature therefore needs the plant *and* a settling regime the watchdog
+  accepts, and probably `OperatorPressesKill` standing by. That is a fixture round of its own, not
+  a parameter on an existing test.
+
+  Two process notes from the attempt, both already-known traps walked into again: the stall was
+  diagnosed twice from a **stale binary**, because the build had been killed before it relinked and
+  the line numbers in the stack no longer matched the source. Check the binary's timestamp against
+  the source before reading a stack.
 - `:724` (10) needs the machine paused *mid-retraction*, so that the saved extruder position is
   negative and the resume has to undo it.
 - `:312` (8) needs a stand-in for the **host** answering the "Purge More / Resume" prompt — the
