@@ -32,6 +32,24 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
   visible. Silent success on a target that was never really mutated is the bad one, and the tell
   is a suspiciously perfect score over a suspiciously small mutant population.
 
+- **When the target is generic, the test chooses which copy it measures — and it will not choose
+  the production one by accident.** Anything instantiated per type or per parameter (templates,
+  generics, macro-generated code) is compiled once per instantiation, and coverage counts each
+  separately. A test that supplies its own parameter because nothing forced it to supplies one the
+  production code never uses, so it exercises a copy of its own: every assertion holds, the tests
+  pass, and the report shows the copy the product actually builds still at zero.
+
+  It is quiet in both directions. The denominator inflates, because the file's lines are counted
+  once per instantiation, so the percentage understates by a factor nobody thinks to look for. And
+  the *uncovered* line list names lines the tests plainly do exercise — which reads as a broken
+  coverage build rather than as what it is. Ours reported the reply path uncovered in a test that
+  asserted on the reply.
+
+  The rule is to take the instantiation from production rather than pick one: use the same type,
+  the same constant, the same buffer the real caller passes, and say in the test why that value and
+  not another. The tell, if you have already got it wrong, is a total line count for one file that
+  is a clean multiple of what the file actually contains.
+
 - **Do not estimate a run's duration from its first minute.** A parallel mutation run opens with
   every worker doing a cold compile at once, so the early rate is several times below the steady
   state and extrapolating it overstates the total badly — ours read as six hours during warm-up

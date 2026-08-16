@@ -114,9 +114,15 @@ namespace {
    * packet has to fit — which is why the payloads here are short. `receive()` is called twice
    * because a single call returns as soon as the data runs out, and the state machine may need
    * another pass to reach the state that answers.
+   *
+   * **The buffer is `MAX_CMD_SIZE` because `receive()` is a template on its length**, so its size
+   * chooses which instantiation runs. A test that picked its own size would compile and pass while
+   * covering a copy of the reader that the firmware never builds — the assertions would hold, and
+   * the coverage report would show the real one untouched. This is the same buffer the queue
+   * hands it.
    */
   std::string send(const std::vector<uint8_t> &bytes) {
-    static char line_buffer[256];
+    static char line_buffer[MAX_CMD_SIZE];
     SerialCapture reply;
     for (const uint8_t b : bytes) MYSERIAL1.receive_buffer.write(b);
     binaryStream[card.transfer_port_index.index].receive(line_buffer);
@@ -139,6 +145,7 @@ namespace {
     static void reset() {
       MYSERIAL1.receive_buffer.clear();
       binaryStream[card.transfer_port_index.index].reset();
+      card.flag.binary_mode = false;
     }
   };
 
@@ -214,6 +221,144 @@ MARLIN_TEST(binary_stream, a_packet_with_a_damaged_payload_is_refused_and_said_s
   TEST_ASSERT_TRUE_MESSAGE(said(reply, "payload corrupt"),
     "a payload that fails its checksum should be refused, and named as the payload rather than "
     "the header - a sender uses the difference to decide what to resend");
+}
+
+/**
+ * A packet that arrives intact and in step is acknowledged by number, and the stream moves on.
+ *
+ * `ok<n>` is the only thing that tells a sender the packet is safely in — it is what releases the
+ * next one and what a resend is triggered by the absence of. The number matters as much as the
+ * word: a sender with several packets outstanding uses it to decide which one was received.
+ *
+ * The packet used here is `CLOSE`, which leaves binary mode. That gives the acknowledgement a
+ * *companion*: the reply says the packet was accepted, and the mode change says it was acted on.
+ * Asserting only the reply would pass on a reader that acknowledged everything and did nothing.
+ */
+MARLIN_TEST(binary_stream, an_accepted_packet_is_acknowledged_by_number_and_acted_on) {
+  FreshStream stream;
+  card.flag.binary_mode = true;
+
+  const std::string first = send(packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE));
+  TEST_ASSERT_TRUE_MESSAGE(said(first, "ok0"),
+    "an intact, in-step packet should be acknowledged by its sequence number");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.binary_mode,
+    "and acted on - a close packet leaves binary mode, which is what makes the acknowledgement "
+    "more than a reply to itself");
+
+  // The stream is now expecting packet 1, so 1 is what the next acknowledgement must name.
+  card.flag.binary_mode = true;
+  const std::string second = send(packet(1, PROTOCOL_CONTROL, CONTROL_CLOSE));
+  TEST_ASSERT_TRUE_MESSAGE(said(second, "ok1"),
+    "and the sequence number advances - a sender with packets outstanding uses the number to "
+    "tell which one arrived");
+}
+
+/**
+ * A packet the sender resent because the acknowledgement was lost is acknowledged again, and its
+ * payload is dropped.
+ *
+ * This is the guarantee that makes the protocol safe to lose bytes on. The sender cannot tell a
+ * lost packet from a lost acknowledgement, so it resends; if the printer acted on the resend, the
+ * data would be written twice. For a firmware image that is a corrupted image from a link that
+ * never actually dropped anything.
+ *
+ * The reader accepts one sequence number behind and answers without dispatching. Observing "not
+ * dispatched" needs an effect to look for, so binary mode is put back on between the two: if the
+ * resent close were acted on, it would come off again.
+ */
+MARLIN_TEST(binary_stream, a_resent_packet_is_acknowledged_again_but_not_acted_on_twice) {
+  FreshStream stream;
+  card.flag.binary_mode = true;
+
+  send(packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE));   // received and acted on; sync is now 1
+  card.flag.binary_mode = true;
+
+  const std::string again = send(packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE));
+
+  TEST_ASSERT_TRUE_MESSAGE(said(again, "ok0"),
+    "a packet resent because its acknowledgement was lost should be acknowledged again - the "
+    "sender cannot tell a lost packet from a lost reply, and needs the same answer either way");
+  TEST_ASSERT_TRUE_MESSAGE(card.flag.binary_mode,
+    "but must not be acted on twice - a duplicate applied is a duplicate written into the file, "
+    "which is how a link that dropped nothing still corrupts an upload");
+}
+
+/**
+ * A packet from the wrong place in the sequence is refused, named, and a resend asked for.
+ *
+ * Silently accepting it would splice the file together in the wrong order — every byte intact,
+ * every checksum passing, and the result wrong. So the sequence number is a guarantee in its own
+ * right, and the reply carries the number the stream actually wants rather than the one that
+ * arrived: a sender needs to know where to restart, not merely that it was wrong.
+ */
+MARLIN_TEST(binary_stream, a_packet_out_of_sequence_is_refused_and_a_resend_requested) {
+  FreshStream stream;
+
+  const std::string reply = send(packet(7, PROTOCOL_CONTROL, CONTROL_CLOSE));
+
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "out of order"),
+    "a packet from the wrong place in the sequence should be refused as out of order - accepting "
+    "it would assemble the file wrongly with every checksum passing");
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "rs0"),
+    "and the resend request should name the sequence number the stream wants, not the one that "
+    "arrived - the sender needs to know where to restart");
+  TEST_ASSERT_FALSE_MESSAGE(said(reply, "ok"),
+    "and it must not also be acknowledged");
+}
+
+/**
+ * Once a resend has been asked for, further out-of-step packets are dropped without a word.
+ *
+ * This is deliberate and easy to read as a bug. A flow-controlled link may already have several
+ * packets in flight when the resend request goes out; answering each of them would produce a
+ * resend request per packet, and the sender would resend the whole run again. So after the first
+ * request the reader stays quiet until the sequence it asked for arrives.
+ *
+ * The cost is that a genuinely desynchronised stream is silent rather than diagnostic, which is
+ * why this is worth pinning: it is a design choice, and a test is what stops it being "fixed".
+ */
+MARLIN_TEST(binary_stream, after_a_resend_request_further_stray_packets_are_dropped_silently) {
+  FreshStream stream;
+
+  send(packet(7, PROTOCOL_CONTROL, CONTROL_CLOSE));   // asks for a resend, and starts counting
+
+  const std::string second = send(packet(9, PROTOCOL_CONTROL, CONTROL_CLOSE));
+
+  TEST_ASSERT_FALSE_MESSAGE(said(second, "out of order"),
+    "a second stray packet should be dropped without comment - packets already in flight when "
+    "the resend request went out would otherwise each provoke another request");
+  TEST_ASSERT_FALSE_MESSAGE(said(second, "rs"),
+    "and without a second resend request, which the sender would answer by resending the run");
+}
+
+/**
+ * The stream asks for a resend for ever; it never declares the transfer failed.
+ *
+ * `max_retries` is 0, and the guard reads `packet_retries < max_retries || max_retries == 0`, so
+ * the zero is not "no retries" but "no limit". The `fe` reply and the reset behind it are
+ * therefore unreachable in the shipped firmware, and a transfer that cannot resynchronise leaves
+ * the printer waiting rather than reporting.
+ *
+ * Recorded rather than changed: the register entry is what carries the argument, and this test is
+ * what pins the behaviour so a change to it is visible.
+ *
+ * Corrupt headers are what drive the count, because they are refused on their own terms rather
+ * than through the sequence check — so unlike a stray packet each one reaches the resend path and
+ * increments the retry counter. Sixteen consecutive failures is well past any plausible limit.
+ */
+MARLIN_TEST(binary_stream, the_stream_never_declares_a_transfer_failed) {
+  FreshStream stream;
+
+  std::string last;
+  for (int i = 0; i < 16; ++i) {
+    last = send(packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE, "", /*corrupt_header=*/true));
+    TEST_ASSERT_TRUE_MESSAGE(said(last, "rs0"),
+      "every failed packet should draw another resend request, however many have failed already");
+  }
+
+  TEST_ASSERT_FALSE_MESSAGE(said(last, "fe"),
+    "and the stream should never give up - max_retries is 0, which this guard reads as no limit "
+    "rather than no retries, so the failure reply cannot be reached");
 }
 
 #endif // BINARY_FILE_TRANSFER

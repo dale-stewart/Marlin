@@ -68,12 +68,80 @@ independent**: forcing the header check true fails only the header test, forcing
 true fails only the payload test. Two tests that both merely detected "something was rejected"
 would have failed together.
 
+## Second slice (2026-08-16): the sequence number, and a measurement fault
+
+Five more tests, covering what the first slice left: the acknowledgement, the resend, and the
+retry policy. All of it is the *sequence number* rather than the checksums — the second of the two
+things the protocol guarantees, and the one whose failures are silent. A checksum failure produces
+a rejected packet; a sequence failure produces a file assembled in the wrong order with every
+checksum passing.
+
+- **`ok<n>` acknowledges an accepted packet, and the number advances.** Asserted against a `CLOSE`
+  packet, so the reply has a *companion*: the reply says accepted, and leaving binary mode says
+  acted on. Asserting the reply alone would pass on a reader that acknowledged everything and did
+  nothing.
+- **A resent packet is acknowledged again and not acted on twice.** The guarantee that makes the
+  protocol safe to lose bytes on: a sender cannot distinguish a lost packet from a lost
+  acknowledgement, so it resends, and a printer that applied the resend would write the data twice
+  — a corrupted upload from a link that dropped nothing. The reader accepts one behind and answers
+  without dispatching. Binary mode is switched back on between the two sends, so "not dispatched"
+  has something to be observed by.
+- **An out-of-sequence packet draws `Datastream packet out of order` and `rs0`** — and the resend
+  request names the number the stream *wants*, not the one that arrived, because a sender needs to
+  know where to restart.
+- **After a resend request, further strays are dropped silently.** Deliberate, and easy to read as
+  a bug: a flow-controlled link may have several packets already in flight, and answering each
+  would provoke a resend of the whole run. The cost is that a desynchronised stream is silent
+  rather than diagnostic, which is why it is pinned.
+- **The stream never declares a transfer failed** — see the register entry below.
+
+Verified by injection, four of them, each failing exactly one test and no other:
+re-dispatching the resent packet; disabling the in-flight drop; making `max_retries` a real limit;
+dropping the sequence number from the acknowledgement.
+
+### Register #60: `max_retries` is 0, and 0 means *no limit*
+
+`static const uint16_t max_retries = 0`, and the guard is
+`if (packet_retries < max_retries || max_retries == 0)`. So the zero does not mean "do not retry",
+it means "retry for ever" — `PACKET_ERROR`, the `fe` reply and the stream reset behind it are all
+unreachable in the shipped firmware. A transfer that cannot resynchronise leaves the printer
+asking for a resend indefinitely rather than reporting a failure the host could act on.
+
+Recorded rather than changed, and pinned by `the_stream_never_declares_a_transfer_failed`. The
+test drives it with sixteen consecutive **corrupt headers** rather than stray sequence numbers,
+because only the checksum path reaches the resend state every time — a stray packet goes quiet
+after the first, as above.
+
+### The measurement fault: the test was covering its own copy of the reader
+
+`receive()` is a template on its buffer length, and the first slice's helper declared
+`static char line_buffer[256]` because 256 was a comfortable size. The firmware's only call site
+passes `MAX_CMD_SIZE`. Those are two instantiations, compiled separately and counted separately,
+**so every test in the first slice exercised a copy of the reader that the firmware never
+builds.** The assertions were all true of a copy.
+
+It presented as a coverage report that looked broken rather than as a mistake in the test. The
+file read 331 lines where it has 240 — the lines counted twice, once per instantiation — and the
+uncovered list named the sync-reply lines that the very first test asserts on. The natural
+reading is "gcovr is confused"; the correct one is "you measured the other one".
+
+Fixed by taking the length from production rather than choosing it: `char line_buffer[MAX_CMD_SIZE]`,
+with the reason written into the helper so the next person does not tidy it back to a round
+number. The file then reports its real 240 lines, and the same tests read **52%** instead of 37%.
+The whole platform-agnostic tree moved 73.4% -> 74.3% for the same reason — the phantom
+instantiation was in the denominator.
+
+The transferable half is in the skill's `scoring.md`: with a generic target the test chooses which
+instantiation it measures, and left to itself it will not choose the production one.
+
 ## Not done
 
-Two thirds of the file. The untouched parts are the ones with side effects rather than answers:
 `SDFileTransferProtocol` — open, write, close, abort, and the compressed-transfer path — which
-needs a card and a file rather than a reply to assert on. Also untested: the resend and timeout
-paths, and the `ok<n>` acknowledgement of a correctly received payload packet, which needs the
-sequence number advanced deliberately across several packets.
+needs a card and a file rather than a reply to assert on. That is most of what is left, and it is
+a fixture round rather than more tests of the same kind. Also untested: the data-buffer overrun at
+line 363, and the timeout path (`Datastream timeout`), which needs simulated time advanced past
+`packet_max_wait` mid-packet.
 
-No mutation measurement yet, so 30% is line coverage only and should not be read as more.
+Still no mutation measurement, and there cannot be one: the file is a header, so
+`mutation_test.py` cannot reach it. **52% is line coverage and nothing more** — see the header
+gotcha in `CLAUDE.md`.
