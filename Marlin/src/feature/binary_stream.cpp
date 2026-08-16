@@ -27,10 +27,394 @@
 #include "../sd/cardreader.h"
 #include "binary_stream.h"
 
+#if ENABLED(BINARY_STREAM_COMPRESSION)
+  #include "../libs/heatshrink/heatshrink_decoder.h"
+  // STM32 (and others?) require a word-aligned buffer for SD card transfers via DMA
+  static __attribute__((aligned(sizeof(size_t)))) uint8_t decode_buffer[512] = {};
+  static heatshrink_decoder hsd;
+#endif
+
+static bool bs_serial_data_available(const serial_index_t index) {
+  return SERIAL_IMPL.available(index);
+}
+
+static int bs_read_serial(const serial_index_t index) {
+  return SERIAL_IMPL.read(index);
+}
+
+/**
+ * The file half of the protocol: what a payload packet means once its frame has been verified.
+ *
+ * Referenced only by BinaryStream::dispatch(), so it lives here rather than in the header.
+ */
+class SDFileTransferProtocol  {
+private:
+  struct Packet {
+    struct [[gnu::packed]] Open {
+      static bool validate(char *buffer, size_t length) {
+        return (length > sizeof(Open) && buffer[length - 1] == '\0');
+      }
+      static Open& decode(char *buffer) {
+        data = &buffer[2];
+        return *reinterpret_cast<Open*>(buffer);
+      }
+      bool compression_enabled() { return compression & 0x1; }
+      bool dummy_transfer() { return dummy & 0x1; }
+      static char* filename() { return data; }
+      private:
+        uint8_t dummy, compression;
+        static char* data;  // variable length strings complicate things
+    };
+  };
+
+  static bool file_open(char *filename) {
+    if (!dummy_transfer) {
+      card.mount();
+      card.openFileWrite(filename);
+      if (!card.isFileOpen()) return false;
+    }
+    transfer_active = true;
+    data_waiting = 0;
+    TERN_(BINARY_STREAM_COMPRESSION, heatshrink_decoder_reset(&hsd));
+    return true;
+  }
+
+  static bool file_write(char *buffer, const size_t length) {
+    #if ENABLED(BINARY_STREAM_COMPRESSION)
+      if (compression) {
+        size_t total_processed = 0, processed_count = 0;
+        HSD_poll_res presult;
+
+        while (total_processed < length) {
+          heatshrink_decoder_sink(&hsd, reinterpret_cast<uint8_t*>(&buffer[total_processed]), length - total_processed, &processed_count);
+          total_processed += processed_count;
+          do {
+            presult = heatshrink_decoder_poll(&hsd, &decode_buffer[data_waiting], sizeof(decode_buffer) - data_waiting, &processed_count);
+            data_waiting += processed_count;
+            if (data_waiting == sizeof(decode_buffer)) {
+              if (!dummy_transfer)
+                if (card.write(decode_buffer, data_waiting) < 0) {
+                  return false;
+                }
+              data_waiting = 0;
+            }
+          } while (presult == HSDR_POLL_MORE);
+        }
+        return true;
+      }
+    #endif
+    return (dummy_transfer || card.write(buffer, length) >= 0);
+  }
+
+  static bool file_close() {
+    if (!dummy_transfer) {
+      #if ENABLED(BINARY_STREAM_COMPRESSION)
+        // flush any buffered data
+        if (data_waiting) {
+          if (card.write(decode_buffer, data_waiting) < 0) return false;
+          data_waiting = 0;
+        }
+      #endif
+      card.closefile();
+      card.release();
+    }
+    TERN_(BINARY_STREAM_COMPRESSION, heatshrink_decoder_finish(&hsd));
+    transfer_active = false;
+    return true;
+  }
+
+  static void transfer_abort() {
+    if (!dummy_transfer) {
+      card.closefile();
+      card.removeFile(card.filename);
+      card.release();
+      TERN_(BINARY_STREAM_COMPRESSION, heatshrink_decoder_finish(&hsd));
+    }
+    transfer_active = false;
+    return;
+  }
+
+  enum class FileTransfer : uint8_t { QUERY, OPEN, CLOSE, WRITE, ABORT };
+
+  static size_t data_waiting, transfer_timeout, idle_timeout;
+  static bool transfer_active, dummy_transfer, compression;
+
+public:
+
+  static void idle() {
+    // If a transfer is interrupted and a file is left open, abort it after 'idle_period' ms
+    const millis_t ms = millis();
+    if (transfer_active && ELAPSED(ms, idle_timeout)) {
+      idle_timeout = ms + idle_period;
+      if (ELAPSED(ms, transfer_timeout)) transfer_abort();
+    }
+  }
+
+  static void process(uint8_t packet_type, char *buffer, const uint16_t length) {
+    transfer_timeout = millis() + timeout;
+    switch (static_cast<FileTransfer>(packet_type)) {
+      case FileTransfer::QUERY:
+        SERIAL_ECHO(F("PFT:version:"), version_major, C('.'), version_minor, C('.'), version_patch);
+        #if ENABLED(BINARY_STREAM_COMPRESSION)
+          SERIAL_ECHOLN(F(":compression:heatshrink,"), HEATSHRINK_STATIC_WINDOW_BITS, C(','), HEATSHRINK_STATIC_LOOKAHEAD_BITS);
+        #else
+          SERIAL_ECHOLNPGM(":compression:none");
+        #endif
+        break;
+      case FileTransfer::OPEN:
+        if (transfer_active)
+          SERIAL_ECHOLNPGM("PFT:busy");
+        else {
+          if (Packet::Open::validate(buffer, length)) {
+            auto packet = Packet::Open::decode(buffer);
+            compression = packet.compression_enabled();
+            dummy_transfer = packet.dummy_transfer();
+            if (file_open(packet.filename())) {
+              SERIAL_ECHOLNPGM("PFT:success");
+              break;
+            }
+          }
+          SERIAL_ECHOLNPGM("PFT:fail");
+        }
+        break;
+      case FileTransfer::CLOSE:
+        if (transfer_active) {
+          if (file_close())
+            SERIAL_ECHOLNPGM("PFT:success");
+          else
+            SERIAL_ECHOLNPGM("PFT:ioerror");
+        }
+        else SERIAL_ECHOLNPGM("PFT:invalid");
+        break;
+      case FileTransfer::WRITE:
+        if (!transfer_active)
+          SERIAL_ECHOLNPGM("PFT:invalid");
+        else if (!file_write(buffer, length))
+          SERIAL_ECHOLNPGM("PFT:ioerror");
+        break;
+      case FileTransfer::ABORT:
+        transfer_abort();
+        SERIAL_ECHOLNPGM("PFT:success");
+        break;
+      default:
+        SERIAL_ECHOLNPGM("PTF:invalid");
+        break;
+    }
+  }
+
+  static const uint16_t version_major = 0, version_minor = 1, version_patch = 0, timeout = 10000, idle_period = 1000;
+};
+
 char* SDFileTransferProtocol::Packet::Open::data = nullptr;
 size_t SDFileTransferProtocol::data_waiting, SDFileTransferProtocol::transfer_timeout, SDFileTransferProtocol::idle_timeout;
 bool SDFileTransferProtocol::transfer_active, SDFileTransferProtocol::dummy_transfer, SDFileTransferProtocol::compression;
 
+uint8_t BinaryStream::Packet::Header::protocol() { return (meta >> 4) & 0xF; }
+uint8_t BinaryStream::Packet::Header::type() { return meta & 0xF; }
+void BinaryStream::Packet::Header::reset() { token = 0; sync = 0; meta = 0; size = 0; checksum = 0; }
+
+void BinaryStream::Packet::Footer::reset() { checksum = 0; }
+
+void BinaryStream::Packet::reset() {
+  header.reset();
+  footer.reset();
+  bytes_received = 0;
+  checksum = 0;
+  header_checksum = 0;
+  timeout = millis() + packet_max_wait;
+  buffer = nullptr;
+}
+
+void BinaryStream::reset() {
+  sync = 0;
+  packet_retries = 0;
+  buffer_next_index = 0;
+}
+
+// fletchers 16 checksum
+uint32_t BinaryStream::checksum(uint32_t cs, uint8_t value) {
+  uint16_t cs_low = (((cs & 0xFF) + value) % 255);
+  return ((((cs >> 8) + cs_low) % 255) << 8)  | cs_low;
+}
+
+// read the next byte from the data stream keeping track of
+// whether the stream times out from data starvation
+// takes the data variable by reference in order to return status
+bool BinaryStream::stream_read(uint8_t& data) {
+  if (stream_state != StreamState::PACKET_WAIT && ELAPSED(millis(), packet.timeout)) {
+    stream_state = StreamState::PACKET_TIMEOUT;
+    return false;
+  }
+  if (!bs_serial_data_available(card.transfer_port_index)) return false;
+  data = bs_read_serial(card.transfer_port_index);
+  packet.timeout = millis() + packet_max_wait;
+  return true;
+}
+
+void BinaryStream::receive(char * const buffer, const size_t buffer_size) {
+  uint8_t data = 0;
+  millis_t transfer_window = millis() + rx_timeslice;
+
+  #if HAS_MEDIA
+    PORT_REDIRECT(SERIAL_PORTMASK(card.transfer_port_index));
+  #endif
+
+  while (PENDING(millis(), transfer_window)) {
+    switch (stream_state) {
+       /**
+        * Data stream packet handling
+        */
+      case StreamState::PACKET_RESET:
+        packet.reset();
+        stream_state = StreamState::PACKET_WAIT;
+      case StreamState::PACKET_WAIT:
+        if (!stream_read(data)) { idle(); return; }  // no active packet so don't wait
+        packet.header.data[1] = data;
+        if (packet.header.token == packet.header.header_token) {
+          packet.bytes_received = 2;
+          stream_state = StreamState::PACKET_HEADER;
+        }
+        else {
+          // stream corruption drop data
+          packet.header.data[0] = data;
+        }
+        break;
+      case StreamState::PACKET_HEADER:
+        if (!stream_read(data)) break;
+
+        packet.header.data[packet.bytes_received++] = data;
+        packet.checksum = checksum(packet.checksum, data);
+
+        // header checksum calculation can't contain the checksum
+        if (packet.bytes_received == sizeof(Packet::header) - 2)
+          packet.header_checksum = packet.checksum;
+
+        if (packet.bytes_received == sizeof(Packet::header)) {
+          if (packet.header.checksum == packet.header_checksum) {
+            // The SYNC control packet is a special case in that it doesn't require the stream sync to be correct
+            if (static_cast<Protocol>(packet.header.protocol()) == Protocol::CONTROL && static_cast<ProtocolControl>(packet.header.type()) == ProtocolControl::SYNC) {
+                SERIAL_ECHOLN(F("ss"), sync, C(','), buffer_size, C(','), version_major, C('.'), version_minor, C('.'), version_patch);
+                stream_state = StreamState::PACKET_RESET;
+                break;
+            }
+            if (packet.header.sync == sync) {
+              buffer_next_index = 0;
+              packet.bytes_received = 0;
+              if (packet.header.size) {
+                stream_state = StreamState::PACKET_DATA;
+                packet.buffer = buffer; // multipacket buffering not implemented, always allocate whole buffer to packet
+              }
+              else
+                stream_state = StreamState::PACKET_PROCESS;
+            }
+            else if (packet.header.sync == sync - 1) {           // ok response must have been lost
+              SERIAL_ECHOLNPGM("ok", packet.header.sync);  // transmit valid packet received and drop the payload
+              stream_state = StreamState::PACKET_RESET;
+            }
+            else if (packet_retries) {
+              stream_state = StreamState::PACKET_RESET; // could be packets already buffered on flow controlled connections, drop them without ack
+            }
+            else {
+              SERIAL_ECHO_MSG("Datastream packet out of order");
+              stream_state = StreamState::PACKET_RESEND;
+            }
+          }
+          else {
+            SERIAL_ECHO_MSG("Packet header(", packet.header.sync, "?) corrupt");
+            stream_state = StreamState::PACKET_RESEND;
+          }
+        }
+        break;
+      case StreamState::PACKET_DATA:
+        if (!stream_read(data)) break;
+
+        if (buffer_next_index < buffer_size)
+          packet.buffer[buffer_next_index] = data;
+        else {
+          SERIAL_ECHO_MSG("Datastream packet data buffer overrun");
+          stream_state = StreamState::PACKET_ERROR;
+          break;
+        }
+
+        packet.checksum = checksum(packet.checksum, data);
+        packet.bytes_received++;
+        buffer_next_index++;
+
+        if (packet.bytes_received == packet.header.size) {
+          stream_state = StreamState::PACKET_FOOTER;
+          packet.bytes_received = 0;
+        }
+        break;
+      case StreamState::PACKET_FOOTER:
+        if (!stream_read(data)) break;
+
+        packet.footer.data[packet.bytes_received++] = data;
+        if (packet.bytes_received == sizeof(Packet::footer)) {
+          if (packet.footer.checksum == packet.checksum) {
+            stream_state = StreamState::PACKET_PROCESS;
+          }
+          else {
+            SERIAL_ECHO_MSG("Packet(", packet.header.sync, ") payload corrupt");
+            stream_state = StreamState::PACKET_RESEND;
+          }
+        }
+        break;
+      case StreamState::PACKET_PROCESS:
+        sync++;
+        packet_retries = 0;
+        bytes_received += packet.header.size;
+
+        SERIAL_ECHOLNPGM("ok", packet.header.sync); // transmit valid packet received
+        dispatch();
+        stream_state = StreamState::PACKET_RESET;
+        break;
+      case StreamState::PACKET_RESEND:
+        if (packet_retries < max_retries || max_retries == 0) {
+          packet_retries++;
+          stream_state = StreamState::PACKET_RESET;
+          SERIAL_ECHO_MSG("Resend request ", packet_retries);
+          SERIAL_ECHOLNPGM("rs", sync);
+        }
+        else
+          stream_state = StreamState::PACKET_ERROR;
+        break;
+      case StreamState::PACKET_TIMEOUT:
+        SERIAL_ECHO_MSG("Datastream timeout");
+        stream_state = StreamState::PACKET_RESEND;
+        break;
+      case StreamState::PACKET_ERROR:
+        SERIAL_ECHOLNPGM("fe", packet.header.sync);
+        reset(); // reset everything, resync required
+        stream_state = StreamState::PACKET_RESET;
+        break;
+    }
+  }
+}
+
+void BinaryStream::dispatch() {
+  switch (static_cast<Protocol>(packet.header.protocol())) {
+    case Protocol::CONTROL:
+      switch (static_cast<ProtocolControl>(packet.header.type())) {
+        case ProtocolControl::CLOSE: // revert back to ASCII mode
+          card.flag.binary_mode = false;
+          break;
+        default:
+          SERIAL_ECHO_MSG("Unknown BinaryProtocolControl Packet");
+      }
+      break;
+    case Protocol::FILE_TRANSFER:
+      SDFileTransferProtocol::process(packet.header.type(), packet.buffer, packet.header.size); // send user data to be processed
+    break;
+    default:
+      SERIAL_ECHO_MSG("Unsupported Binary Protocol");
+  }
+}
+
+void BinaryStream::idle() {
+  // Some Protocols may need periodic updates without new data
+  SDFileTransferProtocol::idle();
+}
+
 BinaryStream binaryStream[NUM_SERIAL];
 
-#endif
+#endif // BINARY_FILE_TRANSFER

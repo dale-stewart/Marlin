@@ -107,6 +107,39 @@ confirm the net still catches faults in the restructured code.
 Exit gate: every survivor is killed, documented as equivalent, or logged as an
 open question.
 
+## Moving logic into a unit the instruments can see
+
+The mirror of quarantining. Where a language lets logic live somewhere that is compiled
+*indirectly* — a header, an inline definition, a template body, a macro — coverage will report it
+and mutation will not, so it reads as exercised on the only instrument that could contradict
+that. Relocating it into an ordinary compiled unit is a legitimate rescue move, and usually a
+cheap one, because it is pure relocation: nothing about the behaviour changes, only where the
+compiler sees it.
+
+**Do it without surrendering a guarantee the callers currently get.** The naive move is to strip
+whatever forced the code to be generic — turn a compile-time parameter into a runtime argument,
+say — and that quietly trades a guarantee the compiler was enforcing for one nobody checks. Leave
+the generic form in place as a one-line forward to a single out-of-line definition instead. Call
+sites keep their checking, there is exactly one copy of the logic, and the copy is somewhere the
+mutation tool can reach. Ours forwarded a sized-array parameter into a pointer-and-length
+function; every caller kept deriving the length from its own buffer, and not one call site had to
+change.
+
+Two things to expect afterwards.
+
+**Access levels are worth fixing on the way past.** Code written in a header is often public by
+accident — declared before any access specifier, or made visible only so an inline definition
+could reach it. Once the bodies move, the members that were never used from outside can go
+private, and that is a narrowing of the surface rather than a change to it.
+
+**Expect the extracted code to score badly, and do not read that as a regression.** What hides in
+a header is not a random sample of the file: it is the accessors, the initialisers, the small
+resets — exactly the code an assertion-light suite never pins, and exactly the code whose effects
+are immediately overwritten by whatever runs next. In our run those newly-visible one-liners were
+better than a third of all survivors. The score did not get worse; it started including something
+it had been silently omitting. Say so explicitly when reporting it, or the first honest number
+will look like damage.
+
 ## Quarantining code that cannot be tested
 
 A file whose untestable parts are mixed in with its testable ones reports a coverage figure that

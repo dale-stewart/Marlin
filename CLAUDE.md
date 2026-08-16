@@ -274,15 +274,24 @@ is blocked by PEP 668 on this machine).
   and `serial_base.h` (79); `parser.cpp` at ~83% sits beside `parser.h` (303 lines, 26 branch
   constructs); `mstring.h` is where register #41 lived.
 
-  Nine headers in this tree carry 25 or more branch constructs, and the ones that matter are
-  `binary_stream.h` (370 lines), `runout.h` (368), `parser.h` (303) and `temperature.h` (1159).
-  Before quoting a target as closed, check whether its logic is in the `.cpp` at all.
+  Nine headers in this tree carry 25 or more branch constructs, and the ones that still matter are
+  `runout.h` (368 lines), `parser.h` (303) and `temperature.h` (1159). Before quoting a target as
+  closed, check whether its logic is in the `.cpp` at all.
 
-  Fixing the runner is possible but not cheap. Only the *including* translation unit needs
-  rebuilding per mutant, but Marlin's headers are included by relative path, so a shadow include
-  directory does not override them — which leaves either serial in-place swapping (correct, far
-  too slow) or a per-worker copy of the source tree (fast, about a gigabyte across the workers).
-  Neither is done.
+  **`binary_stream.h` was the fourth, and it was moved rather than measured** — the whole protocol
+  now lives in `binary_stream.cpp`, and the header is a class declaration plus one line. That is
+  the cheaper answer whenever the code is only in a header by habit: relocation changes no
+  behaviour and needs no tooling. Keep any generic form as a one-line forward to a single
+  out-of-line definition, so call sites keep their compile-time checking and there is one copy to
+  measure; `queue.cpp` needed no edit at all. See `docs/rescue-log/binary-transfer.md`, and expect
+  the newly-visible one-liners to score badly — the accessors and resets that hide in headers were
+  better than a third of that file's survivors.
+
+  Fixing the runner instead is possible but not cheap, and is only worth it for a header whose
+  logic genuinely belongs there. Only the *including* translation unit needs rebuilding per
+  mutant, but Marlin's headers are included by relative path, so a shadow include directory does
+  not override them — which leaves either serial in-place swapping (correct, far too slow) or a
+  per-worker copy of the source tree (fast, about a gigabyte across the workers). Neither is done.
 
 - **A cold nozzle makes the *planner* drop the E part of a move, silently.**
   `planner.cpp:1850` — `tooColdToExtrude()` sets `position.e = target.e` and zeroes

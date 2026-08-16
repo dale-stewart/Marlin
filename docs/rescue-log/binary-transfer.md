@@ -182,14 +182,61 @@ The general form is in the skill's `harness-validation.md`: reset every stage of
 not just the one with a name — the queue is the obvious one, the half-assembled unit and the raw
 transport buffer are the ones that get missed.
 
+## Fourth slice (2026-08-16): the extraction, and the first mutation figure
+
+Steps 2 and 3. `SDFileTransferProtocol`, the two `bs_*` helpers, the heatshrink statics and every
+`BinaryStream` member body moved into `binary_stream.cpp`. The header keeps the class declaration,
+the nested packet layout, and one line of code.
+
+**The template did not have to go, only the logic behind it.** `receive()` was a template purely
+so a caller need not pass a length, and the obvious de-templating —
+`receive(char*, size_t)` — trades a compile-time guarantee for a runtime argument nobody checks.
+Instead the array form stays in the header as a one-line forward:
+
+    template<const size_t buffer_size>
+    void receive(char (&buffer)[buffer_size]) { receive(&buffer[0], buffer_size); }
+
+    void receive(char * const buffer, const size_t buffer_size);   // defined in the .cpp
+
+Every call site keeps its length derived from the buffer it passes, there is now exactly one copy
+of the protocol to measure, and **`queue.cpp` did not change at all**. Worth noting against the
+step 1 work: the caller had to be covered because the *surface* moved, and in the end the call
+site did not — which is the ordering rule doing its job rather than being wasted, since that was
+not knowable until the design was settled.
+
+Members that were public only because the class had no access specifier at all are now private:
+`checksum()`, `stream_read()`, `dispatch()`, `idle()` and the state fields. Nothing outside ever
+used them.
+
+Line coverage is unchanged at 125/240, as it must be — behaviour did not move, only where it is
+compiled. The header now reports 1 line.
+
+### 64.9% raw, and where the survivors are
+
+    run 679 · build failures 286 (excluded) · testable 393
+    killed 211 · timed out 44 (counted as detected) · survived 138
+    score 255/393 = 64.9%   on 125 covered lines, 100s timeout from a 5.0s baseline
+
+Untriaged, so no killable figure yet — 44 timeouts at 11% is high enough to be worth checking
+before anyone quotes this.
+
+**The largest survivor cluster is exactly the code that was invisible until now.** Lines 212-231
+and 244 — `Header::protocol()`, `type()`, `Header::reset()`, `Footer::reset()`, `Packet::reset()`
+and `BinaryStream::reset()` — account for 51 of the 138 survivors, better than a third. Those were
+one-line member functions in the header, so before this slice they were coverage-visible,
+mutation-invisible, and read as fully exercised. They are barely asserted at all: nothing checks
+that a reset clears each field, because a reset header is immediately overwritten by the packet
+that follows it.
+
+Some of that will be genuinely equivalent for exactly that reason. But the shape of the result is
+the argument for the extraction: the parts of a file that hide in a header are not a random
+sample of it — they are the small accessors and initialisers, which are precisely the code an
+assertion-light suite never pins.
+
 ## Still to do on the extraction
 
-Steps 2-4, none of them started. Step 2 (move `SDFileTransferProtocol` and the two `bs_*` helpers
-into the `.cpp`) needs no permission at all — nothing outside this header references them, as
-`binary_stream.cpp` already holds their static definitions. Step 3 is the surface change:
-`receive()` is a template only so the caller need not pass a length, and `buffer_size` is used at
-just two places, both as an ordinary runtime value. Step 4 is the mutation run that becomes
-possible once the logic is in a translation unit.
+Step 4 is done in the sense that a figure exists. Triaging the 138 survivors into real gaps and
+equivalents, and killing the real ones, has not been started.
 
 ## Not done
 

@@ -116,11 +116,15 @@ namespace {
    * because a single call returns as soon as the data runs out, and the state machine may need
    * another pass to reach the state that answers.
    *
-   * **The buffer is `MAX_CMD_SIZE` because `receive()` is a template on its length**, so its size
-   * chooses which instantiation runs. A test that picked its own size would compile and pass while
-   * covering a copy of the reader that the firmware never builds — the assertions would hold, and
-   * the coverage report would show the real one untouched. This is the same buffer the queue
-   * hands it.
+   * **The buffer is `MAX_CMD_SIZE` because that is what the queue hands the reader**, and the
+   * length is part of the protocol rather than an implementation detail: it is reported to the
+   * sender as the largest packet it may send, and it bounds the overrun check. Picking a
+   * comfortable number here would test the reader against a machine that does not exist.
+   *
+   * It used to matter for a second reason, now designed away: `receive()` was a template on the
+   * length, so the size chose which *instantiation* ran, and a test with its own number silently
+   * exercised a copy of the reader the firmware never builds. The array form is now a one-line
+   * forward to a single out-of-line definition, so there is only one copy to measure.
    */
   std::string send(const std::vector<uint8_t> &bytes) {
     static char line_buffer[MAX_CMD_SIZE];
