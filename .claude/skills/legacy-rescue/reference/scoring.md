@@ -75,6 +75,22 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
   If that happens, suspect the teardown before you suspect the tests. Put the reset
   somewhere the jump cannot skip — the harness, after the test returns — rather than in
   the tests themselves, and re-measure: kills and timeouts should trade places.
+- **A controllable clock turns bounded waits into unbounded ones, and the timeouts that follow
+  are not detections.** Where the harness advances time only on request — the usual arrangement
+  for testing anything that waits — a loop the product bounds by elapsed time has no bound at
+  all: nothing inside it moves the clock. Mutants that strand such a loop hang for ever, score as
+  timeouts, and are counted as detected, when the same mutant on real hardware would leave the
+  loop on schedule and carry on misbehaving quietly. The score is inflated by however many of
+  those there are, and they are concentrated in exactly the state machines worth measuring.
+
+  Report killed-by-assertion separately whenever the target contains a time-bounded loop, and say
+  which figure is which. Confirm the mechanism rather than assume it: build one such mutant in
+  directly and watch it hang, then check whether anything in that loop advances the clock.
+
+  The same property makes the product's real behaviour there — *leaving the loop when the budget
+  expires* — unreachable, so it cannot be pinned by a test either. That is the mirror of the
+  problem a real-time harness has, where waiting cannot be tested because the test cannot skip
+  ahead. Neither harness covers both; know which blind spot yours has.
 - Build failure = **not a mutant**. Exclude it; it never produced a testable program.
 - **Equivalent mutants belong outside the denominator.** Watch for the systematic
   source: code disabled at build time — `#if`/`#ifdef`, ternaries on compile-time

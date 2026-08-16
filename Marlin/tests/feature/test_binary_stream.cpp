@@ -66,8 +66,10 @@ namespace {
 
   // Fletcher-16, written from the algorithm rather than copied from the reader: the low byte
   // accumulates the data, the high byte accumulates the low byte, both modulo 255.
-  uint16_t fletcher16(const std::vector<uint8_t> &bytes) {
-    uint16_t low = 0, high = 0;
+  //
+  // Takes a running value because the reader's does. See `packet()` for why that matters.
+  uint16_t fletcher16(const std::vector<uint8_t> &bytes, const uint16_t running = 0) {
+    uint16_t low = running & 0xFF, high = (running >> 8) & 0xFF;
     for (const uint8_t b : bytes) { low = uint16_t((low + b) % 255); high = uint16_t((high + low) % 255); }
     return uint16_t((high << 8) | low);
   }
@@ -98,9 +100,23 @@ namespace {
     };
 
     if (size) {
+      /**
+       * The payload checksum continues the header's, it does not start again.
+       *
+       * `packet.checksum` is a single running value across the whole packet. The header
+       * checksum is a *snapshot* of it taken two bytes early — which is what lets that field
+       * avoid covering itself — but the running value carries on over the checksum bytes and
+       * then over the payload, and that is what the footer is compared against.
+       *
+       * So the footer covers the six header bytes after the token, the two header-checksum
+       * bytes, and the payload. Computing it over the payload alone produces a packet the
+       * reader always calls corrupt, which is indistinguishable from the reader working.
+       */
+      uint16_t running = fletcher16({ uint8_t(hcs & 0xFF), uint8_t(hcs >> 8) }, fletcher16(covered));
+
       std::vector<uint8_t> data(payload.begin(), payload.end());
       out.insert(out.end(), data.begin(), data.end());
-      uint16_t pcs = fletcher16(data);
+      uint16_t pcs = fletcher16(data, running);
       if (corrupt_payload) pcs = uint16_t(pcs ^ 0xFFFF);
       out.push_back(uint8_t(pcs & 0xFF));
       out.push_back(uint8_t(pcs >> 8));
@@ -306,6 +322,61 @@ MARLIN_TEST(binary_stream, a_resent_packet_is_acknowledged_again_but_not_acted_o
   TEST_ASSERT_TRUE_MESSAGE(card.flag.binary_mode,
     "but must not be acted on twice - a duplicate applied is a duplicate written into the file, "
     "which is how a link that dropped nothing still corrupts an upload");
+}
+
+/**
+ * A packet carrying an intact payload is accepted, and its payload is not called corrupt.
+ *
+ * The companion the corrupt-payload test was missing. On its own, that test is satisfied by a
+ * reader that rejects *every* payload — which is exactly what a mutant that miscounts the footer,
+ * or ends the data phase one byte early, produces. Nothing here sent a valid non-empty payload
+ * at all, so the whole data and footer path was covered without being pinned.
+ *
+ * The payload rides on a `CLOSE` packet because control packets ignore their buffer, which keeps
+ * this a test of the framing rather than of what any particular payload means. Leaving binary
+ * mode is what says the packet was acted on rather than merely acknowledged.
+ */
+MARLIN_TEST(binary_stream, a_packet_with_an_intact_payload_is_accepted) {
+  FreshStream stream;
+  card.flag.binary_mode = true;
+
+  const std::string reply = send(packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE, "hello"));
+
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "ok0"),
+    "a packet whose payload matches its checksum should be accepted");
+  TEST_ASSERT_FALSE_MESSAGE(said(reply, "corrupt"),
+    "and must not be called corrupt - a reader that rejected every payload would satisfy the "
+    "corrupt-payload test on its own");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.binary_mode,
+    "and it should be acted on, so the payload was read to its end rather than abandoned");
+}
+
+/**
+ * Once the stream is back in step, a stray packet is reported again rather than dropped.
+ *
+ * The silence after a resend request is deliberate, but it has to end: it exists to swallow the
+ * packets that were already in flight, not to make the stream permanently mute. A successful
+ * packet is what says the sender has caught up, and it clears the retry count.
+ *
+ * Without that clearing, the first desynchronisation of a transfer would silence every later one
+ * for the rest of the connection — the printer would drop stray packets without a word, and a
+ * host waiting for a diagnostic would get nothing. That is a worse failure than the noise the
+ * silence was introduced to prevent, and nothing was checking for it.
+ */
+MARLIN_TEST(binary_stream, a_stream_back_in_step_reports_strays_again) {
+  FreshStream stream;
+
+  send(packet(7, PROTOCOL_CONTROL, CONTROL_CLOSE));   // out of order: reported, and starts counting
+  send(packet(9, PROTOCOL_CONTROL, CONTROL_CLOSE));   // silent, as the test above requires
+
+  const std::string recovered = send(packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE));
+  TEST_ASSERT_TRUE_MESSAGE(said(recovered, "ok0"),
+    "the packet the stream was waiting for should be accepted");
+
+  const std::string stray = send(packet(9, PROTOCOL_CONTROL, CONTROL_CLOSE));
+  TEST_ASSERT_TRUE_MESSAGE(said(stray, "out of order"),
+    "and a stray after that should be reported again - the silence is for packets already in "
+    "flight, not a permanent state the first desync leaves the connection in");
 }
 
 /**

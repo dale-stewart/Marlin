@@ -141,6 +141,24 @@ substantial and say nothing.
   pins the half that actually reaches a person. A refusal delivered silently is
   indistinguishable from a control that does not work, and the next thing anyone does with a
   control that does not work is operate it harder. Assert the words, not only the inaction.
+  **When the test builds the input, "rejected" may be about the builder rather than the code.**
+  Testing a rejection means constructing something invalid, which means the test knows how to
+  construct the valid version — and if it does that wrongly, *every* input it makes is invalid.
+  The rejection test then passes for a reason that has nothing to do with the defect it names,
+  and no amount of injection into the code under test will show it, because the check it is
+  provoking really is reachable and really does fire.
+
+  This is the self-consistency trap wearing a different hat: the test and the code agree about
+  nothing, and the assertion cannot tell the difference. Ours built a packet whose payload
+  checksum was computed over the wrong range, so the reader called every packet corrupt; the
+  test asserting that a corrupted one is refused had been green from the day it was written.
+
+  The cure is the same pair as above, and it is cheap: assert the *valid* case with the same
+  builder. One test says the intact input is accepted, the other says the damaged one is not,
+  and neither is worth much alone — a builder that is wrong fails the first, and a check that
+  never fires fails the second. Verify by forcing the check both ways and confirming each
+  direction fails exactly one of the two.
+
 - **Do not state a precondition in terms of a value the code under test may have rewritten.**
   A test that opens with "this input is only interesting if X" needs X read from something the
   behaviour does not touch. Code that corrects a value often stamps the corrected answer back

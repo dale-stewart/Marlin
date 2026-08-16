@@ -221,22 +221,110 @@ Untriaged, so no killable figure yet — 44 timeouts at 11% is high enough to be
 before anyone quotes this.
 
 **The largest survivor cluster is exactly the code that was invisible until now.** Lines 212-231
-and 244 — `Header::protocol()`, `type()`, `Header::reset()`, `Footer::reset()`, `Packet::reset()`
-and `BinaryStream::reset()` — account for 51 of the 138 survivors, better than a third. Those were
-one-line member functions in the header, so before this slice they were coverage-visible,
-mutation-invisible, and read as fully exercised. They are barely asserted at all: nothing checks
-that a reset clears each field, because a reset header is immediately overwritten by the packet
-that follows it.
+and 244 — the accessors and the three `reset()` bodies — account for 51 of the 138 survivors,
+better than a third. Those were one-line member functions in the header, so before this slice they
+were coverage-visible, mutation-invisible, and read as fully exercised.
 
-Some of that will be genuinely equivalent for exactly that reason. But the shape of the result is
-the argument for the extraction: the parts of a file that hide in a header are not a random
-sample of it — they are the small accessors and initialisers, which are precisely the code an
-assertion-light suite never pins.
+Triaged in the next slice, where the first reading of that turned out to be wrong.
 
-## Still to do on the extraction
+## Fifth slice (2026-08-16): triage, and a test that was asserting nothing
 
-Step 4 is done in the sense that a figure exists. Triaging the 138 survivors into real gaps and
-equivalents, and killing the real ones, has not been started.
+    testable 394 · killed 241 by assertion · timed out 45 · survived 108
+    raw 286/394 = 72.6%   (was 64.9%)
+    by assertion 241/394 = 61.2%
+    killable 286/346 = 82.7% raw, 241/346 = 69.7% by assertion
+
+Two new tests, and a correction to an old one that mattered more than either.
+
+### The corrupt-payload test was passing for the wrong reason
+
+Writing the missing positive companion — *a packet with an intact payload is accepted* — failed
+immediately, and the fault was in the **test builder**, not the reader.
+
+`packet.checksum` is one running Fletcher-16 across the whole packet. The header checksum is a
+*snapshot* of it taken two bytes early, which is what lets that field avoid covering itself, but
+the running value carries on over the checksum bytes and then over the payload — and that is what
+the footer is compared against. The builder computed the footer over the payload alone, so **every
+packet it produced had a bad payload checksum**.
+
+The consequence is the point. `a_packet_with_a_damaged_payload_is_refused_and_said_so` asserted
+that a corrupted payload draws `payload corrupt` — and it did, but so would an uncorrupted one.
+The test discriminated nothing, and it had passed since the first slice, with an injection check
+behind it that confirmed only that the *reader's* footer comparison was reachable.
+
+Now verified in both directions: forcing the footer comparison true fails only the corrupt test,
+forcing it false fails only the intact test. That is the pair, and neither half is worth much
+alone.
+
+Recorded as register #62. The general form — a test that builds input for the code under test can
+be wrong in a way that makes a negative assertion vacuous — is in the skill's
+`assertion-patterns.md`.
+
+### The other new test
+
+*A stream back in step reports strays again.* The silence after a resend request exists to swallow
+packets already in flight, and `packet_retries = 0` in `PACKET_PROCESS` is what ends it. Without
+that line the first desynchronisation of a connection would mute every later one for the rest of
+the transfer — a worse failure than the noise the silence prevents. Nothing was checking it.
+
+### 45 of the "detections" are the simulated clock standing still
+
+Worth knowing before anyone quotes 72.6%. `receive()` busy-waits: `while (PENDING(millis(),
+transfer_window))`, and only `PACKET_WAIT` returns on starvation — the other states `break`, which
+re-enters the loop. Under `HAL/TEST` `millis()` moves only when something calls `Clock::advance()`,
+and nothing in that loop does, so **any mutant that strands the state machine mid-packet spins for
+ever**. Confirmed by building one in directly (the inverted token match at line 273): the suite
+runs past ten minutes and is killed.
+
+On real hardware the same mutant does not hang. `millis()` advances, the 20 ms window expires,
+`receive()` returns, and the printer carries on with a corrupted transfer. So these are not
+detections of the defect — they are detections of the clock. The convention that a timeout counts
+as detected is defensible when the hang would also happen in production; here it would not.
+
+That also means the firmware's real behaviour on a stalled packet — *return when the time slice
+expires* — is **unreachable in this harness**, because nothing inside the busy-wait advances the
+clock. It is the mirror of the problem that retired the LINUX-HAL suite: real time made waiting
+untestable, simulated time makes bounded busy-waiting untestable. Both HALs have a blind spot and
+this is the one on this side.
+
+### The 44 equivalent mutants, verified rather than argued
+
+Line 214 alone had 20 survivors, and the first reading — "the accessors and resets are what an
+assertion-light suite never pins" — was wrong. They are not unasserted; they are **unassertable**,
+because every field they clear is unconditionally assigned before it is next read:
+
+- `Header::reset()` clears five fields, and all six header bytes after the token are overwritten
+  by the arriving packet. Even `token` is: `PACKET_WAIT` writes `data[1]` and, on a mismatch,
+  copies it down to `data[0]`, so a stream that starts `0xAD 0xB5` matches on the second byte
+  whatever the reset left behind.
+- `Packet::reset()`'s `bytes_received`, `header_checksum` and `buffer` are all assigned on the
+  path that reads them. Its `checksum = 0` is *not* — that one is killed, because the running
+  checksum genuinely must start at zero.
+- `BinaryStream::reset()`'s `buffer_next_index` is set again when a packet is accepted.
+
+Verified by deleting both reset bodies and four of the five fields in `Packet::reset()`
+outright: **all 813 tests still pass.** Not a proof of equivalence, but it converts a
+line-by-line argument into one experiment.
+
+The firmware is therefore carrying about ten lines of re-initialisation that cannot affect
+behaviour. Left alone deliberately — it is defensive rather than wrong, and removing it would make
+a future change that reads one of those fields earlier into a silent fault.
+
+**So the corrected lesson from the extraction** is sharper than the first one. What hides in a
+header is not merely under-tested; a good part of it is code that no test could pin, because
+redundant initialisation is exactly the kind of thing that ends up as a one-liner in a class
+declaration. Extracting it is still right — that is how the 44 became *visible* as equivalents
+rather than invisible as nothing at all — but expect the honest killable denominator to shrink
+rather than the score to rise.
+
+## Still to do
+
+The remaining real survivors are small and scattered: the `%` and mask arithmetic in `checksum()`
+(3), the SYNC special-case condition (4), `protocol()` (2), and `bytes_received += size` at line
+365 (4) — that last one being a member nothing ever reads, which is its own small finding.
+
+Untouched, and still the bulk of the file: `SDFileTransferProtocol` — open, write, close, abort
+and the compressed path — which needs a card and a file rather than a reply to assert on.
 
 ## Not done
 
