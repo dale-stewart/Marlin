@@ -58,6 +58,7 @@
 #include "../gcode/serial_capture.h"
 #include "src/sd/cardreader.h"
 #include "src/feature/binary_stream.h"
+#include "src/gcode/queue.h"
 #include <string>
 #include <vector>
 
@@ -132,6 +133,26 @@ namespace {
 
   bool said(const std::string &reply, const char * const words) {
     return reply.find(words) != std::string::npos;
+  }
+
+  /**
+   * Put bytes on the port and let the *queue* decide what to do with them.
+   *
+   * `send()` above calls the reader directly, which is right for testing the protocol and wrong
+   * for testing the handover: it proves the reader answers, not that anything ever gives it the
+   * bytes. This goes in at `get_available_commands()`, the entry point the main loop calls, so
+   * the branch in `get_serial_commands()` that chooses between the parser and the stream is the
+   * thing under test.
+   */
+  std::string pump(const std::vector<uint8_t> &bytes) {
+    SerialCapture reply;
+    for (const uint8_t b : bytes) MYSERIAL1.receive_buffer.write(b);
+    queue.get_available_commands();
+    return reply.finish();
+  }
+
+  void feed_text(const char * const line) {
+    for (const char *p = line; *p; ++p) MYSERIAL1.receive_buffer.write(uint8_t(*p));
   }
 
   /**
@@ -359,6 +380,48 @@ MARLIN_TEST(binary_stream, the_stream_never_declares_a_transfer_failed) {
   TEST_ASSERT_FALSE_MESSAGE(said(last, "fe"),
     "and the stream should never give up - max_retries is 0, which this guard reads as no limit "
     "rather than no retries, so the failure reply cannot be reached");
+}
+
+/**
+ * In binary mode the queue hands the port to the stream instead of the parser.
+ *
+ * Every test above calls the reader directly, which says nothing about whether the firmware ever
+ * reaches it. `get_serial_commands()` opens with a branch on `card.flag.binary_mode`: on one side
+ * the bytes are accumulated into lines and parsed as G-code, on the other they go to the stream
+ * and the function returns without looking at them further. That branch is the entire connection
+ * between the protocol and the printer, and nothing was checking it.
+ *
+ * It is asserted as a *switch* rather than as an effect, by driving both sides through the same
+ * entry point. Text arriving in ASCII mode has to become a queued command, or the negative half
+ * of the binary case would be satisfied by a port that was simply not being read. The bytes are
+ * different in the two arms because they have to be: a packet is not a line of G-code and a line
+ * of G-code is not a packet — what is held still is the path they take in.
+ */
+MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {
+  FreshStream stream;
+  queue.clear();
+
+  // ASCII mode: the queue reads the port itself and a line becomes a command.
+  card.flag.binary_mode = false;
+  feed_text("G4 P0\n");
+  pump({});
+  TEST_ASSERT_TRUE_MESSAGE(queue.has_commands_queued(),
+    "in ASCII mode the queue should read the port and queue the line - without this the binary "
+    "assertion below would also pass on a port nobody was reading");
+  queue.clear();
+
+  // Binary mode: the same entry point, and the bytes reach the stream instead.
+  card.flag.binary_mode = true;
+  const std::string reply = pump(packet(0, PROTOCOL_CONTROL, CONTROL_SYNC));
+
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "ss"),
+    "in binary mode the queue should hand the port to the stream, which answers the sync - this "
+    "is the only thing connecting the protocol to the firmware");
+  TEST_ASSERT_FALSE_MESSAGE(queue.has_commands_queued(),
+    "and must not also parse the packet as text - a packet interpreted as G-code is a printer "
+    "acting on the bytes of a firmware image");
+
+  queue.clear();
 }
 
 #endif // BINARY_FILE_TRANSFER

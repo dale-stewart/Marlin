@@ -201,6 +201,25 @@ timezone, a locale, a current user — leaks the same way and is harder to recog
 there is no resource to notice the absence of. The tell is a later test failing against a
 constant it never touched.
 
+**Reset every stage of a staged input, not just the one with a name.** Input usually arrives
+through a small pipeline — a transport buffer, an accumulator that assembles a unit from
+fragments, then a queue of assembled units — and only the last of those is an object anyone
+thinks of as "the input". Clearing it feels like clearing the input, and it is not: whatever had
+arrived but not yet *become* a unit survives, because it is not in the container you emptied.
+
+The next test's input then arrives behind the leftover fragment and the two are assembled
+together. What the code under test receives is a well-formed request with a corrupt prefix, so it
+is refused or misread — and nothing in the failure mentions buffering, because by the time
+anything is observable the fragments are indistinguishable from one bad input. Ours put a partial
+command in front of the next test's command two files later, and the report said only that a
+value was wrong.
+
+Find these by following the input backwards from where the code reads it to where the test writes
+it, and reset every buffer, index and state flag on the way. The parser's queue is the obvious
+one; the half-assembled unit and the raw transport buffer are the ones that get missed. Then
+prove it: inject a fault that makes a test fail *mid-unit* and check that exactly one test fails.
+A teardown that only handles inputs that completed is untested against the case it exists for.
+
 **When the fixture started a thread, the leak is not state — it is memory, and the between-tests
 hook cannot fix it.** Everything above says "put the restoration where the jump lands". That
 advice fails exactly once, and the case it fails on is the most damaging one. A fixture that

@@ -134,6 +134,63 @@ instantiation was in the denominator.
 The transferable half is in the skill's `scoring.md`: with a generic target the test chooses which
 instantiation it measures, and left to itself it will not choose the production one.
 
+## Third slice (2026-08-16): covering the call site, to open the frontier
+
+Step 1 of extracting this header into its `.cpp`, which is what would make it mutation-testable
+at all. The rule is that a target's public surface may not move until the code calling it is
+covered — and `receive()` has exactly one production caller, `queue.cpp:420`, which the coverage
+report listed as **uncovered**. `queue.cpp` is rescued as a file (77.2% raw, ~87% killable) and
+that one branch was not reached by anything.
+
+`binary_mode_hands_the_port_to_the_stream_rather_than_the_parser` goes in at
+`queue.get_available_commands()` — the entry point the main loop calls, and the only public way
+to reach the private `get_serial_commands()`. Every earlier test calls the reader directly, which
+proves the reader answers and says nothing about whether the firmware ever gives it the bytes.
+
+It asserts the branch as a **switch** rather than as an effect: text fed in ASCII mode has to
+become a queued command, or the binary half would be satisfied by a port nobody was reading. The
+bytes differ between the two arms because they must — a packet is not a line of G-code — so what
+is held still is the path in, not the input. `queue.cpp` 74% -> 75%, and `420-421` leaves the
+missing list.
+
+**The `return` at :421 is an equivalent mutant.** Removing it changes nothing observable: in
+binary mode `receive()` drains the port before returning, so the ASCII path it would fall through
+to finds an empty buffer. Distinguishing the two would need bytes to arrive between the two
+reads. Worth knowing before the eventual mutation run reports it as a survivor.
+
+### The harness fault it turned up (register #61)
+
+The injection that proved the test also failed a test in `test_gcode_acceptance.cpp`, two files
+away — a feedrate of 90 where it had asked for 45.
+
+The first diagnosis was the familiar one and was **wrong**: the fixture destructor holding
+`card.flag.binary_mode` is indeed skipped by the longjmp, so that reset moved into
+`quiesce_simulated_peripherals()` — and the cascade continued unchanged. The mode was not the
+leak.
+
+Serial input is staged, and the teardown only knew about the top of it. Bytes land in the port's
+receive buffer, are copied one at a time into `queue.serial_state[].line_buffer` with `count`
+tracking the current line, and become a queue entry only when a newline arrives. `quiesce` had
+cleared the ring buffer and both injection slots for a long time. Nothing reset the accumulator,
+so a *partial* command — bytes that arrived but never formed a line — outlived the test that fed
+them, and the next test's command was appended to it.
+
+Fixed by resetting `count`, `input_state` and the accumulator for every port, plus draining the
+receive buffer. Re-running the same injection now fails exactly one test.
+
+The general form is in the skill's `harness-validation.md`: reset every stage of a staged input,
+not just the one with a name — the queue is the obvious one, the half-assembled unit and the raw
+transport buffer are the ones that get missed.
+
+## Still to do on the extraction
+
+Steps 2-4, none of them started. Step 2 (move `SDFileTransferProtocol` and the two `bs_*` helpers
+into the `.cpp`) needs no permission at all — nothing outside this header references them, as
+`binary_stream.cpp` already holds their static definitions. Step 3 is the surface change:
+`receive()` is a template only so the caller need not pass a length, and `buffer_size` is used at
+just two places, both as an ordinary runtime value. Step 4 is the mutation run that becomes
+possible once the logic is in a translation unit.
+
 ## Not done
 
 `SDFileTransferProtocol` — open, write, close, abort, and the compressed-transfer path — which

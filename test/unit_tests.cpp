@@ -40,6 +40,10 @@
 #if HAS_FILAMENT_SENSOR
   #include "src/feature/runout.h"
 #endif
+#if ENABLED(BINARY_FILE_TRANSFER)
+  #include "src/sd/cardreader.h"
+  #include "src/feature/binary_stream.h"
+#endif
 #include "tests/support/simulated_hardware.h"
 #include "tests/gcode/serial_capture.h"
 #include <stdio.h>
@@ -264,6 +268,31 @@ static void quiesce_simulated_peripherals() {
   queue.injected_commands_P = nullptr;
   queue.injected_commands[0] = '\0';
 
+  /**
+   * ...and nothing half-read, which is a level below the queue again.
+   *
+   * `serial_state[].count` is how many characters of the current line have arrived. A line is
+   * only handed to the parser when its newline turns up, so a test that feeds bytes without one
+   * — or that fails before the line completes — leaves a partial command in the accumulator. The
+   * next test's command is then appended to it, and what the parser sees is the two spliced
+   * together: a valid command with a corrupt prefix, which is refused or misread rather than
+   * reported as anything to do with buffering.
+   *
+   * Clearing the queue does not touch this, because the character has not become a command yet.
+   * Found by injecting a fault into the queue's binary-mode branch, which sent packet bytes down
+   * the ASCII path: one test failed for its own reason and `test_gcode_acceptance.cpp` then read
+   * a feedrate of 90 where it had asked for 45, two files away.
+   *
+   * The port's own receive buffer goes with it — bytes that arrived and were never read are the
+   * same leak one step earlier.
+   */
+  for (uint8_t i = 0; i < NUM_SERIAL; i++) {
+    queue.serial_state[i].count = 0;
+    queue.serial_state[i].input_state = 0;
+    queue.serial_state[i].line_buffer[0] = '\0';
+  }
+  MYSERIAL1.receive_buffer.clear();
+
   // A card told to refuse writes stays that way until something says otherwise, and a
   // test that fails while injecting the fault never reaches its own cleanup. Clearing it
   // here rather than in a scope guard is the same reasoning as the heater targets above.
@@ -342,6 +371,23 @@ static void quiesce_simulated_peripherals() {
     EmergencyParser::quickstop_by_M410 = false;
     TERN_(HAS_MEDIA, EmergencyParser::sd_abort_by_M524 = false);
     EmergencyParser::enable();
+  #endif
+
+  /**
+   * ...and take the machine out of binary transfer mode.
+   *
+   * `card.flag.binary_mode` is a *mode*, not a value: while it is set, `get_serial_commands()`
+   * hands every byte on the port to the packet reader and never parses a line of G-code. A test
+   * that turns it on and then fails leaves the machine unable to hear a command at all, and the
+   * next test to send one sees its command silently swallowed rather than refused.
+   *
+   * The stream's own state goes with it, since a half-read packet would consume the front of
+   * whatever arrives next looking for a token. Both were in a fixture destructor first, which is
+   * exactly where the framework's longjmp does not reach.
+   */
+  #if ENABLED(BINARY_FILE_TRANSFER)
+    card.flag.binary_mode = false;
+    binaryStream[card.transfer_port_index.index].reset();
   #endif
 
   /**
