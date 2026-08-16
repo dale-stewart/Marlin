@@ -25,6 +25,39 @@
 #include "../../inc/MarlinConfig.h"
 #include "../shared/Delay.h"
 
+/**
+ * Making a busy-wait terminate.
+ *
+ * Time here advances only when a test asks, which is what makes every wait deterministic — and
+ * it has one blind spot. Firmware that bounds a loop by elapsed time rather than by a count
+ * (`while (PENDING(millis(), deadline)) { poll the port; }`) has no bound at all under a frozen
+ * clock: nothing inside the loop moves it, so the deadline never arrives. On a board the loop
+ * ends on schedule; here it spins for ever, and the test hangs instead of failing.
+ *
+ * That is not merely inconvenient. Under mutation any mutant that strands such a loop scores as
+ * a timeout, timeouts count as detected, and the score is inflated by detections that are of
+ * this clock rather than of the defect. It also leaves the firmware's real behaviour there —
+ * *leaving the loop when the budget expires* — unreachable, so no test can pin it either.
+ *
+ * The seam is that such a loop necessarily polls something, and a poll that finds nothing is
+ * exactly the case where a real CPU burns cycles. So a test may declare what an empty poll
+ * costs, and the loop then terminates for the same reason it does on hardware.
+ *
+ * Deliberately opt-in and zero by default: a clock that moves when read would surprise every
+ * test that does not want it. Two things to know when switching it on:
+ *
+ *  - It advances time **without firing timer interrupts**, unlike `HAL_test_advance_micros()`.
+ *    A test that needs the ISRs to run while it spins needs something else; this exists to end
+ *    a wait, not to run the machine during one.
+ *  - The cost is per empty poll, so the simulated time a loop consumes depends on how often it
+ *    polls. Assert that the loop *ended*, not how long it took.
+ */
+static uint64_t idle_poll_nanos = 0;
+
+void HAL_test_set_idle_poll_nanos(const uint64_t ns) { idle_poll_nanos = ns; }
+
+void hal_test_idle_poll() { if (idle_poll_nanos) Clock::advance_nanos(idle_poll_nanos); }
+
 // ------------------------
 // Serial ports
 // ------------------------

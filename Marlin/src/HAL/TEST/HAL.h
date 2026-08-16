@@ -39,6 +39,11 @@
 
 // Advancing simulated time lives with the timers; idletask() below uses it.
 void HAL_test_advance_micros(const uint32_t us);
+
+// What a poll of an empty port costs in simulated time. Zero — free — unless a test says
+// otherwise, which is how a busy-wait bounded by elapsed time is made to terminate at all.
+// See HAL.cpp for the reasoning and the two caveats.
+void HAL_test_set_idle_poll_nanos(const uint64_t ns);
 #include "../shared/Marduino.h"
 #include "../shared/math_32bit.h"
 #include "../shared/HAL_SPI.h"

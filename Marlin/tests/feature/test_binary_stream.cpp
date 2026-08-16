@@ -171,6 +171,24 @@ namespace {
     return reply.finish();
   }
 
+  /**
+   * Let the reader's time slice actually expire.
+   *
+   * `receive()` loops until `rx_timeslice` has passed, and only the wait-for-a-token state
+   * returns early — every other state loops back on starvation. With a clock that moves only on
+   * request, a stream that stops mid-packet therefore spins for ever, which is the one shape of
+   * firmware this harness cannot otherwise run.
+   *
+   * Charging an empty poll against the clock ends the loop for the same reason it ends on a
+   * board. A microsecond a poll closes the 20 ms slice in twenty thousand iterations, which is
+   * instant in real time. The teardown puts it back to free, because the failure path skips
+   * destructors.
+   */
+  struct PollingCostsTime {
+    PollingCostsTime(const uint64_t ns = 1000) { HAL_test_set_idle_poll_nanos(ns); }
+    ~PollingCostsTime() { HAL_test_set_idle_poll_nanos(0); }
+  };
+
   void feed_text(const char * const line) {
     for (const char *p = line; *p; ++p) MYSERIAL1.receive_buffer.write(uint8_t(*p));
   }
@@ -181,6 +199,22 @@ namespace {
    * latches.
    */
   struct FreshStream {
+    /**
+     * Every test here runs with an empty poll costing time, not only the one that needs it.
+     *
+     * A well-formed packet never reaches the spin — the wait-for-a-token state returns as soon
+     * as the data runs out — so this changes nothing about what the tests below do. What it
+     * changes is what happens when something is *wrong*: a reader stranded mid-packet returns
+     * when its time slice expires, exactly as it would on a board, instead of hanging the
+     * process.
+     *
+     * That matters most under mutation. With a frozen clock every mutant that strands the state
+     * machine scores as a timeout, timeouts count as detected, and the suite gets credit for
+     * detections that belong to the clock. With this on they run to completion and are judged on
+     * what they actually did.
+     */
+    PollingCostsTime spinning;
+
     FreshStream()  { reset(); }
     ~FreshStream() { reset(); }
     static void reset() {
@@ -472,6 +506,44 @@ MARLIN_TEST(binary_stream, the_stream_never_declares_a_transfer_failed) {
  * different in the two arms because they have to be: a packet is not a line of G-code and a line
  * of G-code is not a packet — what is held still is the path they take in.
  */
+/**
+ * A packet that stops half way is given up on, and a resend asked for.
+ *
+ * A sender that dies mid-packet — unplugged, crashed, or a link that dropped — leaves the reader
+ * part way through a payload it has been told the length of. Without a timeout the printer waits
+ * for the rest for ever, and the host sees a machine that has stopped answering rather than one
+ * asking it to try again. `packet_max_wait` is what bounds that, and nothing was reaching it.
+ *
+ * Two things had to become true to write this at all. The reader has to *return* from a starved
+ * packet, which needs an empty poll to cost simulated time — see `PollingCostsTime`. And the
+ * stall has to outlast the reader's patience, which is what the deliberate jump in the clock
+ * between the two halves is for.
+ *
+ * Both messages are asserted, because they say different things: one is why the reader gave up,
+ * the other is what it wants the sender to do about it.
+ */
+MARLIN_TEST(binary_stream, a_packet_that_stops_half_way_times_out_and_asks_again) {
+  FreshStream stream;
+
+  // The header of a packet promising five bytes, and then nothing.
+  std::vector<uint8_t> truncated = packet(0, PROTOCOL_CONTROL, CONTROL_CLOSE, "hello");
+  truncated.resize(8);
+
+  const std::string during = send(truncated);
+  TEST_ASSERT_FALSE_MESSAGE(said(during, "timeout"),
+    "a packet still arriving should not be given up on - the reader returns when its time slice "
+    "expires, and that is not the same as the sender having stopped");
+
+  HAL_test_advance_micros(600000);   // longer than packet_max_wait, so the sender has gone quiet
+
+  const std::string after = send({});
+  TEST_ASSERT_TRUE_MESSAGE(said(after, "Datastream timeout"),
+    "a sender that stops mid-packet should be given up on rather than waited for indefinitely");
+  TEST_ASSERT_TRUE_MESSAGE(said(after, "rs0"),
+    "and the reader should ask for the packet again, naming where it wants to restart - "
+    "otherwise the host sees a machine that has stopped answering");
+}
+
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {
   FreshStream stream;
   queue.clear();

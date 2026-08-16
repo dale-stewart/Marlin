@@ -91,6 +91,21 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
   expires* — unreachable, so it cannot be pinned by a test either. That is the mirror of the
   problem a real-time harness has, where waiting cannot be tested because the test cannot skip
   ahead. Neither harness covers both; know which blind spot yours has.
+
+  **This one is worth closing rather than reporting around.** A loop that waits on time must poll
+  *something* — a port, a queue, a flag — and a poll that finds nothing is precisely where real
+  hardware burns cycles. So let the fake charge an empty poll against the simulated clock, at a
+  rate a test declares and zero by default. The loop then ends for the same reason it ends in
+  production, and the mutants that used to hang run to completion and are judged on what they did.
+
+  Keep it opt-in: a clock that moves when read surprises every test that did not ask for it, and
+  the default must leave the existing suite untouched. Turn it on for the whole file whose subject
+  contains the loop rather than for the single test that needs it — well-formed input never
+  reaches the spin, so nothing about the passing tests changes, and it is the *mutants* you are
+  trying to let terminate. Say in the fake whether advancing this way also fires whatever
+  interrupts a real advance would, because usually it should not, and a test that needs them needs
+  something else. Ours moved 38 mutants from "timed out" to "killed by an assertion" while the raw
+  score stayed put — which is the point: the number did not improve, it started being true.
 - Build failure = **not a mutant**. Exclude it; it never produced a testable program.
 - **Equivalent mutants belong outside the denominator.** Watch for the systematic
   source: code disabled at build time — `#if`/`#ifdef`, ternaries on compile-time

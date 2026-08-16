@@ -31,6 +31,14 @@
 #include <stdio.h>
 
 /**
+ * Charge a poll of an empty port against the simulated clock.
+ *
+ * Defined in HAL.cpp, and free by default. See `HAL_test_set_idle_poll_nanos()` there for what
+ * this is for and when a test should switch it on.
+ */
+void hal_test_idle_poll();
+
+/**
  * Generic RingBuffer
  * T type of the buffer array
  * S size of the buffer (must be power of 2)
@@ -104,7 +112,11 @@ struct HalSerial {
   bool connected() { return host_connected; }
 
   uint16_t available() {
-    return (uint16_t)receive_buffer.available();
+    const uint16_t count = (uint16_t)receive_buffer.available();
+    // An empty poll is a spin waiting for data, and on a board that spin costs time. Free
+    // unless a test asks otherwise, so nothing here changes for a test that does not.
+    if (!count) hal_test_idle_poll();
+    return count;
   }
 
   void flush() { receive_buffer.clear(); }

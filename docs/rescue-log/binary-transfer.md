@@ -317,6 +317,55 @@ declaration. Extracting it is still right — that is how the 44 became *visible
 rather than invisible as nothing at all — but expect the honest killable denominator to shrink
 rather than the score to rise.
 
+## Sixth slice (2026-08-16): making the busy-wait terminate
+
+    testable 401 · killed 284 by assertion · timed out 9 · survived 108
+    raw 293/401 = 73.1%      by assertion 284/401 = 70.8%
+    killable 293/357 = 82.1% raw, 284/357 = 79.6% by assertion
+
+**The raw score barely moved and the number is worth far more.** Timeouts went from 47 to 9 and
+assertion kills from 248 to 284: thirty-eight mutants that the suite was being credited with
+detecting, but which only ever hung the clock, are now genuinely caught by an assertion.
+
+### `HAL_test_set_idle_poll_nanos()`
+
+The blind spot recorded in the fifth slice, closed. Firmware that bounds a loop by elapsed time
+rather than by a count has no bound under a clock that moves only on request — nothing inside the
+loop moves it. The seam is that such a loop must *poll* something, and a poll that finds nothing
+is exactly where a real CPU burns cycles. So `HalSerial::available()` charges an empty poll
+against the clock, at a rate a test declares and zero by default.
+
+Opt-in matters: a clock that moves when read would surprise every test that does not want it, and
+the default keeps all 814 unaffected. Two properties to know, both in the comment at the
+definition — it advances time **without firing timer interrupts**, unlike `HAL_test_advance_micros()`,
+and the simulated time a loop consumes depends on how often it polls, so a test should assert
+that the loop *ended*, not how long it took.
+
+`FreshStream` switches it on for every test in the file rather than only the one that needs it.
+That is what converted the thirty-eight: a well-formed packet never reaches the spin, so nothing
+about the passing tests changes, but a mutant stranded mid-packet now returns and is judged on
+what it did instead of hanging.
+
+### The test it made possible
+
+*A packet that stops half way times out and asks again.* A sender that dies mid-packet — unplugged,
+crashed, a link that dropped — leaves the reader part way through a payload whose length it has
+been told. `packet_max_wait` bounds that wait, and nothing was reaching it: lines 390-394 were
+uncovered because the state could not be entered. Both messages are asserted, since they say
+different things — why the reader gave up, and what it wants the sender to do.
+
+### `BinaryStream::reset()` did not reset the reader
+
+Found the same way as register #61, and by now a familiar shape: an injection that should have
+failed one test failed two. `reset()` cleared the sequence number, the retry count and the buffer
+index, and left `stream_state` wherever it was — so a stream stranded mid-packet was still
+stranded after a "reset", and consumed the front of the next test's bytes as its payload.
+
+Corrected rather than worked around, because the firmware's own one caller already compensated
+for it: `PACKET_ERROR` calls `reset()` and then sets `PACKET_RESET` on the next line. Adding that
+line to `reset()` changes nothing for the firmware and makes the method mean what it says. With
+it, the same injection fails exactly one test.
+
 ## Still to do
 
 The remaining real survivors are small and scattered: the `%` and mask arithmetic in `checksum()`

@@ -391,6 +391,15 @@ static void quiesce_simulated_peripherals() {
   #endif
 
   /**
+   * ...and make polling free again.
+   *
+   * A test that charges an empty poll against the clock changes what every later test's waits
+   * cost, and it is switched on precisely around code that spins — so the test most likely to
+   * leave it set is one that failed while spinning. Zero is the default the whole suite assumes.
+   */
+  HAL_test_set_idle_poll_nanos(0);
+
+  /**
    * ...and put the filament sensors back to the state they power up in.
    *
    * A simulated pin reads LOW at reset, which `FIL_RUNOUT_STATE` defines as *no filament*, and

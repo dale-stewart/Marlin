@@ -118,7 +118,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 767, 777, 813, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 767, 777, 814, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -292,6 +292,22 @@ is blocked by PEP 668 on this machine).
   mutant, but Marlin's headers are included by relative path, so a shadow include directory does
   not override them — which leaves either serial in-place swapping (correct, far too slow) or a
   per-worker copy of the source tree (fast, about a gigabyte across the workers). Neither is done.
+
+- **A loop the firmware bounds by elapsed time never ends under the test HAL, unless a test says
+  polling costs something.** `Clock` moves only when `advance()` is called, and nothing inside a
+  `while (PENDING(millis(), deadline))` loop calls it — so code that spins polling a port runs for
+  ever here and terminates on a board. It presents as a hang rather than a failure, and under
+  mutation every mutant that strands such a loop scores as a TIMEOUT, which counts as *detected*.
+
+  `HAL_test_set_idle_poll_nanos(n)` makes `HalSerial::available()` charge an empty poll against
+  the clock. Zero by default, so nothing changes for a test that does not ask. Switch it on for a
+  whole test file whose subject busy-waits, not just the one test that needs it — well-formed
+  input never reaches the spin, and it is the mutants you want to terminate. On `binary_stream.cpp`
+  that moved 38 mutants from TIMEOUT to killed-by-assertion while the raw score stayed put.
+
+  It advances time **without firing timer interrupts**, unlike `HAL_test_advance_micros()`. Reset
+  to zero in `quiesce_simulated_peripherals()`, because the test most likely to leave it set is
+  one that failed while spinning.
 
 - **A cold nozzle makes the *planner* drop the E part of a move, silently.**
   `planner.cpp:1850` — `tooColdToExtrude()` sets `position.e = target.e` and zeroes

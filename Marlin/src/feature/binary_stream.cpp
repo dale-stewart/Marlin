@@ -229,6 +229,11 @@ void BinaryStream::reset() {
   sync = 0;
   packet_retries = 0;
   buffer_next_index = 0;
+  // ...and put the reader back at the start of a packet. Without this a "reset" stream is still
+  // half way through whatever it was reading, and consumes the front of the next thing to arrive
+  // as that packet's payload. The one firmware caller (PACKET_ERROR) already did this itself on
+  // the next line, so nothing changes for it.
+  stream_state = StreamState::PACKET_RESET;
 }
 
 // fletchers 16 checksum
