@@ -59,6 +59,8 @@
 #include "src/sd/cardreader.h"
 #include "src/feature/binary_stream.h"
 #include "src/gcode/queue.h"
+#include "../support/simulated_media.h"
+#include "../support/test_clock.h"
 #include <string>
 #include <vector>
 #include <string.h>
@@ -747,6 +749,152 @@ MARLIN_TEST(binary_stream, the_file_protocol_states_its_version_and_what_it_can_
   TEST_ASSERT_TRUE_MESSAGE(said(reply, "compression:heatshrink"),
     "and whether it can decompress - a sender that guessed would corrupt the file rather than "
     "fail to send it");
+}
+
+/**
+ * A transfer whose sender goes away is abandoned, and its partial file removed.
+ *
+ * The other end of the abort story. `an_abandoned_transfer_removes_its_partial_file` covers a
+ * sender that *says* it is giving up; this covers one that simply stops — unplugged, crashed,
+ * out of range. Nothing arrives to trigger anything, so the printer has to notice by itself, and
+ * `SDFileTransferProtocol::idle()` is what does: it runs on every pass that finds no data, and
+ * once the transfer has been quiet longer than `timeout` it aborts.
+ *
+ * Without it the card stays held open indefinitely, with a fragment on it, and every later
+ * transfer is answered `PFT:busy` — a printer that will not accept another upload until it is
+ * power-cycled.
+ *
+ * The clock is moved rather than waited on, which is the whole reason this is testable at all.
+ * Asserted through the protocol's own vocabulary as well as on the card: `PFT:invalid` for a
+ * write afterwards is what says the transfer really was closed rather than merely emptied.
+ */
+MARLIN_TEST(binary_stream, a_transfer_whose_sender_goes_quiet_is_abandoned) {
+  FreshTransfer transfer;
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("orphan.gco"));
+  transfer.send_file_packet(FILE_WRITE, "G28\nG1 X10");
+
+  // Longer than the ten seconds the protocol allows between packets. Nothing is sent: the empty
+  // read is what gives the reader a chance to notice, exactly as an idle main loop would.
+  TestClock::advance_seconds(11);
+  send({});
+
+  const std::string after = transfer.send_file_packet(FILE_WRITE, "more data");
+  TEST_ASSERT_TRUE_MESSAGE(said(after, "PFT:invalid"),
+    "a transfer left quiet past its timeout should be closed, so a later write has nothing to "
+    "write to - otherwise the card stays held and every later upload is refused as busy");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("orphan.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(),
+    "and the fragment it had written should be removed, as for a sender that aborts deliberately");
+}
+
+/**
+ * An open request that is not a well-formed name is refused rather than believed.
+ *
+ * The filename is read straight out of the packet buffer: `Packet::Open::decode()` points at
+ * `buffer[2]` and hands it on as a C string. Nothing later looks for a terminator, so the check
+ * in `validate()` is the only thing standing between a malformed packet and a `strlen` walking
+ * off the end of the buffer into whatever the queue's line accumulator holds.
+ *
+ * Two ways to be malformed, and they are different failures: a payload with no room for a name
+ * at all, and a name that never ends. Both must be refused, and both are sent here because a
+ * length check alone would pass the second.
+ */
+MARLIN_TEST(binary_stream, an_open_request_with_a_malformed_name_is_refused) {
+  FreshTransfer transfer;
+
+  // Two flag bytes and nothing else: no name, and nothing to terminate.
+  const std::string no_name(2, '\0');
+  TEST_ASSERT_TRUE_MESSAGE(said(transfer.send_file_packet(FILE_OPEN, no_name), "PFT:fail"),
+    "an open with no room for a name should be refused");
+
+  // A name with no terminator - the length is fine and the string never ends.
+  std::string unterminated;
+  unterminated += char(0);
+  unterminated += char(0);
+  unterminated += "runaway.gco";          // deliberately no trailing NUL
+  TEST_ASSERT_TRUE_MESSAGE(said(transfer.send_file_packet(FILE_OPEN, unterminated), "PFT:fail"),
+    "and an open whose name is not terminated should be refused too - it is read as a C string, "
+    "so accepting it walks off the end of the packet buffer");
+}
+
+/**
+ * A card that refuses the write says so, rather than reporting a transfer that did not happen.
+ *
+ * The one failure the sender cannot detect for itself. Every other refusal here is about the
+ * packet — the sender has the bytes and can resend them — but a full or faulty card fails after
+ * the packet arrived intact, and silence would be read as success. The upload would complete,
+ * the host would report a file transferred, and the card would hold a truncated one.
+ *
+ * `PFT:ioerror` is deliberately not `PFT:fail`: the packet was fine and resending it will not
+ * help, which is a different instruction to the sender.
+ */
+MARLIN_TEST(binary_stream, a_card_that_refuses_the_write_reports_it) {
+  FreshTransfer transfer;
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("nospace.gco"));
+
+  simulated_card().fail_writes();
+  const std::string reply = transfer.send_file_packet(FILE_WRITE, "G28\nG1 X10 Y10\n");
+  simulated_card().allow_writes();
+
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "PFT:ioerror"),
+    "a card that will not take the data should be reported - the packet arrived intact, so "
+    "silence here is a host told the file transferred when it did not");
+  TEST_ASSERT_FALSE_MESSAGE(said(reply, "PFT:fail"),
+    "and reported as an I/O error rather than a bad packet, because resending will not help");
+
+  transfer.send_file_packet(FILE_ABORT);
+}
+
+/**
+ * A dummy transfer is accepted and acted on, and writes nothing.
+ *
+ * The flag exists so a sender can measure the link — throughput, packet loss, the whole
+ * conversation — without committing anything to the card, which matters most when what is being
+ * sent is a firmware image and the printer is the thing at risk. So the protocol must answer
+ * exactly as it would for a real transfer while the card stays untouched, and both halves are
+ * the assertion: a dummy transfer that reported failure would be useless as a measurement, and
+ * one that wrote the file would defeat the point.
+ */
+MARLIN_TEST(binary_stream, a_dummy_transfer_is_accepted_and_writes_nothing) {
+  FreshTransfer transfer;
+
+  const std::string opened = transfer.send_file_packet(FILE_OPEN, open_payload("dummy.gco", true));
+  TEST_ASSERT_TRUE_MESSAGE(said(opened, "PFT:success"),
+    "a dummy transfer should open like any other - it exists to measure the link, and a link "
+    "measured through a different code path is not the one being measured");
+
+  /**
+   * The write has to be asserted, not just performed.
+   *
+   * Two separate guards read `dummy_transfer` — `file_open()` skips opening the file, and
+   * `file_write()` skips writing to it — and only the first is needed for the card to stay
+   * clean. So "no file afterwards" is satisfied by the open guard alone, and a build in which
+   * the *write* guard had been removed passes it: nothing is open, `card.write()` fails, and
+   * there is still no file. Verified exactly that way, by removing the write guard and watching
+   * this test go on passing.
+   *
+   * What distinguishes them is what the printer *says*. With both guards the write is a silent
+   * success; with only the first it is an I/O error, because the data has nowhere to go.
+   */
+  const std::string written = transfer.send_file_packet(FILE_WRITE, "G28\nG1 X10 Y10\n");
+  TEST_ASSERT_FALSE_MESSAGE(said(written, "PFT:ioerror"),
+    "a dummy write should succeed silently - a link being measured must not report errors that "
+    "belong to the measurement rather than to the link");
+
+  const std::string closed = transfer.send_file_packet(FILE_CLOSE);
+  TEST_ASSERT_TRUE_MESSAGE(said(closed, "PFT:success"), "and close like any other");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("dummy.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(),
+    "but nothing should have been written - the flag exists so a firmware image can be measured "
+    "over the link without being committed to the card");
 }
 
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {

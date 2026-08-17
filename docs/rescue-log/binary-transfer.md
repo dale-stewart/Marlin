@@ -479,10 +479,56 @@ Timeouts are down to 19 of 397 detections, so the by-assertion figure is now clo
 one — the poll-cost change from the sixth slice is what did that, and it holds up on a much
 larger population.
 
+## Eighth slice (2026-08-16): four clusters, four tests
+
+Each of the killable clusters above named its missing input, so this round is one test per
+cluster. **25 of the 161 survivors killed**, measured by re-running that exact population rather
+than by comparing totals — which is the only way to say what a pass achieved. Coverage 86% -> 87%.
+
+- **A transfer whose sender goes quiet is abandoned.** The other end of the abort story: not a
+  sender that *says* it is giving up, but one that simply stops. Nothing arrives to trigger
+  anything, so the printer notices by itself — `SDFileTransferProtocol::idle()` runs on every pass
+  that finds no data, and aborts once the transfer has been quiet past `timeout`. Without it the
+  card is held open with a fragment on it and every later upload is refused as busy, until someone
+  power-cycles the printer. Testable only because the clock can be moved rather than waited on.
+- **An open request with a malformed name is refused.** `Packet::Open::decode()` points at
+  `buffer[2]` and hands it on as a C string, and nothing after `validate()` looks for a
+  terminator. Two ways to be malformed and both are sent, because a length check alone would pass
+  the second: a payload with no room for a name, and a name that never ends.
+- **A card that refuses the write reports it.** The one failure a sender cannot detect for itself
+  — every other refusal is about the packet, which the sender still holds and can resend, but a
+  full card fails *after* the packet arrived intact. Silence there is a host told the file
+  transferred when it did not. `PFT:ioerror` rather than `PFT:fail` is the distinction: resending
+  will not help.
+- **A dummy transfer is accepted and writes nothing.** The flag lets a sender measure the link
+  without committing anything to the card, which matters most when what is being sent is a
+  firmware image.
+
+### The dummy test did not pin what it claimed, and the injection said so
+
+Worth recording because the test looked obviously right. `a_dummy_transfer_is_accepted_and_writes_nothing`
+asserted the transfer succeeded and no file appeared — and removing the dummy guard from
+`file_write()` left it **passing**.
+
+Two separate guards read `dummy_transfer`: `file_open()` skips opening the file and `file_write()`
+skips writing to it, and only the first is needed for the card to stay clean. So "no file
+afterwards" is satisfied by the open guard alone. With the write guard gone, nothing is open,
+`card.write()` fails, and there is still no file — the assertion holds for a reason that has
+nothing to do with what it names.
+
+What separates them is what the printer *says*: with both guards the write is a silent success,
+with only the first it is an I/O error. Asserting that fixed it. The general shape is one already
+in `assertion-patterns.md` — an outcome reachable by more than one mechanism pins none of them —
+and it is worth noting that it survived being written carefully and was caught only by the
+injection.
+
 ## Still to do
 
-**The survivors are now concentrated and each cluster names its missing input**, which is what a
-useful survivor list looks like:
+The clusters shrank rather than closed: `validate()` 9 -> 5, the idle watchdog 12 -> 8, and the
+write arms cleared entirely. What is left there wants either more input classes or triage as
+equivalents.
+
+The list as it stood before this slice, for reference:
 
 | Line | Count | What is missing |
 |---|---|---|

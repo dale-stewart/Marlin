@@ -118,7 +118,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 767, 777, 819, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 767, 777, 823, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
