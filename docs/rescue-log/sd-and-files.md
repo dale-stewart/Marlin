@@ -199,13 +199,40 @@ test, and the same lever applies. What it would take: a card-detect pin defined 
 board outside the TFT block, either by a new configuration or by moving the definition (which
 would turn detection on for all fourteen and is therefore not a change to make quietly).
 
-**`Marlin/tests/sd/test_media_insertion.cpp` is written and is inert.** Three tests — the card
-released on removal, remounted on reinsertion, and a print aborted when the card is pulled — all
-behind `#if ALL(HAS_MEDIA, HAS_SD_DETECT)`, which is false everywhere today. They compile to
-nothing and the suite total does not move. That is recorded loudly here because an inert test file
-is exactly the trap the taxonomy warns about: a test that exists but not in the build you
-measured. It is kept rather than deleted because the fixture work is the expensive part and it
-activates the day a configuration provides the pin.
+**Resolved the same day by adding the configuration.** `015-sd_detect` defines `SD_DETECT_PIN`
+directly from the config file rather than by enabling a display — on this board the pin otherwise
+exists only inside `#if ANY(TFT_COLOR_UI, TFT_CLASSIC_UI, TFT_LVGL_UI)` and the LCD blocks, so
+reaching it through a UI option would drag in thousands of lines of vendored display code to test
+four branches in the media layer. Marlin's `config.ini` mechanism appends unknown keys as
+`#define`s, which makes the whole configuration four settings.
+
+### Register #68: the removal branch cannot be reached at all
+
+The first run of that configuration failed all three tests, and the reason was not the fixture.
+
+`manage_media()` computes `did_insert = TERN(HAS_MULTI_VOLUME, vadd, stat) != INSERT_NONE`, so
+without multi-volume support the `else` is entered **only** when `stat == INSERT_NONE` — and the
+condition guarding that `else` *is* `stat`. It is therefore always false. `release()` is never
+called, `flag.mounted` stays true after the card is physically gone, and because `release()` is
+what calls `abortFilePrintSoon()`, **a print whose card is pulled keeps running**.
+
+The probe that settled it: with the card removed, `isSDCardInserted()` correctly returned 0 and
+`isMounted()` was still 1 after `manage_media()`. The pin worked; the branch did not.
+
+The tests were then rewritten to characterize what the firmware does rather than what it should,
+per the rescue's rule that a discovered defect is pinned and reported rather than quietly fixed —
+`a_removed_card_is_not_released` and `a_card_pulled_during_a_print_does_not_stop_it`, both marked
+LEGACY-BEHAVIOR.
+
+**`inserting_a_card_mounts_it` is the control, and it is the part that makes the other two mean
+anything.** It passes, so `manage_media()` demonstrably runs and demonstrably acts. Without it,
+"removal does nothing" is equally well explained by the function never being reached, and the
+tests would be pinning the fixture.
+
+This is the argument for the whole `006-eeprom` pattern in one example. The cluster was
+unreachable, the configuration cost four lines, and what it exposed on its first run was a
+firmware defect that had been invisible in every build this project measures — not a gap in the
+tests.
 
 The remaining clusters, for whoever picks this up: `openAndPrintFile` (40, of which 33 are on one
 line computing the size of a command buffer that is never tight — likely equivalent),

@@ -96,58 +96,69 @@ namespace {
 }
 
 /**
- * Taking the card out releases it, so nothing goes on reading from a slot that is empty.
+ * Inserting a card mounts it — so the state machine does run and does act.
  *
- * Everything the firmware knows about the volume — the mounted flag, the working directory, the
- * item count — describes a card that is no longer there. Continuing to trust it means reading
- * blocks from a device that will answer with whatever the bus floats to, which is worse than
- * failing, because it looks like data.
+ * This one is the control for the two below it. Without it, "removal does nothing" is equally
+ * well explained by `manage_media()` never being reached at all, and the tests would be pinning
+ * the fixture rather than the firmware.
  */
-MARLIN_TEST(media_insertion, taking_the_card_out_releases_it) {
-  CardInTheSlot slot;
-  TEST_ASSERT_TRUE_MESSAGE(card.isMounted(), "the card should start out mounted");
-
-  pull_the_card();
-  let_the_machine_notice();
-
-  TEST_ASSERT_FALSE_MESSAGE(card.isMounted(),
-    "a card that has been removed should not still be mounted - every later read would be of "
-    "an empty slot, and an empty slot answers rather than refusing");
-}
-
-/**
- * Putting it back mounts it again, without a command being sent.
- *
- * The pair matters more than either half. A firmware that released on removal and never
- * remounted would be indistinguishable from one that worked, right up until the user put the
- * card back and found the printer had stopped seeing it — and the fix, power-cycling, hides the
- * fault from whoever might have reported it.
- */
-MARLIN_TEST(media_insertion, putting_it_back_mounts_it_again) {
+MARLIN_TEST(media_insertion, inserting_a_card_mounts_it) {
   CardInTheSlot slot;
 
   pull_the_card();
-  let_the_machine_notice();
-  TEST_ASSERT_FALSE(card.isMounted());
+  let_the_machine_notice();       // lets prev_stat settle on "absent"
+  card.release();
+  TEST_ASSERT_FALSE_MESSAGE(card.isMounted(), "the fixture did not get to an unmounted state");
 
   insert_the_card();
   let_the_machine_notice();
 
   TEST_ASSERT_TRUE_MESSAGE(card.isMounted(),
-    "a card put back in should be mounted again on its own - no command is sent when someone "
-    "pushes a card into a slot");
+    "a card appearing in the slot should be mounted without a command being sent - and this "
+    "passing is what makes the two tests below claims about the firmware rather than the fixture");
 }
 
 /**
- * A card pulled during a print aborts the print rather than letting it run on.
+ * LEGACY-BEHAVIOR: taking the card out does **not** release it. See defect register #68.
  *
- * This is the one with consequences. The job is being read from the card a few hundred bytes at
- * a time, so a print whose source has gone is a machine executing whatever it already had
- * buffered and then stopping mid-move with the heaters on. `release()` asks for the abort — the
- * flag rather than the act, because the queue has to unwind first — and that request is what is
- * asserted here.
+ * `manage_media()` has a branch for media leaving the slot, and on a single-volume machine it
+ * cannot be taken. The `else` is reached only when `stat == INSERT_NONE`, and the condition
+ * guarding it *is* `stat`:
+ *
+ *     const bool did_insert = TERN(HAS_MULTI_VOLUME, vadd, stat) != INSERT_NONE;
+ *     if (did_insert) { ... }
+ *     else if ( TERN(HAS_MULTI_VOLUME, (...), stat) ) { release(); }
+ *
+ * So `release()` is never called, `flag.mounted` stays true, and the firmware goes on believing
+ * in a volume that has been physically removed. Asserted as it behaves rather than as it should,
+ * per the rescue's rule that a discovered defect is recorded and pinned, not quietly fixed.
  */
-MARLIN_TEST(media_insertion, a_card_pulled_during_a_print_aborts_it) {
+MARLIN_TEST(media_insertion, a_removed_card_is_not_released) {
+  CardInTheSlot slot;
+  TEST_ASSERT_TRUE_MESSAGE(card.isMounted(), "the card should start out mounted");
+
+  pull_the_card();
+  TEST_ASSERT_FALSE_MESSAGE(card.isSDCardInserted(),
+    "the detect line should report the card gone - if this fails the fixture is at fault, not "
+    "the firmware");
+
+  let_the_machine_notice();
+
+  TEST_ASSERT_TRUE_MESSAGE(card.isMounted(),
+    "LEGACY-BEHAVIOR: the volume is still mounted after the card was removed, because the "
+    "removal branch cannot be reached on a single-volume machine - see register #68");
+}
+
+/**
+ * LEGACY-BEHAVIOR: a card pulled during a print does not stop the print. Register #68.
+ *
+ * This is the consequence that matters, and it is the reason the branch is there at all:
+ * `release()` calls `abortFilePrintSoon()` when a print is running. With `release()` unreachable
+ * the request is never made, so the machine keeps executing a job whose source has gone —
+ * reading further blocks from a slot that is empty, which on real hardware returns whatever the
+ * bus floats to rather than an error.
+ */
+MARLIN_TEST(media_insertion, a_card_pulled_during_a_print_does_not_stop_it) {
   CardInTheSlot slot;
   put_file("job.gco", "G1 X1\nG1 X2\nG1 X3\nG1 X4\n");
 
@@ -158,11 +169,11 @@ MARLIN_TEST(media_insertion, a_card_pulled_during_a_print_aborts_it) {
   pull_the_card();
   let_the_machine_notice();
 
-  TEST_ASSERT_TRUE_MESSAGE(card.flag.abort_sd_printing,
-    "pulling the card during a print should ask for the print to be abandoned - the source of "
-    "the job is gone, and what is left in the buffer is a few moves and then silence with the "
-    "heaters still on");
-  TEST_ASSERT_FALSE_MESSAGE(card.isMounted(), "and the volume should be released with it");
+  TEST_ASSERT_FALSE_MESSAGE(card.flag.abort_sd_printing,
+    "LEGACY-BEHAVIOR: no abort is requested when the card is pulled mid-print, because the "
+    "code that would request it is unreachable - register #68");
+  TEST_ASSERT_TRUE_MESSAGE(card.isStillPrinting(),
+    "and the print is still considered to be running, with its source no longer in the machine");
 }
 
 #endif // HAS_MEDIA && HAS_SD_DETECT

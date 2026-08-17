@@ -118,7 +118,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 767, 777, 834, 802, 740, 737, 757, 804, 827, 731, 734, 740, 735**. The counts above vary
+**fifteen** configs in `test/`, reporting **731, 767, 777, 834, 802, 740, 737, 757, 804, 827, 731, 734, 740, 735, 787**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -276,6 +276,7 @@ Configurations in `test/`:
 | `012-max_endstops` | `Z_HOME_DIR 1` — the first machine here that homes an axis to its *maximum*, which is what makes `home_dir(axis) > 0` reachable and `base_home_pos(axis)` non-zero |
 | `013-bogus_temp_grace` | `BOGUS_TEMPERATURE_GRACE_PERIOD` — a temperature error disables the heaters and **returns** instead of calling `kill()`, which is the seam register #19 asks for and it already existed in the firmware |
 | `014-pid_bed` | `PIDTEMPBED` — the bed regulated rather than switched, so `M303 E-1` can tune it and `PID_autotune`'s bed arms are reachable. **States its own bed PID gains**, matched to `SimulatedBed` rather than to a real 250 W heater; the shipped ones hang `M190` |
+| `015-sd_detect` | `SD_DETECT_PIN` — the first machine here that can tell whether a card is actually in the slot. Without it `isSDCardInserted()` is a constant, so `manage_media()` can never see a card arrive or leave and 66 of `cardreader.cpp`'s survivors sat in it. The pin is defined by the configuration itself rather than by enabling a display, because on this board it otherwise exists only inside the TFT and LCD blocks — thousands of lines of vendored UI to reach four branches. Found register #68 on its first run. |
 
 `gcovr` is required for coverage reports (`uv tool install gcovr` — `pip install --user`
 is blocked by PEP 668 on this machine).
