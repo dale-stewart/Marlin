@@ -229,6 +229,34 @@ public:
     e.firstClusterLow = e.fileSize ? store_in_one_cluster(contents) : 0;
   }
 
+  // ---- A card that has been used before ----
+
+  /**
+   * Mark a run of clusters as already in use, the way files already on the card would.
+   *
+   * Everything this suite writes goes onto a virgin volume, so the allocator has only ever
+   * walked a FAT of zeros: it takes the first cluster it looks at, every file is contiguous,
+   * and the branches for skipping occupied space, wrapping at the end of the table and giving
+   * up when full have never been taken. A used card is the input they were written for.
+   *
+   * Both copies of the FAT are marked, because that is what a real writer does and what
+   * `SdVolume` will find if it ever reads the second.
+   */
+  void occupy_clusters(const uint16_t first, const uint16_t count) {
+    for (uint8_t f = 0; f < FAT_COUNT; ++f) {
+      uint16_t *fat = (uint16_t*)block(RESERVED + f * BLOCKS_PER_FAT);
+      for (uint16_t c = first; c < first + count; ++c) fat[c] = 0xFFFF;   // in use, end of chain
+    }
+  }
+
+  // Total data clusters on this volume, numbered from 2.
+  static constexpr uint16_t cluster_count() { return uint16_t(TOTAL_BLOCKS - DATA_START); }
+
+  // Leave the card with only `free_count` clusters unallocated, at the far end.
+  void fill_except(const uint16_t free_count) {
+    occupy_clusters(2, uint16_t(cluster_count() - free_count));
+  }
+
   // ---- Fault injection ----
 
   /**

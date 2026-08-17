@@ -106,6 +106,40 @@ already recorded in `scoring.md`.
 
 ## Not done
 
-The allocator is untouched — `allocContiguous` (67), `fatPut` (34), `fatGet` (25) — and it wants
-the same kind of thing the validation wanted: a card that is nearly full or fragmented, rather
-than one with 8095 free clusters and nothing on it.
+### The allocator: the same treatment, a much poorer return
+
+Three more tests gave the allocator the input it had never had — a fragmented card, a card with
+files already on it, a card with no room — through two fixture helpers (`occupy_clusters`,
+`fill_except`). All three are verified by injection: making the allocator reuse occupied clusters
+or never give up fails them, and making the reader assume files are contiguous fails the
+fragmentation test.
+
+And the cluster they were written for barely moved:
+
+| function | before | after |
+|---|---|---|
+| **`allocContiguous`** | 68/137 | **71/143** |
+| `fatPut` | 34/89 | 30/89 |
+| `fatGet` | 26/69 | 23/69 |
+| `freeChain` | 7/22 | 5/22 |
+| file total | 283/673 (57.9%) | 275/679 (**59.5%**) |
+
+Twelve mutants net, and the target cluster flat once its population growth is allowed for.
+
+**The reason is worth more than the tests.** `SdVolume::init()`'s survivors were a missing
+*input* — give the validators something to reject and they start deciding. `allocContiguous()`'s
+survivors are not. Its remaining mutants are in the search bookkeeping — where the scan starts,
+how `bgnCluster` and `endCluster` advance, the wrap at the end of the table — and **any search
+that returns a usable run of free clusters satisfies every assertion available from outside**.
+The file reads back either way. The choice of clusters is under-determined by the contract.
+
+Killing them would mean asserting *which* clusters were chosen, which is pinning the
+implementation — the thing the taxonomy says not to do. So this is the third category rather than
+the second: not unasserted, under-determined. The tests are still worth having, because a
+fragmented card and a full card are real and were untested; the score was never the thing they
+could move.
+
+That is also the honest counter-example to the pattern that has worked all session. A missing
+input class explained the validation cluster, the long-filename cluster, the card-detect cluster
+and the compression cluster. It does not explain this one, and applying the same move produced a
+tenth of the return.
