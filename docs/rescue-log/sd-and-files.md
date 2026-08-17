@@ -171,6 +171,46 @@ Two things, both now visible only because the run was done cold:
   dispatches straight to the parser, and the behaviour under test only happens inside
   `queue.advance()`. The file's own fixture was the wrong tool and looked like the right one.
 
+### Step 3 on `cardreader.cpp`, and a cluster that is a missing configuration
+
+With `write_command` covered, the mutation run could finally see it — which is the interleaving
+rule the cold run had just produced, working:
+
+    testable 1002 · killed 572 by assertion · timed out 33 · survived 397
+    raw 605/1002 = 60.4%      by assertion 57.1%
+    1908 mutants on 329 covered lines
+
+86% covered, 60.4% killable. That is the fourth data point for the rule measured this morning —
+pure code scores near its coverage, stateful code observed indirectly does not — and
+`cardreader.cpp` is squarely the second kind.
+
+The largest cluster was **`manage_media()` at 66 of 397**: the state machine that notices a card
+arriving or leaving. Every test in this tree starts with the card in the slot and leaves it
+there, so it had never been given anything to notice.
+
+**It is not a missing test.** Whether a card is present is `READ(SD_DETECT_PIN) == SD_DETECT_STATE`
+when `HAS_SD_DETECT` is set, and in this tree it never is: the only board that defines
+`SD_DETECT_PIN` does so inside `#if ANY(TFT_COLOR_UI, TFT_CLASSIC_UI, TFT_LVGL_UI)`, and **none of
+the fourteen configurations enables any of them**. Without a detect line `isSDCardInserted()` is a
+constant, the removal branch cannot be taken, and the cluster is unreachable by construction.
+
+So it is the `006-eeprom` situation again — a behaviour that needs a *configuration* rather than a
+test, and the same lever applies. What it would take: a card-detect pin defined for the native
+board outside the TFT block, either by a new configuration or by moving the definition (which
+would turn detection on for all fourteen and is therefore not a change to make quietly).
+
+**`Marlin/tests/sd/test_media_insertion.cpp` is written and is inert.** Three tests — the card
+released on removal, remounted on reinsertion, and a print aborted when the card is pulled — all
+behind `#if ALL(HAS_MEDIA, HAS_SD_DETECT)`, which is false everywhere today. They compile to
+nothing and the suite total does not move. That is recorded loudly here because an inert test file
+is exactly the trap the taxonomy warns about: a test that exists but not in the build you
+measured. It is kept rather than deleted because the fixture work is the expensive part and it
+activates the day a configuration provides the pin.
+
+The remaining clusters, for whoever picks this up: `openAndPrintFile` (40, of which 33 are on one
+line computing the size of a command buffer that is never tight — likely equivalent),
+`printListing` (37, needs nested directories in a listing), `diveToFile` (31, needs deep paths).
+
 ## What is left
 
 Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of

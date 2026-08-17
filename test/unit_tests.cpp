@@ -333,6 +333,19 @@ static void quiesce_simulated_peripherals() {
      * where each test starts.
      */
     if (!card.isMounted()) card.mount();
+
+    /**
+     * ...and put the card back in the slot.
+     *
+     * Where the board has a card-detect line, whether a card is present is a *pin*, and a
+     * simulated pin holds whatever the last test wrote to it. A test that pulls the card and
+     * then fails leaves every later test running against an empty slot — which surfaces as
+     * unrelated media tests unable to open files they have just written, with nothing to
+     * suggest the slot.
+     */
+    #if HAS_SD_DETECT
+      WRITE(SD_DETECT_PIN, SD_DETECT_STATE);
+    #endif
   #endif
 
   /**
