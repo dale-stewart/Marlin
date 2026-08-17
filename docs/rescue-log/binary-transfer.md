@@ -459,18 +459,44 @@ two ends disagree about what is open.
 
 ### Where it leaves the file
 
-`binary_stream.cpp` **52% -> 85%** (207 of 241 lines), and the platform-agnostic tree 74.5% ->
-76.0%. What remains uncovered is the compressed-transfer path, the I/O-failure arms, and the
-packet-overrun check.
+`binary_stream.cpp` **52% -> 86%** (208 of 241 lines), and the platform-agnostic tree 74.5% ->
+76.0%.
+
+    testable 558 · killed 378 by assertion · timed out 19 · survived 161
+    raw 397/558 = 71.1%      by assertion 378/558 = 67.7%
+    killable 77.1% raw, 73.4% by assertion   (43 verified equivalents)
+    1009 mutants on 208 covered lines · 105s timeout from a 5.2s baseline
+    451 build failures excluded
+
+**The raw score fell from 73.1% and that is not a regression.** The population is a different
+one: 208 covered lines against 133, and 558 testable mutants against 401. Covering the file
+half brought 157 new mutants into scope, most of them born unkilled, and a score is only
+comparable to another over the same population. The previous run's number is not wrong and this
+one is not worse — they are answers to different questions, and the difference between them is
+not work undone. This is the trap `scoring.md` warns about, met head-on for the first time here.
+
+Timeouts are down to 19 of 397 detections, so the by-assertion figure is now close to the raw
+one — the poll-cost change from the sixth slice is what did that, and it holds up on a much
+larger population.
 
 ## Still to do
 
-The remaining real survivors are small and scattered: the `%` and mask arithmetic in `checksum()`
-(3), the SYNC special-case condition (4), `protocol()` (2), and `bytes_received += size` at line
-365 (4) — that last one being a member nothing ever reads, which is its own small finding.
+**The survivors are now concentrated and each cluster names its missing input**, which is what a
+useful survivor list looks like:
 
-Untouched, and still the bulk of the file: `SDFileTransferProtocol` — open, write, close, abort
-and the compressed path — which needs a card and a file rather than a reply to assert on.
+| Line | Count | What is missing |
+|---|---|---|
+| 55 | 9 | `Open::validate()` — no malformed OPEN is ever sent. A name with no terminator is exactly the input that makes `filename()` read past the buffer |
+| 147-148 | 12 | `SDFileTransferProtocol::idle()`, the watchdog that aborts a transfer left open. Needs a transfer abandoned and the clock advanced past `timeout` |
+| 106 | 7 | the `dummy_transfer` arm and the write-failure arm. `simulated_card().fail_writes()` exists for the second |
+| 110-115 | 8 | the compressed path and the flush on close |
+| 177, 185 | 4 | `PFT:fail` and `PFT:ioerror` |
+| 214-231 | 43 | the reset block — verified equivalent, see the fifth slice |
+
+All four of the killable clusters are reachable with fixtures that already exist. None is done.
+
+The `.cpp` also still holds `checksum()`'s arithmetic (3) and the SYNC special-case condition (4)
+from earlier slices.
 
 ## Not done
 

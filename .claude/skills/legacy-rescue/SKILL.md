@@ -141,6 +141,17 @@ be far below the coverage number, and treat that gap as the real backlog.
 - Scope mutants to the target only. Set a timeout per mutant of ~2-5x the suite's
   normal runtime to catch infinite loops.
 - Record: mutants generated, killed, survived, timed out, and not-covered.
+- **Do not judge how long the run will take from its opening minutes.** A parallel run
+  starts with every worker compiling at once, and the rate stays uneven afterwards
+  because a mutant that hangs costs the whole timeout while a mutant that fails costs
+  seconds. So the early figure understates by a large factor and the later ones swing.
+  Sample twice, minutes apart, once the workers are saturated, and quote the second.
+
+  This is in `reference/scoring.md` too, and it is repeated here because it is the
+  cheapest mistake to make and an expensive one to act on: the number gets used to
+  decide whether to abandon a run. It has caught us twice — once reading six hours
+  from a warm-up that finished in one, and once reading three hours from a run that
+  had reached five mutants a minute and went on to two hundred.
 
 **Then validate the harness before believing any of it** — every harness, every time.
 `reference/harness-validation.md` is that work, and `harness-validator` is the agent
