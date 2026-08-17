@@ -401,6 +401,19 @@ is blocked by PEP 668 on this machine).
   the job starts, or the wait returns at once and reports a job done that has not begun.
   `make unit-test-mutation` writes its results at the end, so wait on a results path you
   have just deleted or have not used before.
+
+  **In a backgrounded shell the same trap is silent, and that is worse.** On 2026-08-16 two of
+  these were left spinning for **eleven hours** — one on `make unit-test-all-local`, one on
+  `make unit-test-coverage`, both jobs long finished. Backgrounded, they block nothing and report
+  nothing, so unlike the 2026-08-13 pile-up there was no wrong answer to notice; they simply
+  accumulated until someone looked at the shell count. The artifact form used in the same session
+  (`until [ -s <output> ]; do sleep N; done`) never hung once, which is the whole argument.
+
+  Worth stating because knowing the rule was demonstrably not enough: the bracketed form was used
+  correctly elsewhere in that same session, and `pkill -f` still killed its own shell twice —
+  once because the command legitimately contained the target path, which is the case the
+  `[m]ake` trick does **not** cover. Prefer waiting on an artifact; if you must name a process,
+  kill and match by PID.
 - **Never `git add -A` after a coverage or mutation run.** Both rewrite
   `Marlin/Configuration.h`, `Configuration_adv.h` and `config.ini` for the suite they measure
   and leave them rewritten. Cleaning them before the *test* run is not enough if a measurement
