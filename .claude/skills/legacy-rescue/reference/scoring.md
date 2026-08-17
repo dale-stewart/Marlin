@@ -32,6 +32,19 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
   visible. Silent success on a target that was never really mutated is the bad one, and the tell
   is a suspiciously perfect score over a suspiciously small mutant population.
 
+- **A test can add real coverage and real assertions and move the target's score not at all.**
+  A mutation score is about one *file*; a guarantee is usually about a *path through several*.
+  Where the behaviour you just pinned is implemented in a dependency — a decoder, a formatter, a
+  driver the target delegates to — the target's own lines are unchanged, and the survivor list
+  does not move. Ours added a test that took a library from 52% to 81% and killed zero of its
+  target's survivors.
+
+  That reads as failure and is not. Report it as what it is: the coverage it bought, the file it
+  bought it in, and the fact that the target's score was not the thing being moved. Otherwise the
+  obvious inference — "the test was worthless, revert it" — is available and wrong. It is also
+  the signal that the dependency has become worth measuring in its own right, which is usually a
+  better next target than squeezing the original.
+
 - **When the target is generic, the test chooses which copy it measures — and it will not choose
   the production one by accident.** Anything instantiated per type or per parameter (templates,
   generics, macro-generated code) is compiled once per instantiation, and coverage counts each

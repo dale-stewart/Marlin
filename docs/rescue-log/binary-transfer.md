@@ -555,12 +555,52 @@ the tree moved further than the file because `heatshrink_decoder.cpp` had never 
 anything either. It goes 0% -> **52%** (88 of 168 lines) as a side effect, which is a third of
 the tree's gain from a single test.
 
-That leaves an obvious and cheap follow-on: the half of the decoder still dark is the
-back-reference machinery, and reaching it needs a stream with an actual back reference in it
-rather than literals. The encoder side is four more lines of the same helper — emit a `0` tag,
-an index and a length — and it would test the part of the decoder that can actually corrupt a
-file, since a mis-decoded back reference produces plausible bytes rather than obvious rubbish.
-Not done.
+### The back reference, and why the assertion is the text
+
+Done next, and it turned the follow-on note into the most instructive test of the slice.
+
+A literal that decodes wrongly gives a wrong byte. **A back reference that decodes wrongly gives
+the wrong run of bytes copied from the wrong place** — still valid-looking text. On a G-code
+upload that is a move to somewhere nobody asked for; on a firmware image it is whatever those
+bytes happen to mean. It is also where the off-by-ones live: the decoder increments both fields
+after reading them (`output_index++`, `output_count++`), so a distance and a length are each
+stored one less than they mean.
+
+`HeatshrinkStream` grew a `backref(distance, length)` to go with `literal()`, and the test sends
+three literals and one back reference of five bytes from three back — the shape real G-code
+compresses into, a repeated line. Five bytes in, eight out.
+
+**The injection made the argument better than the prose does.** Removing the distance increment
+gives:
+
+    Expected 'G1\nG1\nG1' Was 'G1\n1\n1\n1'
+
+Same length, different file. A length check passes it; so would a checksum the test computed
+itself. Only comparing the exact expected text catches it. Removing the length increment fails on
+the size instead, so the two assertions are independent rather than one being a weaker restatement
+of the other.
+
+The stream helper now also *asserts* that it ends on a byte boundary rather than leaving it to
+the author to remember — padding with zeros would hand the decoder the tag bit of a back
+reference that never arrives, and the resulting failure would point at the firmware.
+
+`heatshrink_decoder.cpp` **52% -> 81%**, the tree 77.2% -> 77.9%. `binary_stream.cpp` is
+unchanged at 91%, correctly: this test exercises the decoder, not new lines of the protocol.
+
+The decoder has never been mutation tested — it is now the best-covered unmeasured file in the
+tree, and a natural next target rather than part of this one.
+
+**And it killed no mutants at all in `binary_stream.cpp`** — 0 of the 128 remaining survivors,
+which is the right answer rather than a disappointing one. The test pins behaviour that lives in
+`heatshrink_decoder.cpp`; the protocol file's own lines are the same ones the literal test already
+exercised. Worth recording because the two numbers disagree in a way that reads as failure: a
+test that adds real coverage and real assertions can move the target's mutation score not at all,
+because the code it pins is not in the target. The score is about a *file*, and the guarantee is
+about a *path through several*.
+
+The transferable half is in `scoring.md` beside the existing note on what the mutation tool can
+see — the same distinction from the other side. There, coverage saw code the mutation run could
+not reach; here, a test reaches code that belongs to a different measurement altogether.
 
 ## Still to do
 

@@ -61,6 +61,7 @@
 #include "src/gcode/queue.h"
 #include "../support/simulated_media.h"
 #include "../support/test_clock.h"
+#include "src/libs/heatshrink/heatshrink_config.h"
 #include <string>
 #include <vector>
 #include <string.h>
@@ -182,18 +183,53 @@ namespace {
    * padded with zeros, and a zero is the tag bit for a back reference, so the decoder would be
    * offered the beginning of a token that never arrives.
    */
-  std::string heatshrink_literals(const std::string &text) {
+  class HeatshrinkStream {
+  public:
+    // A literal costs nine bits: the tag, then the byte.
+    HeatshrinkStream& literal(const unsigned char c) { push(1, 1); push(c, 8); return *this; }
+
+    /**
+     * A back reference: repeat `length` bytes starting `distance` back in the output.
+     *
+     * Thirteen bits here — the tag, then the window and lookahead widths this build was
+     * configured with. **Both fields are stored one less than they mean**, because the decoder
+     * increments each after reading it (`output_index++`, `output_count++`), and neither a
+     * distance nor a length of zero would be meaningful. Getting that off by one produces a
+     * stream that decodes to plausible-looking wrong bytes rather than to an error.
+     */
+    HeatshrinkStream& backref(const uint16_t distance, const uint16_t length) {
+      push(0, 1);
+      push(uint32_t(distance - 1), HEATSHRINK_STATIC_WINDOW_BITS);
+      push(uint32_t(length - 1), HEATSHRINK_STATIC_LOOKAHEAD_BITS);
+      return *this;
+    }
+
+    // The stream must end on a byte boundary — see the note in the tests about why padding is
+    // not merely untidy here.
+    std::string bytes() const {
+      TEST_ASSERT_EQUAL_INT_MESSAGE(0, nbits,
+        "the heatshrink stream does not end on a byte boundary, so it would be padded with "
+        "zeros - and a zero is the tag bit of a back reference the decoder will wait for");
+      return out;
+    }
+
+  private:
     std::string out;
     uint32_t bits = 0;
     int nbits = 0;
-    auto push = [&](const uint32_t value, const int count) {
+
+    void push(const uint32_t value, const int count) {
       for (int i = count - 1; i >= 0; --i) {
         bits = (bits << 1) | ((value >> i) & 1u);
         if (++nbits == 8) { out += char(bits & 0xFF); bits = 0; nbits = 0; }
       }
-    };
-    for (const unsigned char c : text) { push(1, 1); push(c, 8); }
-    return out;
+    }
+  };
+
+  std::string heatshrink_literals(const std::string &text) {
+    HeatshrinkStream s;
+    for (const unsigned char c : text) s.literal(c);
+    return s.bytes();
   }
 
   enum : uint8_t { FILE_QUERY = 0, FILE_OPEN = 1, FILE_CLOSE = 2, FILE_WRITE = 3, FILE_ABORT = 4 };
@@ -973,6 +1009,54 @@ MARLIN_TEST(binary_stream, a_compressed_transfer_is_decompressed_onto_the_card) 
   TEST_ASSERT_EQUAL_STRING_MESSAGE(contents, back,
     "and hold the decompressed file - storing the stream verbatim would look identical on the "
     "wire, right down to the success at the close");
+}
+
+/**
+ * A back reference is expanded, and expanded from what has already been written.
+ *
+ * The half of the decoder the literal test leaves dark, and the half that can actually corrupt a
+ * file. A literal that decodes wrongly gives a wrong byte; a back reference that decodes wrongly
+ * gives the *wrong run of bytes copied from the wrong place*, which is still valid-looking text.
+ * On a G-code upload that is a move to somewhere nobody asked for; on a firmware image it is
+ * whatever those bytes happen to mean.
+ *
+ * It is also where the off-by-ones live. The decoder increments both fields after reading them,
+ * so a distance and a length are each stored one less than they mean, and getting either wrong
+ * still decodes — to something plausible. That is why this asserts the exact expanded text
+ * rather than its length: a length check passes for any distance at all.
+ *
+ * The stream is three literals and one back reference of five bytes from three back, which is
+ * exactly the shape real G-code compresses into — a repeated line. Five bytes in, eight out, and
+ * 3x9 + 13 bits lands on a byte boundary, which is the constraint the helper enforces.
+ */
+MARLIN_TEST(binary_stream, a_back_reference_is_expanded_from_what_came_before) {
+  FreshTransfer transfer;
+  const char * const expected = "G1\nG1\nG1";
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("backref.gco", false, /*compressed=*/true));
+
+  HeatshrinkStream stream;
+  stream.literal('G').literal('1').literal('\n').backref(/*distance=*/3, /*length=*/5);
+  transfer.send_file_packet(FILE_WRITE, stream.bytes());
+
+  TEST_ASSERT_TRUE_MESSAGE(said(transfer.send_file_packet(FILE_CLOSE), "PFT:success"),
+    "the transfer should close cleanly");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("backref.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "the file should exist on the card");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(strlen(expected), card.getFileSize(),
+    "and be longer than the five bytes that carried it - a back reference is the only thing in "
+    "the stream that produces more output than input");
+
+  char back[32] = { 0 };
+  card.read(back, strlen(expected));
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(expected, back,
+    "and the repeat should come from the right place - a back reference off by one still decodes, "
+    "to text that looks like a file and is not the one that was sent");
 }
 
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {
