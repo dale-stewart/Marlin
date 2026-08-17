@@ -84,7 +84,27 @@ public:
    * to treating block zero as the boot sector, and the partition attempt fails harmlessly
    * because the bytes where a partition table would sit are zero.
    */
-  void format() {
+  /**
+   * The ways a volume can be refused, each named for the check that refuses it.
+   *
+   * `SdVolume::init()` is six rejections in a row and a positive control had been the only
+   * input any of them ever saw — every test in this tree mounts one perfectly good image, so
+   * the validation ran constantly and decided nothing. A validator that has never been given
+   * something to reject is a validator nobody has tested, and validators exist precisely for
+   * input you did not write: a card formatted by another device, a card half-written, a card
+   * that is not a card.
+   */
+  enum class Malformed : uint8_t {
+    None,
+    SectorSizeNot512,        // bytesPerSector != 512
+    NoFats,                  // fatCount == 0
+    NoReservedSectors,       // reservedSectorCount == 0
+    NoSectorsPerCluster,     // sectorsPerCluster == 0
+    ClusterSizeNotPowerOf2,  // the shift loop gives up past 7
+    TooFewClustersForFat16   // cluster count below 4085 means FAT12, which this build omits
+  };
+
+  void format(const Malformed damage = Malformed::None) {
     memset(blocks, 0, size_t(TOTAL_BLOCKS) * BLOCK_SIZE);
 
     fat_boot_t *fbs = (fat_boot_t*)block(0);
@@ -106,6 +126,25 @@ public:
     fbs->volumeSerialNumber  = 0x4D41524C;            // "MARL"
     fbs->bootSectorSig0      = 0x55;
     fbs->bootSectorSig1      = 0xAA;
+
+    /**
+     * Break exactly one field, after the good image is complete.
+     *
+     * One at a time and last, so that each test names the single check it reaches. Damaging a
+     * field while building would risk a second check firing first, and the test would pass
+     * while pinning a different rejection than the one it claims.
+     */
+    switch (damage) {
+      case Malformed::None: break;
+      case Malformed::SectorSizeNot512:       fbs->bytesPerSector      = 1024; break;
+      case Malformed::NoFats:                 fbs->fatCount            = 0;    break;
+      case Malformed::NoReservedSectors:      fbs->reservedSectorCount = 0;    break;
+      case Malformed::NoSectorsPerCluster:    fbs->sectorsPerCluster   = 0;    break;
+      case Malformed::ClusterSizeNotPowerOf2: fbs->sectorsPerCluster   = 3;    break;
+      // Few enough clusters that the firmware decides FAT12, which it does not compile in.
+      // A small or oddly formatted card really does present this way.
+      case Malformed::TooFewClustersForFat16: fbs->totalSectors16      = 200;  break;
+    }
 
     // Both FATs start with the media descriptor and an end-of-chain marker; clusters 0
     // and 1 do not exist, so their entries are reserved.
@@ -250,14 +289,34 @@ public:
   void idle() override {}
 
 private:
-  uint8_t *block(const uint32_t b) { return blocks + size_t(b) * BLOCK_SIZE; }
-
   // The layout the geometry above implies: boot sector, both FATs, then the root directory,
   // then the data area. Cluster numbering starts at 2, so cluster 2 is the first data block.
   static constexpr uint32_t ROOT_START = RESERVED + FAT_COUNT * BLOCKS_PER_FAT;
   static constexpr uint32_t DATA_START = ROOT_START + ROOT_ENTRIES * 32 / BLOCK_SIZE;
 
   dir_t *root_entries() { return (dir_t*)block(ROOT_START); }
+
+public:
+  /**
+   * The image's own view of where things are, derived here from the FAT specification.
+   *
+   * Public so a test can cross-check it against the firmware's, which computes the same
+   * addresses from the boot sector it reads back. Two independent derivations of one quantity
+   * is a real assertion; asking the firmware where it put something and then looking there is
+   * not.
+   */
+  uint8_t *block(const uint32_t b) { return blocks + size_t(b) * BLOCK_SIZE; }
+  static constexpr uint32_t data_block_of_cluster(const uint16_t cluster) {
+    return DATA_START + (cluster - 2) * BLOCKS_PER_CLUSTER;
+  }
+  uint16_t first_cluster_of(const char * const short_name) {
+    dir_t * const dir = (dir_t*)block(ROOT_START);
+    for (uint16_t i = 0; i < ROOT_ENTRIES; ++i)
+      if (!memcmp(dir[i].name, short_name, 11)) return dir[i].firstClusterLow;
+    return 0;
+  }
+
+private:
 
   // Write short contents into the first free cluster and close its chain. One cluster is
   // enough for anything a directory test needs, and the assertion says so rather than

@@ -63,7 +63,49 @@ The remaining clusters — `allocContiguous` (66), `fatPut` (32), `fatGet` (26) 
 and they want the same thing: a card that is nearly full, or fragmented, rather than one with 8095
 free clusters and nothing on it.
 
+## Closing the `SdVolume` cluster (2026-08-17)
+
+Seven tests, and the progression is the point:
+
+| | `init()` survivors / testable | killed |
+|---|---|---|
+| baseline | 151 / 257 | 41.2% |
+| + six malformed volumes | 144 / 284 | 49.3% |
+| + the geometry cross-check | 139 / 284 | **51.1%** |
+
+### Six refusals, each proved to be the one it names
+
+`format()` gained a `Malformed` parameter naming each rejection — sector size, no FATs, no
+reserved sectors, cluster size zero, cluster size not a power of two, too few clusters for FAT16.
+One field damaged at a time, after the good image is complete, so a second check cannot fire
+first and leave a test pinning a different rejection than it claims.
+
+Verified by disabling each check in turn: five of the six fail **exactly** the test that names
+them. The sixth fails nothing — **`sectorsPerCluster == 0` is redundant**, because zero is not a
+power of two either, so the shift loop below it already refuses. Its mutants are equivalent by
+construction. Harmless, in vendored code, recorded rather than removed — and worth knowing before
+someone spends a round trying to kill them.
+
+### The geometry cross-check, and why 840 tests could not see it
+
+The bulk of `init()` is not validation but arithmetic: where the FATs start, where the root
+directory starts, where the data area starts. Those lines run on every mount, and they were
+observed only by whether files happened to read back — which any *self-consistent* set of wrong
+addresses also satisfies.
+
+`a_file_lands_where_the_specification_says_it_should` writes a file, reads the cluster number out
+of its directory entry, and asserts the bytes are in the block the **fixture's own** derivation
+puts that cluster at. Two independent computations of one address, compared where they can be:
+on the disk.
+
+**Shifting `dataStartBlock_` by one block fails exactly one test out of 841.** Every read and
+write shifts with it, so the whole suite is blind to a layout that is wrong but consistent. That
+injection is the argument for the test; its mutation yield is small (three survivors, plus
+fourteen timeouts turned into kills), which is the "justified by injection, not by score" case
+already recorded in `scoring.md`.
+
 ## Not done
 
-No tests written from any of this. The three figures are the deliverable; the malformed-volume
-fixture is the obvious next slice and is recorded here rather than started.
+The allocator is untouched — `allocContiguous` (67), `fatPut` (34), `fatGet` (25) — and it wants
+the same kind of thing the validation wanted: a card that is nearly full or fragmented, rather
+than one with 8095 free clusters and nothing on it.

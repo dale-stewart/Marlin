@@ -37,6 +37,7 @@
 
 #include "../test/unit_tests.h"
 #include "src/sd/cardreader.h"
+#include "../support/simulated_media.h"
 
 #include <string.h>
 
@@ -91,6 +92,43 @@ MARLIN_TEST(media, a_file_written_can_be_read_back) {
 
   TEST_ASSERT_EQUAL_INT16(int16_t(strlen(text)), got);
   TEST_ASSERT_EQUAL_STRING(text, back);
+}
+
+/**
+ * The firmware puts a file where the specification says it should go.
+ *
+ * `SdVolume::init()` derives the whole layout from the boot sector — where the FATs start, where
+ * the root directory starts, where the data area starts — and until now nothing checked any of
+ * it. Those lines run on every mount, so coverage was satisfied; the arithmetic was observed only
+ * by whether files happened to read back, which any *self-consistent* set of wrong addresses also
+ * satisfies. A firmware that computed the data area two blocks late would write there, read from
+ * there, and pass every test in this file.
+ *
+ * So this asserts the one thing self-consistency cannot fake: that the firmware's addresses agree
+ * with an *independent* derivation. `SimulatedMedia` computes the same layout from the FAT
+ * specification and the geometry it wrote, and the two are compared at the only place they can
+ * be — the actual bytes on the disk.
+ *
+ * The cluster number is read from the directory entry rather than assumed, so this stays true if
+ * an earlier test leaves the first cluster occupied.
+ */
+MARLIN_TEST(media, a_file_lands_where_the_specification_says_it_should) {
+  NoHostAttached quiet;
+  const char * const text = "G1 X42 ; a recognisable payload\n";
+
+  write_file("place.gco", text);
+
+  const uint16_t cluster = simulated_card().first_cluster_of("PLACE   GCO");
+  TEST_ASSERT_TRUE_MESSAGE(cluster >= 2,
+    "the directory entry should name a real data cluster");
+
+  const uint8_t * const where_the_spec_says =
+    simulated_card().block(SimulatedMedia::data_block_of_cluster(cluster));
+
+  TEST_ASSERT_EQUAL_MEMORY_MESSAGE(text, where_the_spec_says, strlen(text),
+    "the file's bytes should be at the block the FAT geometry puts that cluster at - the "
+    "firmware derives that address from the boot sector and the fixture derives it from the "
+    "specification, and only their agreement rules out a layout that is wrong but consistent");
 }
 
 // A named file is found by name, and only by its own name.
