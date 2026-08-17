@@ -588,7 +588,8 @@ reference that never arrives, and the resulting failure would point at the firmw
 unchanged at 91%, correctly: this test exercises the decoder, not new lines of the protocol.
 
 The decoder has never been mutation tested — it is now the best-covered unmeasured file in the
-tree, and a natural next target rather than part of this one.
+tree, and a natural next target rather than part of this one. Measured immediately afterwards;
+see below.
 
 **And it killed no mutants at all in `binary_stream.cpp`** — 0 of the 128 remaining survivors,
 which is the right answer rather than a disappointing one. The test pins behaviour that lives in
@@ -601,6 +602,43 @@ about a *path through several*.
 The transferable half is in `scoring.md` beside the existing note on what the mutation tool can
 see — the same distinction from the other side. There, coverage saw code the mutation run could
 not reach; here, a test reaches code that belongs to a different measurement altogether.
+
+## Measuring the decoder (2026-08-16): what 81% coverage was worth
+
+`heatshrink_decoder.cpp`, first mutation run ever, driven by the two compression tests above and
+nothing else:
+
+    testable 567 · killed 246 by assertion · timed out 28 · survived 293
+    raw 274/567 = 48.3%      by assertion 246/567 = 43.4%
+    killable 56.1% raw, 50.4% by assertion   (79 structurally unkillable)
+    1067 mutants on 137 covered lines · 500 build failures excluded
+
+**81% line coverage, 43% killed by assertion.** That gap is the whole argument for mutation
+testing stated in one file: two tests drive the decoder end to end and assert only the final
+decoded text, so almost every branch inside the state machine executes without anything checking
+what it decided. The coverage figure was never wrong — it just answers a different question.
+
+### A third-party library measured in one configuration is mostly unkillable
+
+The survivors are not evenly spread, and the biggest clusters are not gaps at all:
+
+| Line | Count | Why it cannot be killed |
+|---|---|---|
+| 291-292 | 39 | `ASSERT(X)` is `#define ASSERT(X) /* no-op */` — debugging logs are off, so the argument is never compiled. Mutating it changes the text of a statement that is not there |
+| 214 | 14 | `HEATSHRINK_DECODER_WINDOW_BITS(hsd) > 8`, and this build fixes the window at 8 |
+| 252, 274 | 18 | `bit_ct < 8 ? bit_ct : 8` with `bit_ct` fixed at 8 and 4 by the same configuration |
+| 341 | 8 | `else if (0)` — dead as written, in the vendored source |
+
+Seventy-nine of 293 survivors, **27%**, are unkillable by construction rather than untested. That
+is a much larger share than anything measured in Marlin's own code, and the reason is structural:
+a library ships configurable, and a configuration is what makes most of its options dead. Quoting
+48.3% for this file without saying so would understate the suite by a quarter and point the next
+person at lines no test could ever reach.
+
+The rest are real, and they are the state machine's edges rather than its middle: partial output
+when the caller's buffer fills (301-302), input starvation part-way through a token (317, 321),
+and the finish states (356). All of them need a transfer shaped differently from the two small
+ones here — a payload larger than the output buffer, or a stream split across packets.
 
 ## Still to do
 

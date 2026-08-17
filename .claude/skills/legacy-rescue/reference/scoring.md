@@ -128,6 +128,25 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
   from the config, report them as a separate class, and quote both the raw and the
   adjusted score.
 
+  **A third-party library is the extreme case, and worth expecting before you measure one.**
+  A library ships configurable, and your configuration is what makes most of its options dead —
+  so the proportion of structurally unkillable mutants is far higher than in code written for one
+  purpose. Three sources dominate, and all three look like ordinary logic in a diff:
+
+  - **Diagnostic macros that compile to nothing.** An assertion or trace macro defined as empty
+    in a release configuration leaves its argument uncompiled, so mutating that argument changes
+    a statement that is not there. The line still reads as covered, because the surrounding block
+    executed. Ours contributed 39 unkillable mutants from two lines.
+  - **Comparisons against constants the configuration fixes** — a width, a buffer size, a
+    capability check — where one arm can never be taken.
+  - **Code the vendor already disabled**, up to and including a literal `if (0)` left in the
+    source.
+
+  Together those were 27% of one library's survivors, several times what the same project's own
+  code produced. Grep for the macro definitions before triaging line by line: one `#define` often
+  explains the largest cluster on the list, and it is faster to read the configuration than to
+  read a hundred mutants.
+
 Exit gate: a reproducible mutation command, a validated harness, and a survivor list
 partitioned into real gaps and equivalent mutants.
 **Report the killable score alongside the raw one.** Once survivors have been triaged, the raw
