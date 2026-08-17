@@ -300,6 +300,47 @@ failed, check the reporting before believing it, and have the injection report a
 names so the two can be reconciled. A grep finding nothing where the summary says something failed
 is a broken grep, not a weak test.
 
+### `openAndPrintFile`: 32 survivors on one line, none of them killable
+
+The line is a stack buffer sized for the command it is about to build:
+
+    char cmd[4 + strlen(name) + 1 + 3 + 1];   // "M23 ", filename, "\n", "M24", NUL
+
+Every survivor on it mutates that arithmetic, and they split cleanly in two. Mutants that make
+the buffer **larger** (`4 * strlen(name)`, `+ 3 * 1`) are equivalent — a roomier buffer changes
+nothing. Mutants that make it **smaller** (`4 - strlen(name)`, `strlen(name) - 1`, `+ 3 - 1`) are
+undefined behaviour: `sprintf_P` writes past the end. Neither class can be killed by an
+assertion, so this cluster is triage rather than work.
+
+### What the sanitizer could and could not say, and two wrong turns getting there
+
+The taxonomy suggests a sanitizer for exactly this — UB mutants are invisible to assertions and
+visible to a sanitizer — and this tree has `testhal_native_asan`, so the classification could be
+*proved* rather than argued. It half worked, and the way it failed is worth more than the result.
+
+**First wrong turn.** A deliberate sixteen-byte heap overflow produced no AddressSanitizer output,
+and `nm`/`ldd` on the binary showed no sanitizer runtime at all. The conclusion — that the asan
+environment had never sanitized anything and every green run of it was meaningless — was stated
+and was **wrong twice over**: the probe had failed to *compile* (`-Werror` plus fortification
+caught the overflow statically), so no binary existed, and the `nm` and `ldd` checks were reading
+a path that was not there. Zero results from a missing file look exactly like zero results from a
+working measurement.
+
+Rebuilt cleanly, the binary has `libasan` linked and 31 `__asan` symbols. **The sanitizer is
+active and correct**, and the suite passes under it apart from one known float-formatting
+assertion — which is itself the documented "a sanitizer build disagrees with the ordinary one
+about a result or two, and the assertion that moved was pinning the compiler" case.
+
+**What is actually true.** With a probe the compiler cannot fold away (an opaque length), the run
+dies at `Program received signal SIGHUP` immediately, *before* AddressSanitizer prints anything —
+the same signal the buffer-shrinking mutant produced. So the sanitizer detects the fault and the
+process is hung up before it can name it. That is a real limitation of this environment: it can
+tell you something went wrong and not what, which is much less than a sanitizer usually offers,
+and it is why these mutants stay classified by reasoning rather than by diagnosis.
+
+Recorded rather than fixed: the cause is somewhere between the sanitizer's reporting path and a
+test HAL whose peripherals are backed by real signals, and finding it is its own piece of work.
+
 ## What is left
 
 Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of
