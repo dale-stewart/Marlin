@@ -209,9 +209,31 @@ plausible report, just of a different suite, and under LINUX most of the interes
 lines never execute — so *unasserted* and *unreachable* become indistinguishable, which
 is the one distinction this whole exercise exists to make.
 
-`make unit-test-coverage` prints both a whole-tree number and the **platform-agnostic**
-one (excluding `Marlin/src/HAL/`), which is the figure the plan documents quote — 74.3%
-against 73.8% for the same build, so quoting the wrong one looks like a small regression.
+`make unit-test-coverage` prints **three** numbers for the same build, and quoting the wrong
+one looks like a regression that did not happen. As of 2026-08-17 on `004-sd_powerloss`:
+
+| figure | excludes | value |
+|---|---|---|
+| whole tree | nothing but the entry points | 78.1% |
+| **platform-agnostic** | `Marlin/src/HAL/` — **the figure the plan documents quote** | 78.6% |
+| code this project owns | HAL, plus third-party we have not modified | 78.6% |
+
+The third excludes only **unmodified** third-party code, and the line is divergence rather than
+provenance: a copy nobody has edited behaves like a dependency, while one you have edited is your
+code wearing someone else's name. `COVERAGE_VENDORED` in the `Makefile` records which trees are
+which, the one-line command that measures it, and why **SdFat is deliberately not excluded** —
+fourteen of fourteen files reference Marlin's own configuration, and register #66 is a defect in
+long-filename handling that Marlin added.
+
+Today the second and third agree, because the only unmodified third-party code this build
+compiles is `heatshrink` and it happens to sit near the mean. That is a coincidence of timing:
+before its tests were written this morning it was at 0%, where the two figures would have read
+**76.6% against 78.6%**.
+
+**It does not solve the problem it resembles.** `SdBaseFile.cpp` looked like the largest target in
+the tree at 340 uncovered lines when 269 of them were library API with no caller — that is
+*reachability*, not vendoring, and the guard against it is the per-target classification in the
+skill's step 0. Excluding files would have hidden the long-filename gap, which was real.
 
 `buildroot/share/scripts/mutation_test.py` drives the compiler and linker directly
 rather than invoking `platformio test` per mutant, and runs mutants in parallel: about

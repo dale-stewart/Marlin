@@ -188,6 +188,43 @@ COVERAGE_EXCLUDES ?= --exclude 'Marlin/src/MarlinBoot.cpp'
 # fatal, because any other parse error means the coverage data itself is not to be trusted.
 COVERAGE_PARSE_ERRORS ?= --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
 
+# Third-party code this project has *not* modified, for the third figure below.
+#
+# The line here is divergence, not provenance. A copy nobody has touched behaves like a
+# dependency: you do not test its internals, you test your own use of it, and a gap inside it is
+# not your backlog. A copy you have edited is your code wearing someone else's name, and it is the
+# more dangerous of the two precisely because the label invites you to stop looking.
+#
+# Divergence is cheap to check rather than guess — count the files referencing Marlin's own
+# configuration from inside the vendored tree:
+#
+#   git ls-files -- '<tree>/*' | xargs grep -lE 'MarlinConfig|ENABLED\(|TERN\('
+#
+# Measured 2026-08-17:
+#
+#   sd/Sd*                    14/14 files, 55+ config macros   → a FORK. Stays in.
+#   lcd/.../ftdi_eve_lib      23/56 files                      → partly forked. Stays in.
+#   libs/heatshrink            1/4 files, 2 lines (a build guard) → pristine. Excluded.
+#   sd/usb_flashdrive/lib-uhs3 0/24 files                      → pristine. Excluded.
+#   lcd/tft/fontdata           generated font data, not code   → excluded.
+#
+# So SdFat is *not* excluded, deliberately: `SDCARD_READONLY`, `LONG_FILENAME_WRITE_SUPPORT`,
+# `UTF_FILENAME_SUPPORT` and `SD_CHECK_AND_RETRY` are threaded through its internals, and
+# register #66 is a defect in the long-filename handling that Marlin added. Nobody upstream
+# maintains this version of it.
+#
+# **This does not solve the problem it looks like it solves.** `SdBaseFile.cpp` ranked as the
+# largest remaining target at 340 uncovered lines when 269 of them were library API with no
+# caller — and that was reachability, not vendoring. The fix for that is the classification in
+# the skill's step 0, done per target before ranking it. Excluding files would have hidden the
+# long-filename gap, which was real.
+#
+# Nothing is hidden by this figure in any case: it is additive. The whole-tree number above still
+# counts every line, and `summary.txt` still lists each file.
+COVERAGE_VENDORED ?= --exclude 'Marlin/src/libs/heatshrink/' \
+                     --exclude 'Marlin/src/sd/usb_flashdrive/lib-uhs3/' \
+                     --exclude 'Marlin/src/lcd/tft/fontdata/'
+
 unit-test-coverage:
 	@command -v gcovr >/dev/null || (echo 'gcovr is not installed. Install it with "uv tool install gcovr" or "pipx install gcovr"' && exit 1)
 	rm -rf .pio/build/$(COVERAGE_ENV) $(COVERAGE_DIR)
@@ -202,6 +239,12 @@ unit-test-coverage:
 	@gcovr -r . .pio/build/$(COVERAGE_ENV) \
 	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' $(COVERAGE_EXCLUDES) $(COVERAGE_PARSE_ERRORS) \
 	  --txt $(COVERAGE_DIR)/summary-platform-agnostic.txt --print-summary
+	@echo ""
+	@echo "--- Code this project owns (also excludes unmodified third-party — see COVERAGE_VENDORED) ---"
+	@gcovr -r . .pio/build/$(COVERAGE_ENV) \
+	  --filter 'Marlin/src/' --exclude 'Marlin/tests/' --exclude 'Marlin/src/HAL/' \
+	  $(COVERAGE_VENDORED) $(COVERAGE_EXCLUDES) $(COVERAGE_PARSE_ERRORS) \
+	  --txt $(COVERAGE_DIR)/summary-first-party.txt --print-summary
 	@echo ""
 	@echo "Measured: $(COVERAGE_ENV) / config $(UNIT_TEST_CONFIG)"
 	@echo "HTML report: $(COVERAGE_DIR)/html/index.html"
