@@ -343,3 +343,14 @@ substantial and say nothing.
   range today. That keeps the test true wherever it is compiled, and it states the
   intent, which a literal does not. Run every configuration before believing a green
   suite, and say which ones you ran.
+
+  **The expected value needs the same treatment as the input, and it is easier to miss.** A
+  literal input at least looks like a choice; a literal *result* looks like a fact about the
+  system. Ours asserted a name truncated to twenty-six characters — correct in the build it
+  was written in, wrong in the one where the same limit is five chunks rather than two, where
+  the name came back whole and the test failed as if the firmware had changed. Written as
+  `limit * chunk_size` it holds in both, and it says which rule it is testing rather than
+  which build it was run in.
+
+  The give-away when reading a diff: a number in an assertion that also appears in the
+  product's configuration. If the code computes it from a constant, so should the test.

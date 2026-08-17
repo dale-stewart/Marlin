@@ -53,11 +53,71 @@ The general form is in the skill's `survivor-taxonomy.md` and `scoring.md`. The 
 because the number in the survey is wrong in a way that would have cost days, and the survey now
 says so.
 
-## What is actually left
+## First slice: the names a computer wrote
 
-Seventy-one lines, and the largest single piece is `readDir` (15 dark of 133) — the directory walk
-behind `M20`, with three call sites in `cardreader.cpp` and the thing every file listing goes
-through. The rest is scattered across the `open` overloads, `write`, `openRoot`, and a handful of
-position and truncation helpers.
+`readDir` was the largest reachable piece, and all fifteen of its dark lines turned out to be one
+thing — **the long-filename decoder**. Every media test in this tree names its files in 8.3
+(`round.gco`, `present.gco`), and an 8.3 name has no VFAT entries at all, so the sequence
+handling, the checksum and the orphan detection had never run.
 
-Nothing written yet.
+The reason nothing had reached it is worth stating, because it is not laziness. **This firmware
+cannot write a long filename.** `LONG_FILENAME_WRITE_SUPPORT` is off by default, so
+`openFileWrite()` lays down an 8.3 entry and stops. Every long name a printer ever sees was
+written by something else — the user's computer, copying slicer output onto the card — and no
+test could produce one by asking the firmware to.
+
+So `SimulatedMedia::add_pc_written_file()` is the stand-in for that computer: VFAT chunks in
+reverse order ahead of the 8.3 entry, each carrying a checksum of the short name. The checksum is
+computed in the fixture from the FAT specification rather than by calling the firmware's
+`lfn_checksum()`, for the same reason Fletcher-16 is written by hand in the transfer tests — a
+fixture that asks the code under test to prepare its own input agrees with it however wrong it is.
+
+Four tests: the name read back whole across two chunks, the short name still being what the
+machine opens, an orphaned name discarded rather than shown against the wrong file, and the
+limit below.
+
+### Register #66: names past the limit are cut silently, and files collide
+
+`VFAT_ENTRIES_LIMIT` is 2 here, so `longFilename` is twenty-seven bytes and the reader ignores
+chunks past the second. A forty-two character name comes back as its first twenty-six, with
+nothing to say anything was dropped.
+
+That matters because of the shape slicer output has — a long common prefix with the distinguishing
+part at the end. `benchy_0.2mm_PLA_20min_quality_draft.gcode` and `..._final.gcode` are **listed
+identically**, so a user picking from the menu cannot tell which will print. Long filenames exist
+to prevent exactly that, and here they reintroduce it.
+
+**The test asserts the truncated string rather than the full one deliberately**, and the injection
+is why. Removing the range check returns the whole name — by writing chunk three at offset 26 and
+running off the end of a twenty-seven byte buffer, without crashing. The truncation is the visible
+face of a bounds guard, so a test demanding the nicer answer would license a memory fault. A fix
+marks the truncation; it does not remove the limit.
+
+### The limit is not the same number in every configuration
+
+The first version of that test hard-coded twenty-six characters, passed under `004-sd_powerloss`,
+and **failed under `010-dwin`** — which enables `HAS_DWIN_E3V2`, and with it
+`VFAT_ENTRIES_LIMIT` 5, sixty-five characters, comfortably longer than the name being sent. The
+name came back whole and the assertion had nothing to say except that it expected a shorter one.
+
+Fixed by deriving the expectation — `VFAT_ENTRIES_LIMIT * FILENAME_LENGTH` — and by choosing
+names long enough to exceed the limit in *every* configuration here rather than only in the one
+being run. It now pins the rule instead of the number, and passes under both limits.
+
+This is the whole-suite version of a caution already in the log: a figure measured in one
+configuration is a figure about that configuration. Here it was not a figure but an *assertion*,
+which is worse, because it looked like a fact about the firmware.
+
+### Three counting mistakes, all caught by the assertions
+
+Worth recording because it is the argument for asserting exact strings rather than lengths or
+prefixes. In writing four small tests I got the file size wrong by one byte, called a
+twenty-six character name twenty-seven, and claimed two names shared twenty-eight characters when
+they diverged at twenty-four. Every one of them came back as a failure naming both values, and the
+last was the one that mattered — the collision test was passing for the wrong reason until the
+names actually shared a prefix longer than the limit.
+
+## What is left
+
+Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of
+position and truncation helpers. No single cluster like this one.

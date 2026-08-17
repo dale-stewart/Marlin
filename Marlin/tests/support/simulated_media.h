@@ -42,6 +42,7 @@
 
 #include "src/sd/disk_io_driver.h"
 #include "src/sd/SdFatStructs.h"
+#include "src/sd/SdFatConfig.h"   // FILENAME_LENGTH, for the long-name helper below
 
 #include <string.h>
 #include <stdlib.h>
@@ -116,6 +117,79 @@ public:
     // The root directory stays zeroed: a first byte of 0x00 means "no more entries".
   }
 
+  // ---- Content this firmware cannot create for itself ----
+
+  /**
+   * Put a file on the card the way a PC does, with a long filename.
+   *
+   * This exists because the firmware can *read* long filenames and cannot *write* them —
+   * `LONG_FILENAME_WRITE_SUPPORT` is off by default, so `openFileWrite()` lays down an 8.3
+   * entry and nothing else. Every long name a printer ever sees was therefore written by
+   * something other than the printer, which is exactly what this stands in for: the user
+   * copying `.gcode` files onto the card from their computer.
+   *
+   * A long name is stored as VFAT entries placed *before* the 8.3 entry, in reverse order —
+   * the highest sequence number first, flagged 0x40 as the last chunk, counting down to 1,
+   * then the short entry itself. Each entry carries thirteen UTF-16 characters and a
+   * checksum of the 8.3 name, which is how a reader detects entries orphaned by a tool that
+   * did not understand them.
+   *
+   * `short_name` is the raw eleven-byte directory form — space-padded, no dot, as it sits on
+   * the disk (`"BENCHY~1GCO"`). Taking it in that form rather than deriving it keeps the
+   * 8.3 mangling rules out of a fixture whose subject is the long name.
+   *
+   * The checksum is computed here from the FAT specification rather than by calling the
+   * firmware's `lfn_checksum()`. That is deliberate and is the same reasoning as writing
+   * Fletcher-16 by hand in the binary-transfer tests: a fixture that asks the code under
+   * test to prepare its own input agrees with that code however wrong it is.
+   */
+  void add_pc_written_file(const char * const long_name, const char * const short_name,
+                           const char * const contents = "",
+                           const bool orphan_the_long_name = false) {
+    const size_t name_len = strlen(long_name);
+    const uint8_t chunks = uint8_t((name_len + FILENAME_LENGTH - 1) / FILENAME_LENGTH);
+
+    // Checksum of the 8.3 name, per the FAT long-filename specification: rotate right and add.
+    uint8_t checksum = 0;
+    for (uint8_t i = 0; i < 11; ++i)
+      checksum = uint8_t(((checksum & 1) << 7) + (checksum >> 1) + uint8_t(short_name[i]));
+
+    // An orphan is what a tool that does not understand long names leaves behind when it
+    // renames or replaces the 8.3 entry: the chunks stay, and their checksum no longer
+    // describes the file they sit in front of.
+    if (orphan_the_long_name) checksum = uint8_t(checksum ^ 0xFF);
+
+    dir_t * const dir = root_entries();
+    uint16_t slot = 0;
+    while (slot < ROOT_ENTRIES && dir[slot].name[0] != DIR_NAME_FREE) slot++;
+
+    // The chunks go down from the last, which is the order a reader walking forward expects.
+    for (uint8_t seq = chunks; seq >= 1; --seq) {
+      vfat_t &v = *(vfat_t*)&dir[slot++];
+      memset(&v, 0, sizeof(v));
+      v.sequenceNumber = uint8_t(seq | (seq == chunks ? 0x40 : 0x00));
+      v.attributes = DIR_ATT_LONG_NAME;
+      v.checksum = checksum;
+      v.firstClusterLow = 0;                        // always zero for a long-name entry
+      for (uint8_t i = 0; i < FILENAME_LENGTH; ++i) {
+        const size_t at = size_t(seq - 1) * FILENAME_LENGTH + i;
+        // Past the end of the name: one NUL, then 0xFFFF padding, as the specification says.
+        const uint16_t ch = at < name_len ? uint16_t(uint8_t(long_name[at]))
+                                          : (at == name_len ? 0x0000 : 0xFFFF);
+        if (i < 5)       v.name1[i] = ch;
+        else if (i < 11) v.name2[i - 5] = ch;
+        else             v.name3[i - 11] = ch;
+      }
+    }
+
+    dir_t &e = dir[slot];
+    memset(&e, 0, sizeof(e));
+    memcpy(e.name, short_name, 11);
+    e.attributes = DIR_ATT_ARCHIVE;
+    e.fileSize = uint32_t(strlen(contents));
+    e.firstClusterLow = e.fileSize ? store_in_one_cluster(contents) : 0;
+  }
+
   // ---- Fault injection ----
 
   /**
@@ -177,6 +251,29 @@ public:
 
 private:
   uint8_t *block(const uint32_t b) { return blocks + size_t(b) * BLOCK_SIZE; }
+
+  // The layout the geometry above implies: boot sector, both FATs, then the root directory,
+  // then the data area. Cluster numbering starts at 2, so cluster 2 is the first data block.
+  static constexpr uint32_t ROOT_START = RESERVED + FAT_COUNT * BLOCKS_PER_FAT;
+  static constexpr uint32_t DATA_START = ROOT_START + ROOT_ENTRIES * 32 / BLOCK_SIZE;
+
+  dir_t *root_entries() { return (dir_t*)block(ROOT_START); }
+
+  // Write short contents into the first free cluster and close its chain. One cluster is
+  // enough for anything a directory test needs, and the assertion says so rather than
+  // silently truncating.
+  uint16_t store_in_one_cluster(const char * const contents) {
+    const size_t len = strlen(contents);
+    TEST_ASSERT_TRUE_MESSAGE(len <= BLOCK_SIZE,
+      "the simulated card's helper stores one cluster; a longer file needs a chain");
+    uint16_t cluster = 2;
+    uint16_t *fat = (uint16_t*)block(RESERVED);
+    while (cluster < 0xFFF0 && fat[cluster] != 0) cluster++;
+    for (uint8_t f = 0; f < FAT_COUNT; ++f)
+      ((uint16_t*)block(RESERVED + f * BLOCKS_PER_FAT))[cluster] = 0xFFFF;   // end of chain
+    memcpy(block(DATA_START + (cluster - 2) * BLOCKS_PER_CLUSTER), contents, len);
+    return cluster;
+  }
 
   uint8_t *blocks = nullptr;
   uint32_t cursor = 0;
