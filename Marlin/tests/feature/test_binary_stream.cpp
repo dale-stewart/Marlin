@@ -61,6 +61,7 @@
 #include "src/gcode/queue.h"
 #include <string>
 #include <vector>
+#include <string.h>
 
 namespace {
 
@@ -155,6 +156,32 @@ namespace {
     return reply.find(words) != std::string::npos;
   }
 
+  // The port spins forever on a full transmit buffer when it believes a host is listening, and
+  // the media layer reports freely. See CLAUDE.md.
+  struct NoHostAttached {
+    bool was;
+    NoHostAttached() { was = MYSERIAL1.host_connected; MYSERIAL1.host_connected = false; }
+    ~NoHostAttached() { MYSERIAL1.host_connected = was; }
+  };
+
+  enum : uint8_t { FILE_QUERY = 0, FILE_OPEN = 1, FILE_CLOSE = 2, FILE_WRITE = 3, FILE_ABORT = 4 };
+
+  /**
+   * The payload of an OPEN packet: two flag bytes, then a NUL-terminated name.
+   *
+   * `dummy` asks the printer to accept the transfer and throw it away — the sender's way of
+   * measuring the link without writing to the card — and `compression` selects heatshrink. Both
+   * are read as bit zero only, so the rest of each byte is spare.
+   */
+  std::string open_payload(const char * const name, const bool dummy = false, const bool compressed = false) {
+    std::string p;
+    p += char(dummy ? 1 : 0);
+    p += char(compressed ? 1 : 0);
+    p += name;
+    p += '\0';
+    return p;
+  }
+
   /**
    * Put bytes on the port and let the *queue* decide what to do with them.
    *
@@ -221,6 +248,38 @@ namespace {
       MYSERIAL1.receive_buffer.clear();
       binaryStream[card.transfer_port_index.index].reset();
       card.flag.binary_mode = false;
+    }
+  };
+
+  /**
+   * A stream ready for a file transfer, with any transfer left running by an earlier test ended.
+   *
+   * `SDFileTransferProtocol` keeps `transfer_active` in a static, and only a close or an abort
+   * clears it. A test that fails part way through a transfer therefore leaves the next one
+   * answering `PFT:busy` to a perfectly good open — and the state lives inside the `.cpp`, so
+   * neither a destructor nor the harness's teardown can reach it.
+   *
+   * So this clears it on the way *in* rather than on the way out, which is the one place the
+   * failure path cannot skip.
+   *
+   * It sends CLOSE rather than ABORT, and the difference matters: `CLOSE` is guarded on
+   * `transfer_active` and answers `PFT:invalid` when nothing is open, while `transfer_abort()`
+   * has no such guard and deletes `card.filename` regardless — which, with no transfer running,
+   * is whatever file the card last touched. See register #64. Cleaning up with the unguarded one
+   * would have this fixture quietly deleting other tests' files.
+   */
+  struct FreshTransfer : FreshStream {
+    uint8_t next_sync = 0;
+
+    FreshTransfer() {
+      SerialCapture quiet;   // it answers, and nobody is listening for it
+      send(packet(0, PROTOCOL_FILE, FILE_CLOSE));
+      FreshStream::reset();
+    }
+
+    // Each accepted packet advances the stream's sequence number, so a transfer has to count.
+    std::string send_file_packet(const uint8_t type, const std::string &payload = "") {
+      return send(packet(next_sync++, PROTOCOL_FILE, type, payload));
     }
   };
 
@@ -542,6 +601,152 @@ MARLIN_TEST(binary_stream, a_packet_that_stops_half_way_times_out_and_asks_again
   TEST_ASSERT_TRUE_MESSAGE(said(after, "rs0"),
     "and the reader should ask for the packet again, naming where it wants to restart - "
     "otherwise the host sees a machine that has stopped answering");
+}
+
+/**
+ * A file sent as packets arrives on the card byte for byte.
+ *
+ * The reason the whole protocol exists, and the first test here that goes all the way through:
+ * open, write, close, then read the file back off the card and compare. Everything above this
+ * asserts on what the printer *said*; this asserts on what it *kept*.
+ *
+ * That distinction is the point for the firmware upload the mode carries. A transfer that
+ * acknowledges every packet and writes the wrong bytes is indistinguishable, on the wire, from
+ * one that worked — and the failure only appears when the board is asked to run what it stored.
+ *
+ * The comparison is against the exact bytes sent rather than a length or a checksum, because a
+ * length would pass on reordered content and a checksum computed here would agree with any
+ * convention the writing side happened to use.
+ */
+MARLIN_TEST(binary_stream, a_file_sent_as_packets_arrives_on_the_card_byte_for_byte) {
+  FreshTransfer transfer;
+  const char * const contents = "G28\nG1 X10 Y10 F3000\nM104 S0\n";
+
+  const std::string opened = transfer.send_file_packet(FILE_OPEN, open_payload("upload.gco"));
+  TEST_ASSERT_TRUE_MESSAGE(said(opened, "PFT:success"), "the transfer should open");
+
+  const std::string written = transfer.send_file_packet(FILE_WRITE, contents);
+  TEST_ASSERT_FALSE_MESSAGE(said(written, "PFT:"),
+    "a write that succeeds should say nothing - the packet acknowledgement is the answer, and a "
+    "per-write reply would double the traffic the binary mode exists to save");
+
+  const std::string closed = transfer.send_file_packet(FILE_CLOSE);
+  TEST_ASSERT_TRUE_MESSAGE(said(closed, "PFT:success"), "the transfer should close cleanly");
+
+  /**
+   * Closing releases the card, so reading it back starts by picking it up again — and quietly.
+   *
+   * `openFileRead()` reports the name and size on the serial port, and outside a capture there
+   * is nothing draining it: the port busy-waits for room in a 128-byte transmit buffer that only
+   * the simulator's UI empties. Marking the port as having no host attached makes those writes
+   * return immediately, which is the honest model of a test with no host listening.
+   */
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("upload.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "the uploaded file should exist on the card");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(strlen(contents), card.getFileSize(),
+    "and be exactly as long as what was sent");
+
+  char back[64] = { 0 };
+  const int16_t got = card.read(back, strlen(contents));
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_INT16(int16_t(strlen(contents)), got);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(contents, back,
+    "the file on the card should be byte for byte what was sent - a transfer that acknowledges "
+    "every packet and stores the wrong bytes looks identical on the wire");
+}
+
+/**
+ * A write with no transfer open is refused rather than acted on.
+ *
+ * `transfer_active` is what stands between an arriving payload and `card.write()`. Without the
+ * guard, a WRITE that arrives after a close — or from a sender that never opened anything —
+ * would be handed to whatever file the card happens to have open, which during a print is the
+ * job being read. The refusal is named so a sender can tell it from an I/O failure and knows to
+ * open rather than retry.
+ */
+MARLIN_TEST(binary_stream, a_write_with_no_transfer_open_is_refused) {
+  FreshTransfer transfer;
+
+  const std::string reply = transfer.send_file_packet(FILE_WRITE, "stray data");
+
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "PFT:invalid"),
+    "a write with nothing open should be refused as invalid, not attempted");
+}
+
+/**
+ * A second transfer while one is running is refused, and does not disturb the first.
+ *
+ * One file at a time is the design — there is one `transfer_active` flag and one card handle —
+ * so the interesting part is not that the second open fails but that the first survives it. If
+ * the busy check came after the open, the second request would have closed the first file and
+ * started a new one, and the sender of the first would go on writing into it.
+ */
+MARLIN_TEST(binary_stream, a_second_transfer_while_one_is_running_is_refused) {
+  FreshTransfer transfer;
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("first.gco"));
+  const std::string second = transfer.send_file_packet(FILE_OPEN, open_payload("second.gco"));
+
+  TEST_ASSERT_TRUE_MESSAGE(said(second, "PFT:busy"),
+    "a second open while a transfer is running should be refused as busy");
+
+  const std::string written = transfer.send_file_packet(FILE_WRITE, "still the first file\n");
+  TEST_ASSERT_FALSE_MESSAGE(said(written, "PFT:invalid"),
+    "and the first transfer should still be open - a busy check that ran after the open would "
+    "have closed the first file and left its sender writing into the second");
+
+  transfer.send_file_packet(FILE_CLOSE);
+}
+
+/**
+ * An abandoned transfer takes its partial file with it.
+ *
+ * A transfer that stops half way has written real blocks to a real directory entry, and what is
+ * there is a fragment: a G-code file that ends mid-move, or worse, a firmware image that is
+ * complete enough to be selected and short enough to brick the board. `transfer_abort()` removes
+ * it rather than leaving it to be found.
+ *
+ * Asserted on the card rather than on the reply, because "PFT:success" is what an abort says
+ * whether or not it removed anything.
+ */
+MARLIN_TEST(binary_stream, an_abandoned_transfer_removes_its_partial_file) {
+  FreshTransfer transfer;
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("partial.gco"));
+  transfer.send_file_packet(FILE_WRITE, "G28\nG1 X10");
+
+  const std::string aborted = transfer.send_file_packet(FILE_ABORT);
+  TEST_ASSERT_TRUE_MESSAGE(said(aborted, "PFT:success"), "an abort should be acknowledged");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("partial.gco");
+  TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(),
+    "an abandoned transfer should leave no file - a fragment that is complete enough to select "
+    "and short enough to be wrong is worse than nothing");
+}
+
+/**
+ * A sender asks what it is talking to before it commits to a transfer.
+ *
+ * QUERY is how the two ends agree on compression: the printer names its version and whether it
+ * can decompress, and a sender that assumed either would corrupt the file rather than fail to
+ * send it. The window and lookahead bits are part of the answer because heatshrink cannot decode
+ * a stream packed with different ones.
+ */
+MARLIN_TEST(binary_stream, the_file_protocol_states_its_version_and_what_it_can_decompress) {
+  FreshTransfer transfer;
+
+  const std::string reply = transfer.send_file_packet(FILE_QUERY);
+
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "PFT:version:0.1.0"),
+    "a query should name the protocol version the sender must speak");
+  TEST_ASSERT_TRUE_MESSAGE(said(reply, "compression:heatshrink"),
+    "and whether it can decompress - a sender that guessed would corrupt the file rather than "
+    "fail to send it");
 }
 
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {

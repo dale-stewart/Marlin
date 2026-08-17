@@ -220,6 +220,53 @@ one; the half-assembled unit and the raw transport buffer are the ones that get 
 prove it: inject a fault that makes a test fail *mid-unit* and check that exactly one test fails.
 A teardown that only handles inputs that completed is untested against the case it exists for.
 
+**Write the teardown from what operations leave behind, not from what tests change.** The obvious
+teardown list is the things a test deliberately sets — a flag raised, a value overridden, a fault
+injected — and that list is the smaller half. The rest is the *ordinary end state of ordinary
+operations*: a completed transaction that closed the connection, a finished job that released the
+handle, a parse that consumed half a line and is waiting for the rest. Every one of those is
+correct behaviour for the system, which is exactly why nobody lists it: there is nothing to
+"restore", because nothing was tampered with.
+
+They are the expensive ones because the failure lands somewhere else. The next test starts against
+a system that has legitimately put something away, its unrelated operation fails, and the report
+names that operation. We had three in a row — a half-received line, a state machine stranded
+mid-packet, and a resource released by a successful close — and each first read as a defect in the
+subsystem that reported it, two files away from the cause.
+
+So enumerate by walking the *operations* your tests invoke and asking what each leaves changed
+when it succeeds, not only when it fails. Then prove the list: inject a fault that makes a test
+fail mid-operation and confirm exactly one test fails. A second failure elsewhere is the teardown
+telling you what it still does not know about.
+
+**The teardown runs outside the protections every test has, and it is not exempt from the rules
+they exist for.** Fixtures redirect output, silence a channel, stand in for a consumer, hold a
+lock — and all of that is scoped to the test. The between-tests hook runs after the last of it
+has been undone, so anything it does is done bare. If it *reports* — and teardown that re-mounts,
+reconnects, or resets tends to report — it is writing to a channel that no longer has whatever was
+consuming it, and a bounded buffer with no reader is a wait that never ends.
+
+Its own output accumulates a little at a time, so the failure is a **slow fuse**: the suite passes
+until the total crosses a threshold, and *where* it crosses depends on how much everything before
+it happened to print. That is why it presents as a flake — one build hanging where another is
+green, at a test that does nothing unusual, having passed the same binary six times in a row. It
+is not a race, and hours can go into looking for one.
+
+Give the teardown the same protection the tests have, scoped to itself, and restore what it found
+rather than forcing a constant — the teardown should assert nothing about the state between tests
+except that it is not itself heard. And when a hang moves between builds, suspect accumulation
+before concurrency: bisect by *disabling one thing the teardown does*, which is a cheap experiment
+that either turns an eleven-minute hang into an eleven-second run or clears the whole hypothesis.
+
+**Some state cannot be reached from the teardown at all — reset it on the way in.** Where the
+state lives somewhere the between-tests hook cannot see (private to a compilation unit, behind an
+interface that exposes no reset, owned by a component the harness does not construct), the only
+place left that the failure path cannot skip is the *next* test's setup. Have the fixture put
+things right when it starts rather than when it ends: begin by cancelling, closing, or aborting
+whatever might still be running, chosen so that doing it to an idle system is harmless. It reads
+oddly the first time — cleaning up before you have made a mess — and it is the only construction
+that survives a jump out of the previous test.
+
 **When the fixture started a thread, the leak is not state — it is memory, and the between-tests
 hook cannot fix it.** Everything above says "put the restoration where the jump lands". That
 advice fails exactly once, and the case it fails on is the most damaging one. A fixture that

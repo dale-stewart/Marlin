@@ -366,6 +366,103 @@ for it: `PACKET_ERROR` calls `reset()` and then sets `PACKET_RESET` on the next 
 line to `reset()` changes nothing for the firmware and makes the method mean what it says. With
 it, the same injection fails exactly one test.
 
+## Seventh slice (2026-08-16): the file half
+
+Five tests over `SDFileTransferProtocol`, which was the bulk of the file and entirely untested —
+open, write, close, abort and query. It needed a card and a file rather than a reply to assert
+on, and the card was already there: the harness mounts `SimulatedMedia` for every configuration
+with media, so a transfer can be driven end to end and the result read back off the image.
+
+The one that matters is **a file sent as packets arrives on the card byte for byte**. Everything
+in the earlier slices asserts what the printer *said*; this asserts what it *kept*. That is the
+distinction the whole mode exists for — a transfer that acknowledges every packet and stores the
+wrong bytes is indistinguishable on the wire from one that worked, and the failure only appears
+when the board is asked to run what it stored. Compared against the exact bytes rather than a
+length (which passes on reordered content) or a checksum computed here (which would agree with
+whatever convention the writing side used).
+
+The other four are the guards: a write with nothing open is refused rather than handed to
+whatever file the card has open; a second transfer is refused *and leaves the first intact*,
+which is the part a busy-check in the wrong place would break; an abandoned transfer removes its
+partial file, asserted on the card because `PFT:success` is what an abort says either way; and a
+query names the version and the compression, because a sender that guessed either would corrupt
+the file rather than fail to send it.
+
+Verified by injection: writing one byte fewer, dropping the `transfer_active` guard, and skipping
+the `removeFile` in the abort each fail exactly one test and no other.
+
+### `FreshTransfer` cleans up on the way *in*
+
+`transfer_active` is a static inside `binary_stream.cpp` and only a close or an abort clears it,
+so a test that fails part way through a transfer leaves the next one answering `PFT:busy` to a
+perfectly good open. Neither a destructor nor the harness teardown can reach it — the destructor
+because of the longjmp, the teardown because the state is not visible outside that translation
+unit.
+
+So the fixture aborts any transfer in progress **in its constructor**, which is the one place the
+failure path cannot skip. An abort of a transfer that was not running closes nothing and removes
+nothing. This is the "reset by default" shape from the skill, reached for a second reason: not
+because a test might forget, but because the state is unreachable from anywhere else.
+
+### Register #63: a finished transfer leaves the card released
+
+Adding these tests failed nine tests in `test_powerloss.cpp` — "no recovery file after save()",
+"the record could not be read back". A diagnosis pointing squarely at `powerloss.cpp`, which is
+what the failing tests are about and not what was wrong.
+
+`file_close()` and `transfer_abort()` both end with `card.release()`. That is correct for a
+printer that has finished with the card, and wrong as the state handed to the next test. The
+teardown now re-mounts if a test left it released.
+
+**Third instance of one shape**, and worth naming as a shape rather than three incidents: a test
+leaves the machine in a state that is entirely *legitimate* for the firmware — a half-received
+line (#61), a state machine stranded mid-packet, a card put away — and the failure surfaces in a
+file that has nothing to do with the cause. What they have in common is that none of them is a
+flag a test set; each is the ordinary end state of an ordinary operation. The teardown has to be
+written from what operations *leave behind*, not from what tests *change*.
+
+### Register #65: the fix for #63 hung the suite, and the diagnosis took three tries
+
+Re-mounting in the teardown made `make unit-test-coverage` hang — for eleven minutes, burning
+CPU, at a test that did nothing unusual. The test build stayed green in ten seconds. The same
+coverage binary passed six standalone runs: to a file, through a pipe, with stdin closed, and
+under a pty.
+
+`CardReader::mount()` announces `SD card ok`. The teardown runs outside any test and therefore
+outside `SerialCapture`, which is the only thing that drains the port — and `HalSerial::write()`
+busy-waits for room in a 128-byte buffer whenever it believes a host is listening. So the
+teardown's own chatter accumulated, a few bytes per test, until the buffer was full and the next
+write never returned.
+
+**A slow fuse, not a race**, and that is the whole difficulty: where it burns out depends on how
+much everything before it printed, so it moved between builds and between edits and looked
+exactly like a timing bug. Two plausible theories came first — unguarded card I/O in the new
+tests, then the capture's drainer thread, which has form (#57) — and both were consistent with
+the evidence and wrong.
+
+What settled it was not a better theory but a cheaper experiment: comment out the one line the
+teardown had gained, and see. Eleven minutes became eleven seconds. The teardown now marks the
+port as having no host attached for its own duration and restores what it found.
+
+### Register #64: `ABORT` deletes a file when no transfer is open
+
+Found by writing a fixture, which is its own small lesson. `FreshTransfer` needed to end any
+transfer left running, and `ABORT` looked like the idempotent choice. It is not:
+`transfer_abort()` is the only one of the four operations with no `transfer_active` guard, so an
+abort with nothing open still runs `card.removeFile(card.filename)` — deleting whatever file the
+card last touched, which during a print is the job being printed, and answering `PFT:success`.
+
+The fixture uses the guarded `CLOSE` instead. Recorded rather than fixed: it needs a sender to
+abort a transfer it never opened, which a correct host does not do — but nothing in the protocol
+makes it impossible, and a resend after a lost acknowledgement is exactly the situation where the
+two ends disagree about what is open.
+
+### Where it leaves the file
+
+`binary_stream.cpp` **52% -> 85%** (207 of 241 lines), and the platform-agnostic tree 74.5% ->
+76.0%. What remains uncovered is the compressed-transfer path, the I/O-failure arms, and the
+packet-overrun check.
+
 ## Still to do
 
 The remaining real survivors are small and scattered: the `%` and mask arithmetic in `checksum()`

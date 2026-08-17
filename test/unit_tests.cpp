@@ -190,6 +190,26 @@ static void prepare_simulated_peripherals() {
 static std::string current_test_name;
 
 static void quiesce_simulated_peripherals() {
+  /**
+   * Nothing in here may be heard by a host, because nothing here is drained.
+   *
+   * Several of the things this function does report on the serial port — re-mounting the card
+   * announces "SD card ok" — and the port busy-waits for room in a 128-byte transmit buffer
+   * whenever it believes a host is listening. Inside a test that is fine: `SerialCapture` runs a
+   * drainer. Out here there is nothing, so the bytes accumulate across every teardown until the
+   * buffer is full and the next write never returns.
+   *
+   * It is a slow fuse, which is what makes it nasty: the suite passes until the accumulated
+   * chatter happens to cross 128 bytes, and *where* it crosses depends on how much earlier tests
+   * printed. It first appeared as one build hanging where another was green, at a test that did
+   * nothing unusual, having passed several runs beforehand.
+   *
+   * Restored rather than forced to a constant, so this says nothing about what the port should
+   * be between tests — only that the teardown itself is not heard.
+   */
+  const bool was_connected = MYSERIAL1.host_connected;
+  MYSERIAL1.host_connected = false;
+
   // A test that fails part-way through a click leaves the button held for every test after
   // it — same reasoning as the heater targets below.
   SimulatedHardware::release_panel_buttons();
@@ -298,6 +318,21 @@ static void quiesce_simulated_peripherals() {
   // here rather than in a scope guard is the same reasoning as the heater targets above.
   #if HAS_MEDIA
     simulated_card().allow_writes();
+
+    /**
+     * ...and put the card back in the slot.
+     *
+     * `card.release()` marks the volume unmounted, and several ordinary operations end with it:
+     * closing or aborting a binary file transfer both do, which is correct for a printer that
+     * has finished with the card and wrong as a state to hand the next test. A released card
+     * fails every later `openFileRead`, and the reports say "no recovery file" or "the record
+     * could not be read back" — which reads as a defect in power-loss recovery rather than as an
+     * empty slot. Nine tests in a file that touches none of this failed that way.
+     *
+     * Mounted is what the harness installs and what every media test assumes, so mounted is
+     * where each test starts.
+     */
+    if (!card.isMounted()) card.mount();
   #endif
 
   /**
@@ -483,6 +518,8 @@ static void quiesce_simulated_peripherals() {
    * because a fixture may legitimately install something for the whole process.
    */
   check_no_peripheral_was_left_attached(current_test_name);
+
+  MYSERIAL1.host_connected = was_connected;
 }
 
 void MarlinTest::run() {

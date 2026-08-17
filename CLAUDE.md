@@ -118,7 +118,7 @@ against the **default config only**.
 
 Say which of those two axes you mean whenever you quote a count. `make unit-test-all-local`
 varies the *config* and holds the env fixed: it runs `testhal_native_test` against all
-**fourteen** configs in `test/`, reporting **731, 767, 777, 814, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
+**fourteen** configs in `test/`, reporting **731, 767, 777, 819, 802, 740, 737, 757, 797, 820, 731, 734, 740, 735**. The counts above vary
 the *env* and hold the config fixed. Give an agent a bare number as a baseline without saying
 which, and a correct tree reports a mismatch.
 
@@ -308,6 +308,23 @@ is blocked by PEP 668 on this machine).
   It advances time **without firing timer interrupts**, unlike `HAL_test_advance_micros()`. Reset
   to zero in `quiesce_simulated_peripherals()`, because the test most likely to leave it set is
   one that failed while spinning.
+
+- **Anything the per-test teardown prints is written to a port nobody drains, and it hangs the
+  suite eventually rather than immediately.** `SerialCapture` is the only thing draining
+  `MYSERIAL1`, and it is scoped to a test — so `quiesce_simulated_peripherals()` runs bare. Adding
+  a `card.mount()` there (it announces "SD card ok") filled the 128-byte transmit buffer a few
+  bytes per test until `write()` spun for ever.
+
+  It is a **slow fuse, not a race**: where it goes off depends on how much earlier tests printed,
+  so it moved between builds and looked exactly like a timing bug. `make unit-test-coverage` hung
+  for eleven minutes at a test that did nothing unusual while `testhal_native_test` stayed green,
+  and the same coverage binary passed six standalone runs — to a file, through a pipe, with stdin
+  closed, and under a pty. Two plausible theories (unguarded card I/O; the drainer thread of
+  register #57) were both wrong.
+
+  The teardown now marks the port as having no host attached for its own duration and restores
+  what it found. **If a hang appears after adding anything to the teardown, comment that one line
+  out before theorising** — it turned eleven minutes into eleven seconds and cost one build.
 
 - **A cold nozzle makes the *planner* drop the E part of a move, silently.**
   `planner.cpp:1850` — `tooColdToExtrude()` sets `position.e = target.e` and zeroes
