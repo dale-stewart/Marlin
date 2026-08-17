@@ -117,6 +117,60 @@ they diverged at twenty-four. Every one of them came back as a failure naming bo
 last was the one that mattered — the collision test was passing for the wrong reason until the
 names actually shared a prefix longer than the limit.
 
+## Running the workflow cold on `cardreader.cpp` (2026-08-17)
+
+The skill had gained about ten rules in one session and had not been run end to end since. This
+was that check, on a target chosen by its own step 0 rather than by what was convenient.
+
+Step 0 put `cardreader.cpp` at 381 lines, 82% covered, **66 dark and all of them inside named
+methods** — no unreachable-API problem here, because unlike `SdBaseFile` this file is not
+vendored. The largest single piece was `write_command()` at **15 dark of 15**: the entire ASCII
+upload path, the one the binary protocol exists to replace.
+
+It was dark for a reason worth noticing. An `M28`/`M29` test already existed and passed — it
+opens the file and closes it **without sending anything between**, so the feature looked tested
+while the function that does the work had never run. A round trip with nothing in the middle is
+a shape to watch for.
+
+Three characterization tests, and the middle one is the point:
+
+- a line sent while saving is stored verbatim with a CRLF the printer adds and no host sent;
+- `N5 G1 X10*42` is stored as `G1 X10` — the line number and checksum protect the *link*, not
+  the file;
+- a line without a checksum is **refused** while saving.
+
+### Register #67: the arithmetic is safe because of another file
+
+`write_command()` finds its payload with `strchr(npos, ' ') + 1` and `strchr(npos, '*') - 1` and
+uses both without checking either. A line carrying an `N` and no `*` makes the second
+`nullptr - 1`, and the three writes after it land near address zero.
+
+**Demonstrated: SIGSEGV**, by injecting `M117 NOTE` while a file was open.
+
+It cannot happen through the path a host uses, because `get_serial_commands()` refuses any line
+without a checksum while saving — including an *unnumbered* one, which is the part that is easy
+to miss. So the safety of this arithmetic is a property of `queue.cpp`, and nothing in
+`cardreader.cpp` says so. It is reachable through the injection path, which validates nothing:
+193 call sites inject commands, and `EVENT_GCODE_*` lets a user configure arbitrary strings.
+
+**The defect cannot be pinned by a test** — the reproduction crashes the process, so a committed
+test would take the suite with it. What is pinned instead is the guarantee that protects it. That
+is the taxonomy's third category applied to a *dependency* rather than to the code itself.
+
+### Where the workflow document fell short
+
+Two things, both now visible only because the run was done cold:
+
+- **Steps 1-2 and 3-5 do not run once per file, they interleave per region.** The document reads
+  as phases: seed tests, measure, mutate, kill. On a partially covered file the largest dark
+  region has no mutants at all, because mutation is restricted to covered lines — so it needs
+  step 1 again before step 3 can see it. Nothing says that, and following the order literally
+  would have measured the file and missed its biggest gap entirely.
+- **Nothing warns that the route into the code is part of the test design.** Two of these three
+  tests failed first time because the helper that every other test in the file uses — `send()` —
+  dispatches straight to the parser, and the behaviour under test only happens inside
+  `queue.advance()`. The file's own fixture was the wrong tool and looked like the right one.
+
 ## What is left
 
 Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of

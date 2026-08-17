@@ -277,6 +277,120 @@ MARLIN_TEST(media_commands, M28_and_M29_write_a_file_to_the_card) {
   TEST_ASSERT_TRUE_MESSAGE(card.fileExists("upload.gco"), "the uploaded file is not on the card");
 }
 
+/**
+ * The lines sent between M28 and M29 are what ends up in the file.
+ *
+ * `CardReader::write_command()` is the whole of the ASCII upload path — the one the binary
+ * protocol exists to replace — and it was entirely uncovered. The existing M28/M29 test opens
+ * and closes the file without sending anything between, which is exactly the shape that leaves
+ * a function dark while the feature looks tested.
+ *
+ * The route matters, and it is easy to get half right: `send()` dispatches a command directly,
+ * and the diversion into the file happens inside `queue.advance()`. So a line has to be *both*
+ * enqueued and advanced — enqueuing alone leaves it sitting in the ring buffer, `M29` closes the
+ * file underneath it, and the test reads back an empty file with nothing to say why. The queue
+ * is not an implementation detail here, it is the path under test.
+ *
+ * Characterization, per step 1 of the rescue: this asserts what the code does today, including
+ * the line ending it adds, which no caller asked for and every consumer now depends on.
+ */
+MARLIN_TEST(media_commands, lines_sent_while_saving_are_written_to_the_file) {
+  MediaSlate slate;
+
+  send("M28 upload.gco");
+  queue.enqueue_one_now("G1 X10 Y20");
+  queue.advance();                      // the diversion into the file happens here, not on enqueue
+  send("M29");
+
+  char back[64] = { 0 };
+  card.openFileRead("upload.gco");
+  const int16_t got = card.read(back, sizeof(back) - 1);
+  card.closefile();
+
+  TEST_ASSERT_TRUE_MESSAGE(got > 0, "nothing was written to the uploaded file");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("G1 X10 Y20\r\n", back,
+    "the command should be stored verbatim with a CRLF appended - the terminator is added by "
+    "the printer, not sent by the host, and a file written without it is one long line");
+}
+
+/**
+ * A line number and checksum are stripped before the line is stored.
+ *
+ * A host that numbers and checksums its transmission is protecting the *link*, not the file:
+ * `N5 G1 X10*42` means "this is line 5 and here is its checksum", and none of that belongs in
+ * a G-code file that will be printed later. The printer removes both, keeping only what lies
+ * between the first space after the `N` and the character before the `*`.
+ *
+ * Worth pinning because the arithmetic is unguarded — the two delimiters are found with
+ * `strchr` and used without checking either result. See the test after this one.
+ */
+MARLIN_TEST(media_commands, a_line_number_and_checksum_are_not_stored_in_the_file) {
+  MediaSlate slate;
+
+  send("M28 upload.gco");
+  queue.enqueue_one_now("N5 G1 X10*42");
+  queue.advance();
+  send("M29");
+
+  char back[64] = { 0 };
+  card.openFileRead("upload.gco");
+  card.read(back, sizeof(back) - 1);
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("G1 X10\r\n", back,
+    "the transmission's line number and checksum protect the link, not the file, and storing "
+    "them would put them in front of every command the printer later reads back");
+}
+
+/**
+ * While a file is open for writing, a line without a checksum is refused rather than stored.
+ *
+ * This pins a guarantee that lives in one file and is depended on in another, with nothing at
+ * either end saying so. `CardReader::write_command()` locates the payload with
+ * `strchr(npos, ' ') + 1` and `strchr(npos, '*') - 1` and uses both results without checking
+ * either. A line carrying `N` but no `*` would make the second `nullptr - 1`, and the three
+ * writes that follow would land at an address near zero.
+ *
+ * It cannot happen, because `get_serial_commands()` will not pass such a line on: a numbered
+ * line without a checksum is refused, and — the part that is easy to miss — while saving, an
+ * *unnumbered* line is refused too, so every line reaching the file has both. The safety of the
+ * arithmetic is therefore a property of the queue, not of the function doing the arithmetic.
+ *
+ * Asserted through the serial path deliberately. `send()` dispatches straight to the parser and
+ * `enqueue_one_now()` skips validation entirely; only the route a host actually uses enforces
+ * this, so only that route can demonstrate it.
+ */
+MARLIN_TEST(media_commands, an_unchecksummed_line_is_refused_while_saving) {
+  MediaSlate slate;
+
+  send("M28 upload.gco");
+
+  std::string reply;
+  {
+    SerialCapture capture;
+    for (const char *p = "G1 X10 Y20\n"; *p; ++p) MYSERIAL1.receive_buffer.write(uint8_t(*p));
+    queue.get_available_commands();
+    queue.advance();
+    reply = capture.finish();
+  }
+
+  send("M29");
+
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("checksum") != std::string::npos
+                        || reply.find("Checksum") != std::string::npos,
+    "an unchecksummed line sent while saving should be refused and said to be missing one");
+
+  char back[64] = { 0 };
+  card.openFileRead("upload.gco");
+  const int16_t got = card.read(back, sizeof(back) - 1);
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_INT16_MESSAGE(0, got > 0 ? got : 0,
+    "and nothing should reach the file - the writer finds its payload between a space and a "
+    "'*' without checking that either exists, so a line missing them is not merely stored "
+    "wrongly, it is written through a pointer derived from null");
+}
+
 #if ENABLED(BINARY_FILE_TRANSFER)
 
 /**

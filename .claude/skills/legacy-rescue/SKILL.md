@@ -137,6 +137,18 @@ Goal: any harness that runs and can fail. Do not aim for good tests yet.
   place to look rather than three.
 - If nothing is callable without heavy setup, test the outermost entry point first
   and work inward. A slow, ugly end-to-end test beats no test.
+- **The route into the code is part of the test design, and the file's existing helper is
+  often the wrong one.** Behaviour frequently lives on one specific path — inside a dispatch
+  loop, behind a queue, after a scheduler — while the convenient helper every other test uses
+  takes a shortcut past it. The test then exercises a neighbour of the thing you meant to
+  reach, and the failure says nothing useful: ours read as an empty output file. Before writing,
+  find the *call site* of the function under test and make the test arrive the way that caller
+  does.
+- **A round trip with nothing in the middle leaves the middle untested, and looks tested.**
+  Open-and-close, connect-and-disconnect, begin-and-commit: the pair passes, the feature appears
+  covered, and the function that does the actual work has never run. Ours had a passing
+  open/close test either side of a function at zero coverage. When a feature looks tested but a
+  function inside it is dark, suspect this before suspecting the coverage tool.
 
 Exit gate: the suite runs green from a clean checkout, in CI-equivalent conditions.
 
@@ -205,6 +217,14 @@ not ten missing assertions, so fix the input gap and re-measure before writing m
 
 Re-run coverage. If line coverage is below **95%** for the target, or the mutation
 score is still weak, return to **step 3** with the newly uncovered regions.
+
+**On a partly covered file these steps interleave per region, they do not run once per file.**
+Mutation is normally restricted to lines coverage marked as executed, so a wholly dark
+function produces *no mutants at all* — it is absent from the survivor list rather than
+present and unkilled. Read literally, the sequence measures such a file and reports on
+everything except its largest gap. Where step 0 found a region with no coverage, take it back
+to **step 1** and characterize it before expecting step 3 to say anything about it. Ours was
+the biggest single hole in the target and would have been invisible.
 
 Guard against the failure mode this loop invites: tests that raise the number
 without testing behavior. Reject any test that
