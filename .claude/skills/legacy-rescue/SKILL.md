@@ -99,6 +99,25 @@ Record before touching anything:
 - Its dependencies on I/O, clocks, randomness, globals, and hardware.
 - Baseline coverage, if already known.
 
+**Size a target by the part your product calls, not by its coverage gap.** Where the file is
+vendored, generated, or a library you merely depend on, it exports an API for *all* of its
+users while your product uses a slice. Everything else is uncovered because nothing calls it,
+and that is not debt — writing tests for it buys nothing and makes the unused surface harder
+to delete later.
+
+So before ranking a candidate, classify its dark functions by whether anything outside the
+library calls them. Ours ranked as the largest remaining gap in the tree at 340 uncovered
+lines; **269 of them were API with no caller**, and the reachable part was already at 81%.
+That is a week of work that did not exist.
+
+Two cautions, both of which changed our answer:
+
+- **Do not count grep hits — read them.** Common method names (`write`, `read`, `peek`,
+  `hide`) match hundreds of unrelated symbols. Require a receiver, then read the call sites.
+- **A caller in code your build excludes is a third category**, neither used nor dead. Record
+  it as unreachable-in-this-configuration, because it comes back the day that configuration
+  is added.
+
 Report the plan and the target, then proceed.
 
 ## Step 1 — Establish a seed test suite

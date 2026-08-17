@@ -23,6 +23,7 @@ there, or a test was written against a fixture note that had stopped being true.
 | [embedded-platforms.md](embedded-platforms.md) | What emulating the embedded targets would cost |
 | [pause-and-filament.md](pause-and-filament.md) | `pause.cpp` and `e_parser.cpp`, and the fixture fault beneath them |
 | [binary-transfer.md](binary-transfer.md) | `binary_stream.h`, the framed packet protocol |
+| [sd-and-files.md](sd-and-files.md) | `SdBaseFile.cpp` — why its coverage gap is four fifths unused library API |
 | [survey-2026-08-14.md](survey-2026-08-14.md) | What is left, measured — the evidence base for choosing a target |
 
 ## Where a finding goes
