@@ -640,6 +640,37 @@ when the caller's buffer fills (301-302), input starvation part-way through a to
 and the finish states (356). All of them need a transfer shaped differently from the two small
 ones here — a payload larger than the output buffer, or a stream split across packets.
 
+### One transfer for both files' edges
+
+Written next, and it reaches two uncovered clusters in two files at once, because they are the
+same event seen from either side. Both compression tests so far send a few bytes: everything the
+decoder produces fits in the 512-byte staging buffer and is written once, at the close. The
+ordinary case for a real upload is more output than that, and it takes a different path through
+each file — in `file_write()` the buffer filling triggers a write mid-packet and resets the
+count, and in the decoder a back reference that cannot be emitted in one call has to resume.
+
+**Compression is what makes it reachable in a single packet at all.** A payload is bounded by
+`MAX_CMD_SIZE`, so an uncompressed transfer cannot carry 512 bytes — but eighty-three bytes of
+back references expand to six hundred and fifty-six, which is the point of the mode. Sixteen
+literals then forty references of sixteen bytes from sixteen back: a repeated pattern, so the
+assertion is exact and a misjoin shows as broken repetition rather than a changed length.
+
+The test asserts its own premises rather than trusting the arithmetic — that the payload fits a
+packet, and that the output exceeds the staging buffer — because both are what make it a
+different test from the one before it, and a later edit to either number would otherwise silently
+turn it back into a duplicate.
+
+`binary_stream.cpp` **91% -> 92%**, and 31 more decoder survivors killed by assertion. The tree
+77.9% -> 78.2%.
+
+**One injection is worth recording for what it says about the target rather than the test.**
+Removing the decoder's `if (hsd->output_count < count) count = hsd->output_count;` — the clamp
+that stops a back reference writing past the caller's buffer — fails twenty-six tests across the
+suite rather than one. That is not poor isolation: the clamp is a memory-safety invariant, not a
+behaviour, and removing it corrupts whatever is next in memory. A mutant like that is detected
+loudly and by nothing in particular, and no single test can or should pin it. The mid-packet
+flush injection, by contrast, gives exactly `Expected 656 Was 655`.
+
 ## Still to do
 
 The clusters shrank rather than closed: `validate()` 9 -> 5, the idle watchdog 12 -> 8, and the

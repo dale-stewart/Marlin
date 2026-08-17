@@ -1059,6 +1059,70 @@ MARLIN_TEST(binary_stream, a_back_reference_is_expanded_from_what_came_before) {
     "to text that looks like a file and is not the one that was sent");
 }
 
+/**
+ * A transfer that decodes past the decoder's own buffer is written out in pieces and joined.
+ *
+ * Both compression tests so far send a few bytes, which is the easy case: everything the decoder
+ * produces fits in one buffer and is written once, at the close. The interesting case is the
+ * ordinary one for a real upload — more output than the 512-byte staging buffer holds — and it
+ * takes a different path through two different files.
+ *
+ * In `file_write()` the buffer filling is what triggers a write mid-packet, and the count is
+ * reset so the next round starts fresh. Get that reset wrong and the file gains or loses a
+ * 512-byte block. In the decoder, a back reference that cannot be emitted in one call has to
+ * resume: `output_count` is decremented by what was written and the state is kept until it
+ * reaches zero.
+ *
+ * Compression is what makes this reachable in one packet at all. A packet's payload is bounded
+ * by `MAX_CMD_SIZE`, so an uncompressed transfer cannot carry 512 bytes — but eighty-three bytes
+ * of back references expand to six hundred and fifty-six, which is the whole point of the mode.
+ *
+ * The content is a sixteen-byte pattern repeated, so the assertion is exact and any misjoin
+ * shows: a block written twice, dropped, or resumed from the wrong offset all break the
+ * repetition rather than merely changing the length.
+ */
+MARLIN_TEST(binary_stream, a_transfer_longer_than_the_decode_buffer_is_joined_correctly) {
+  FreshTransfer transfer;
+
+  const std::string pattern = "0123456789ABCDEF";        // sixteen bytes, all distinct
+  const int repeats = 40;                                // 16 + 40*16 = 656 bytes out
+  std::string expected = pattern;
+
+  HeatshrinkStream stream;
+  for (const unsigned char c : pattern) stream.literal(c);
+  for (int i = 0; i < repeats; ++i) {
+    stream.backref(/*distance=*/16, /*length=*/16);
+    expected += pattern;
+  }
+
+  const std::string payload = stream.bytes();            // 144 + 40*13 = 664 bits = 83 bytes
+  TEST_ASSERT_TRUE_MESSAGE(payload.size() < MAX_CMD_SIZE,
+    "the compressed payload has to fit one packet, or this is testing the packet layer instead");
+  TEST_ASSERT_TRUE_MESSAGE(expected.size() > 512,
+    "and it has to decode past the staging buffer, or it is the same test as the last one");
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("big.gco", false, /*compressed=*/true));
+  transfer.send_file_packet(FILE_WRITE, payload);
+  TEST_ASSERT_TRUE_MESSAGE(said(transfer.send_file_packet(FILE_CLOSE), "PFT:success"),
+    "the transfer should close cleanly");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("big.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "the file should exist on the card");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(expected.size(), card.getFileSize(),
+    "and hold every byte the stream expanded to - a staging buffer written twice or not at all "
+    "moves this by exactly 512");
+
+  std::vector<char> back(expected.size() + 1, '\0');
+  card.read(back.data(), expected.size());
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.c_str(), back.data(),
+    "and in the right order - a back reference resumed from the wrong offset across a buffer "
+    "boundary still produces the right number of bytes");
+}
+
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {
   FreshStream stream;
   queue.clear();

@@ -48,6 +48,22 @@ re-checks.
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **Some mutants are detected by everything and pinned by nothing — safety invariants.**
+  Removing a bounds clamp, a null guard, an overflow check or a capacity limit does not change
+  what the code *decides*; it changes whether the code stays inside its own memory. Under mutation
+  that surfaces as a broad scattered failure: dozens of unrelated tests fail, or the run crashes,
+  or it hangs somewhere with no connection to the mutant.
+
+  Read it as a kill and do not hunt for the one test that should have caught it — there usually
+  cannot be one. The clamp has no observable behaviour of its own; it exists so that nothing
+  *else* observes anything, and a test pinning it would have to assert on memory the program does
+  not expose. Ours failed twenty-six tests from one removed line, beside a logic mutant in the
+  same function that failed exactly one and printed the off-by-one in its message.
+
+  This matters when triaging because "fails half the suite" reads like poor isolation in the
+  tests and is not. Note it as a safety invariant, count it detected, and spend the effort on the
+  mutants that failed *nothing*.
+
 - **Settle an initialiser with one exaggerated perturbation, not with a dataflow read.**
   Declarations that seed an accumulator — a running minimum, a timer, a result struct —
   produce large survivor clusters, and the tempting move is to trace the reads and decide.
