@@ -238,6 +238,32 @@ The remaining clusters, for whoever picks this up: `openAndPrintFile` (40, of wh
 line computing the size of a command buffer that is never tight — likely equivalent),
 `printListing` (37, needs nested directories in a listing), `diveToFile` (31, needs deep paths).
 
+### What the configuration actually bought, measured
+
+Re-run under `015-sd_detect`, both coverage and mutation naming the same suite:
+
+| function | `004-sd_powerloss` | `015-sd_detect` |
+|---|---|---|
+| **`manage_media`** | 66 survivors of 74 testable — **11% killed** | 41 of 62 — **34% killed** |
+| `printListing` | 37/67 | 40/69 |
+| `diveToFile` | 31/115 | 33/115 |
+| whole file | **60.4%** raw | **57.6%** raw |
+
+The cluster it was added for improved threefold. **The file's headline score went down**, and both
+figures are correct: `015` is a different build, so a different mutant population, and it is a
+*smaller* suite — 787 tests against 834, because it enables media without power-loss recovery or
+binary transfer. Everything outside `manage_media` therefore gets slightly less exercise, which is
+what the other rows show.
+
+Neither total is a before-and-after of the other. Recorded in the skill's `survivor-taxonomy.md`,
+because a configuration added to unblock a cluster will usually do this, and the work reads as a
+regression to anyone scanning the headline.
+
+Forty-one survivors remain in `manage_media`, and a good share of them are expected to stay:
+making the removal branch *reachable* did not make it *consequential*, because the branch turns
+out to be dead (#68). The configuration proved that, which was worth as much as killing the
+mutants would have been.
+
 ## What is left
 
 Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of

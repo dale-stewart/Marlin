@@ -144,6 +144,21 @@ re-checks.
   comparison against zero are unkillable when the operand cannot be negative, and the same
   goes for a range check on a value the type already bounds. Neither is a gap in the tests,
   and neither is worth a second attempt once it has been named.
+- **A configuration that unblocks a cluster will usually lower the file's headline score — judge
+  it on the cluster it was added for.** The new configuration is a different build, so it is a
+  different mutant population; and it is nearly always a *smaller* suite, because it enables the
+  one feature you wanted and not the several that other configurations bring. Fewer tests reach
+  the rest of the file, and everything outside the target cluster gets slightly worse.
+
+  Ours moved the cluster it was for from 11% killed to 34%, while the file total went from 60.4%
+  to 57.6%. Both numbers are correct and neither is a before-and-after: different population,
+  different suite. Report the cluster, and say explicitly that the file totals are not comparable,
+  or the work reads as a regression to anyone scanning the headline.
+
+  Expect some of the newly reachable mutants to be equivalent even so. Making a branch *reachable*
+  is not the same as making it *consequential*, and ours turned out to be dead code — the
+  configuration proved that, which is worth as much as killing the mutants would have been.
+
 - **A configuration that unblocks a cluster can also change the plant the tests run against.**
   Turning on the option that makes a dead arm reachable is cheap when the option only selects
   code. It is not cheap when the option changes a *control loop* — a different regulator, a
