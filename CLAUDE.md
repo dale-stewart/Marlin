@@ -414,6 +414,18 @@ is blocked by PEP 668 on this machine).
   once because the command legitimately contained the target path, which is the case the
   `[m]ake` trick does **not** cover. Prefer waiting on an artifact; if you must name a process,
   kill and match by PID.
+
+  **This one is now enforced rather than documented.** `.claude/settings.json` runs
+  `buildroot/share/scripts/guard_wait_loops.py` as a `PreToolUse` hook on every Bash command, and
+  it refuses two shapes: a `pgrep`/`pkill` `-f` pattern that matches the command containing it,
+  and a `sleep` loop with no ceiling. It decides the first by doing what `pgrep` does — compiling
+  the pattern and searching the command text with it — so it is exact, and the bracketed spelling
+  passes for free while a pattern that genuinely appears in the command does not.
+
+  A ceiling means `timeout N`, `wait_for.sh`, or a counted loop; the refusal names all three. The
+  cost is a Python process per Bash call. That was judged worth it after prose failed four times
+  in one session, which is the only argument for it — if the guard ever gets in the way more than
+  the bug did, delete the hook rather than working around it.
 - **Never `git add -A` after a coverage or mutation run.** Both rewrite
   `Marlin/Configuration.h`, `Configuration_adv.h` and `config.ini` for the suite they measure
   and leave them rewritten. Cleaning them before the *test* run is not enough if a measurement

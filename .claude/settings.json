@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/buildroot/share/scripts/guard_wait_loops.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking the wait is bounded"
+          }
+        ]
+      }
+    ]
+  }
+}
