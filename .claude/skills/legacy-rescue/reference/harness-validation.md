@@ -289,6 +289,23 @@ because a helper opens one while its caller already holds one.
 
 ## Diagnosing a harness fault
 
+**When an injection reports that nothing failed, check the reporting before you believe it.** The
+whole method rests on "break the code, watch the right test go red", and that conclusion is only
+as good as the command extracting the result. A filter that quietly matches less than you think
+turns a *working* test into apparent dead weight, and the natural next move — deleting it, or
+concluding the survivor is equivalent — is the wrong one in both directions.
+
+Ours extracted failing test names with a pattern for lowercase identifiers, and the tests it
+needed to see were named after protocol commands, so their names carried capitals. Two rounds of
+injection read as "nothing failed" against a test that in fact was the *only* thing catching
+either fault. It was caught by noticing that the run summary said one test had failed while the
+extraction listed none — the two numbers disagreed, and only one of them was being read.
+
+So: have the injection report a **count** as well as names, and reconcile them. A grep that finds
+nothing where the summary says something failed is a broken grep, not a weak test. And when a
+result surprises you, print the raw output once before theorising about the code.
+
+
 **A harness whose clock only moves on request cannot terminate the product's timed waits, and
 scores the resulting hangs as detections.** That failure is filed in `scoring.md`, because what it
 damages is the number — but the *fix* is here, in the fake: let a poll that finds nothing charge

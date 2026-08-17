@@ -264,6 +264,42 @@ making the removal branch *reachable* did not make it *consequential*, because t
 out to be dead (#68). The configuration proved that, which was worth as much as killing the
 mutants would have been.
 
+### The listing cluster: one level was not enough
+
+`printListing` had 37-40 survivors and already had a nested-listing test that passed. The
+survivors sat on the path join:
+
+    const size_t lenPrepend = prepend ? strlen(prepend) + 1 : 0;
+    if (prepend) { strcpy(path, prepend); path[lenPrepend - 1] = '/'; }
+
+`prepend` is null on the outermost call and non-null on every recursion, so the true arm is
+reached only when a subdirectory is found **inside another one**. The existing test made one
+subdirectory, which recurses once — and never takes the branch. Two levels is the smallest input
+that does.
+
+Verified: breaking the separator, or dropping the outer directory entirely, each fails **exactly**
+the new test and nothing else. `cardreader.cpp` 60.4% -> **62.6%**.
+
+What it protects is direct: the path a host reads out of a listing is the one it sends back to
+open the file. A listing that keeps only the last directory names a file that cannot be opened,
+and the printer's answer is that it does not exist.
+
+### The verification tool lied twice before it was believed
+
+Worth recording because it nearly cost the test. Both injections above first reported **"nothing
+failed"**, and the obvious conclusion — that the new test was dead weight and the survivors
+equivalent — was available and wrong.
+
+The fault was in the reporting. Failing test names were extracted with a pattern for lowercase
+identifiers, and these tests are named after protocol commands, so their names carry capitals.
+The extraction silently matched nothing while the run summary said one test had failed. Two
+numbers disagreed and only one was being read.
+
+The general form is now in the skill's `harness-validation.md`: when an injection says nothing
+failed, check the reporting before believing it, and have the injection report a count as well as
+names so the two can be reconciled. A grep finding nothing where the summary says something failed
+is a broken grep, not a weak test.
+
 ## What is left
 
 Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of

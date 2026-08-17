@@ -142,6 +142,48 @@ MARLIN_TEST(media_listing, M20_lists_files_inside_subdirectories_with_their_path
     "a file in a subdirectory should be listed under its path");
 }
 
+/**
+ * A file two directories down is listed under its whole path, not its last step.
+ *
+ * The test above walks one level, and one level is not enough to exercise the join. `M20` builds
+ * each path by prepending what it has walked so far — but at the root there is nothing to prepend,
+ * so with a single subdirectory the branch that does the joining never runs:
+ *
+ *     const size_t lenPrepend = prepend ? strlen(prepend) + 1 : 0;
+ *     if (prepend) { strcpy(path, prepend); path[lenPrepend - 1] = '/'; }
+ *
+ * `prepend` is null on the outermost call and non-null on every recursion, so the true arm is
+ * reached only when a subdirectory is found *inside* another one. Two levels is the smallest
+ * input that gets there, which is why a passing one-level test left this dark.
+ *
+ * What it protects is concrete: the path a host reads out of `M20` is the one it sends back in
+ * `M23`. A listing that forgot the outer directory names a file that cannot be opened, and the
+ * printer's answer to `M23` is that the file does not exist.
+ */
+MARLIN_TEST(media_listing, M20_lists_a_file_two_directories_down_under_its_whole_path) {
+  ListingSlate slate;
+
+  MediaFile root = card.getroot(), made;
+  made.mkdir(&root, "OUTER");
+  made.close();
+
+  card.cd("OUTER");
+  MediaFile outer = card.getWorkDir();
+  made.mkdir(&outer, "INNER");
+  made.close();
+
+  card.cd("INNER");
+  put_file("DEEP.GCO", "G28\n");
+  card.cdroot();
+
+  const std::string reply = reply_to("M20");
+
+  TEST_ASSERT_TRUE_MESSAGE(listed(reply, "OUTER/INNER/DEEP.GCO"),
+    "a file two levels down should be listed under its whole path - a listing that keeps only "
+    "the last directory names a file the host cannot then open, and M23 answers that it does "
+    "not exist");
+}
+
 #if ENABLED(CUSTOM_FIRMWARE_UPLOAD)
 
   /**
