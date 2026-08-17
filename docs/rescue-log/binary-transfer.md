@@ -522,6 +522,46 @@ in `assertion-patterns.md` — an outcome reachable by more than one mechanism p
 and it is worth noting that it survived being written carefully and was caught only by the
 injection.
 
+### The compressed path, and writing an encoder that is not there
+
+The last untested path, and the one where a silent failure is worst. Compression is negotiated
+per transfer: the sender says so in the open packet, and every payload afterwards is a heatshrink
+stream rather than the file. **A printer that stored those bytes as they arrived would look
+identical on the wire** — every packet acknowledged, `PFT:success` at the close, the expected
+number of bytes written — and the card would hold a compressed blob. Nothing a sender can see
+distinguishes that from a working transfer, which is why the assertion has to be the decompressed
+text read back off the card.
+
+Only the *decoder* ships in this firmware, so the test writes the stream from the format instead:
+most significant bit first, a `1` tag introducing a literal byte and a `0` introducing a back
+reference. Literals only is a legal heatshrink stream that simply saves nothing, and it is all a
+test of the decode path needs — what matters is that the printer decompresses, not how well the
+sender packed.
+
+The one constraint that is easy to get wrong: nine bits per literal means the input length must
+be a multiple of eight for the stream to end on a byte boundary. A partial trailing byte is
+padded with zeros, and zero is the tag bit for a back reference, so the decoder would be handed
+the start of a token that never arrives. Hence sixteen characters, chosen rather than convenient.
+
+It also drives the flush in `file_close()`, which is where a small transfer's entire output
+lives: decoded bytes accumulate in a 512-byte buffer and are written when it fills or when the
+transfer closes, and nothing this size ever fills it.
+
+Verified by injection twice, and the failures are legible: storing the stream verbatim gives
+"Expected 16 Was 18", dropping the flush gives "Expected 16 Was 0".
+
+**8 more survivors killed, coverage 87% -> 91%**, and the platform-agnostic tree 76.0% -> 77.2% —
+the tree moved further than the file because `heatshrink_decoder.cpp` had never been executed by
+anything either. It goes 0% -> **52%** (88 of 168 lines) as a side effect, which is a third of
+the tree's gain from a single test.
+
+That leaves an obvious and cheap follow-on: the half of the decoder still dark is the
+back-reference machinery, and reaching it needs a stream with an actual back reference in it
+rather than literals. The encoder side is four more lines of the same helper — emit a `0` tag,
+an index and a length — and it would test the part of the decoder that can actually corrupt a
+file, since a mis-decoded back reference produces plausible bytes rather than obvious rubbish.
+Not done.
+
 ## Still to do
 
 The clusters shrank rather than closed: `validate()` 9 -> 5, the idle watchdog 12 -> 8, and the

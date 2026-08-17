@@ -166,6 +166,36 @@ namespace {
     ~NoHostAttached() { MYSERIAL1.host_connected = was; }
   };
 
+  /**
+   * Heatshrink, written from the format rather than with an encoder, because only the decoder
+   * ships in this firmware.
+   *
+   * The format is a bit stream, most significant bit first. Each token starts with a tag bit: a
+   * `1` introduces a literal byte and the next eight bits are it, a `0` introduces a back
+   * reference of `HEATSHRINK_STATIC_WINDOW_BITS` index and `HEATSHRINK_STATIC_LOOKAHEAD_BITS`
+   * length. Emitting literals only is a legal stream — it just saves nothing — and it is all a
+   * test of the *decode path* needs: what matters here is that the printer decompresses at all,
+   * not how well the sender packed.
+   *
+   * Nine bits per byte means the input length must be a multiple of eight for the stream to end
+   * on a byte boundary. That is deliberate rather than incidental: a partial trailing byte is
+   * padded with zeros, and a zero is the tag bit for a back reference, so the decoder would be
+   * offered the beginning of a token that never arrives.
+   */
+  std::string heatshrink_literals(const std::string &text) {
+    std::string out;
+    uint32_t bits = 0;
+    int nbits = 0;
+    auto push = [&](const uint32_t value, const int count) {
+      for (int i = count - 1; i >= 0; --i) {
+        bits = (bits << 1) | ((value >> i) & 1u);
+        if (++nbits == 8) { out += char(bits & 0xFF); bits = 0; nbits = 0; }
+      }
+    };
+    for (const unsigned char c : text) { push(1, 1); push(c, 8); }
+    return out;
+  }
+
   enum : uint8_t { FILE_QUERY = 0, FILE_OPEN = 1, FILE_CLOSE = 2, FILE_WRITE = 3, FILE_ABORT = 4 };
 
   /**
@@ -895,6 +925,54 @@ MARLIN_TEST(binary_stream, a_dummy_transfer_is_accepted_and_writes_nothing) {
   TEST_ASSERT_FALSE_MESSAGE(card.isFileOpen(),
     "but nothing should have been written - the flag exists so a firmware image can be measured "
     "over the link without being committed to the card");
+}
+
+/**
+ * A compressed transfer is decompressed onto the card, not stored as it arrived.
+ *
+ * The last untested path in the file, and the one where a silent failure is worst. Compression is
+ * negotiated per transfer: the sender says so in the open packet, and from then on every payload
+ * is a heatshrink stream rather than the file. If the printer stored those bytes as they arrived
+ * the transfer would still succeed — every packet acknowledged, `PFT:success` at the close, the
+ * expected number of bytes written — and the card would hold a compressed blob that is not the
+ * file anyone asked for. Nothing on the wire distinguishes that from a working transfer.
+ *
+ * So the assertion is the decompressed text, read back off the card, compared against what was
+ * compressed. Sixteen characters because nine bits per byte only lands on a byte boundary in
+ * multiples of eight — see `heatshrink_literals()`.
+ *
+ * This also drives the flush in `file_close()`: decoded output accumulates in a 512-byte buffer
+ * and is written when that fills or when the transfer closes, and every transfer this small
+ * takes the second path exclusively.
+ */
+MARLIN_TEST(binary_stream, a_compressed_transfer_is_decompressed_onto_the_card) {
+  FreshTransfer transfer;
+  const char * const contents = "G28\nG1 X1 Y1\nM2\n";   // exactly 16 characters
+
+  const std::string opened =
+    transfer.send_file_packet(FILE_OPEN, open_payload("packed.gco", false, /*compressed=*/true));
+  TEST_ASSERT_TRUE_MESSAGE(said(opened, "PFT:success"), "a compressed transfer should open");
+
+  transfer.send_file_packet(FILE_WRITE, heatshrink_literals(contents));
+
+  const std::string closed = transfer.send_file_packet(FILE_CLOSE);
+  TEST_ASSERT_TRUE_MESSAGE(said(closed, "PFT:success"),
+    "and close cleanly, flushing whatever the decoder still held");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("packed.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "the file should exist on the card");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(strlen(contents), card.getFileSize(),
+    "and be the length of the original, not of the stream that carried it");
+
+  char back[64] = { 0 };
+  card.read(back, strlen(contents));
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(contents, back,
+    "and hold the decompressed file - storing the stream verbatim would look identical on the "
+    "wire, right down to the success at the close");
 }
 
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {
