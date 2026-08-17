@@ -7,6 +7,8 @@ self-consistent wrong measurement is indistinguishable from a right one: coverag
 one suite restricting mutants for another produces a perfectly plausible report of a
 suite nobody ran. Everything here exists because a number lied first.
 
+## Validating the instrument
+
 **Validate the harness before trusting any score — every harness, every time.** Hand-inject
 an obvious fault and confirm the suite fails with a non-zero exit. A harness that silently
 fails to rebuild, or a tool whose mutants never reach the binary, reports a perfect score on
@@ -116,61 +118,7 @@ unit. If adopting one means changing the project's production toolchain — a di
 compiler, a different standard library, or edits to production headers to satisfy the
 tool — stop and switch to a source-level mutator that rebuilds with the project's own
 toolchain. Slower per mutant, but it measures the code that actually ships.
-- **When a virtual call arrives somewhere impossible, dump the dispatch table.** Symptoms
-  that no ordinary bug explains — a call landing in another class's method, cleanup emitted
-  but never run, an object that is provably intact behaving as though it were not — are
-  usually a *definition* problem rather than a runtime one. In languages that emit
-  per-class dispatch tables, print the table for the type involved and read the entries.
-  It takes one command and it either names the wrong function immediately or rules the
-  whole class of cause out.
 
-  The cause worth suspecting first is **two definitions sharing one name**. Test fixtures
-  are unusually prone to it: they live in headers, they are written quickly, they are named
-  for the thing they stand in for — so two different fixtures for two different aspects of
-  the same physical part end up with the same obvious name. Where the language merges such
-  definitions silently, one wins and objects of the other get its behaviour, with no
-  diagnostic at compile or link time.
-
-  Search the fixture directory for the name before adding a type to it. That is a
-  one-second check against a fault that presents as memory corruption and reads, from
-  every angle except the dispatch table, as something else entirely.
-- **A sanitizer's first report is where the damage surfaced, not always where it began.**
-  One fault can produce several, and the tool stops at the first one it meets. If the first
-  report describes a *read* of something already dead, look for the *write* that killed it:
-  most sanitizers can be told to suppress a category so the run continues to the next
-  finding, and the second report is often the cause of the first.
-
-  The tell is a symptom no ordinary bug explains. Cleanup that is emitted but never runs,
-  an object constructed and never destroyed while its neighbours in the same frame are, a
-  failure that moves when unrelated code changes — those are not lifetime bugs, they are
-  what a large stray write looks like from the inside. Do not build a theory that explains
-  them as ordinary; find the write.
-
-  And treat any fixture that writes a large buffer from a callback as a hazard in itself,
-  separately from whatever aims it. A small stray write corrupts one thing and is hard to
-  find; a kilobyte-scale one destroys the evidence, including the frames you would use to
-  work out where it came from.
-- **Make the harness check its own invariants between tests, not just the code's.** Shared
-  state that a test registers and the framework dispatches through — callbacks, listeners,
-  handles, anything holding a pointer to a fixture — has to be given back when the fixture
-  goes. When it is not, the next dispatch runs against a dead object, and the damage lands
-  in whichever unrelated test happens to be running: it fails by corruption rather than by
-  assertion, so the failing test is never the one at fault.
-
-  A check that the registry ends each test as it began turns that into a named failure at
-  the test that caused it. Compare against the state before the first test rather than
-  against empty, so fixtures that legitimately install something for the whole run are not
-  reported. Restore what you found, so one fault is reported once instead of by every test
-  after it.
-
-  Run the check *outside* the test, and be careful how it reports. A framework whose failure
-  path is a non-local jump will jump to a stale target if you call its assertion macros
-  after the test has returned — which corrupts the run instead of reporting it. Collect the
-  findings and fail one synthetic test at the end.
-
-  It is also a diagnostic, not only a guard: a clean report at every boundary told me a
-  dangling pointer I was hunting could not have been left by an earlier test, which is half
-  the answer for the cost of running the suite once.
 - **Run the suite under a sanitizer once it is worth trusting.** Coverage says a line ran
   and mutation says a test noticed; neither says the suite is reading memory it owns. A
   fixture that outlives the registration pointing at it, or an undersized buffer handed to
@@ -187,6 +135,8 @@ toolchain. Slower per mutant, but it measures the code that actually ships.
   mistakes live. Expect it also to disagree with the ordinary build about a result or two,
   because it changes the optimisation level; when it does, the assertion that moved was
   pinning the compiler rather than the code, and is worth knowing about either way.
+
+## State that leaks between tests
 
 **A fixture that relies on a destructor is unsafe to fail inside.** Many test frameworks
 implement a failed assertion as a non-local jump out of the test, which unwinds no stack: the
@@ -239,6 +189,33 @@ when it succeeds, not only when it fails. Then prove the list: inject a fault th
 fail mid-operation and confirm exactly one test fails. A second failure elsewhere is the teardown
 telling you what it still does not know about.
 
+**And the state to reset is not only the state your tests set.** A leak can compose out of
+behaviours that are each correct: one test sets a value, the system reacts by entering a mode,
+that mode arms a monitor, and the monitor acts on the *next* test that idles — which is where
+the damage appears, with nothing in it referring to any of the three. Resetting what the test
+touched is not enough, because the test touched the first link only.
+
+Find these by instrumenting the boundary, not by reasoning about which feature could have done
+it. Print the offending state after every test and stop at the first one that shows it; that
+names the culprit in one run, where working backwards from the symptom names candidates for an
+afternoon. Then fix it where the reaction was — the reset belongs next to whatever sets the
+first link, because the two are one leak rather than two.
+
+The damage lands in a later, unrelated test, and it is usually not a failure. Expect the suite
+to hang or to slow down rather than to report anything: a leaked mode leaves later code waiting
+on a condition nothing will now satisfy, and a leaked *scale* — anything that multiplies how
+much work every subsequent operation does — makes the run take minutes instead of seconds with
+every test still passing. That is worse than a wrong answer, because there is nothing in the
+output to read.
+
+Put the restoration where the jump lands: in the framework's between-tests hook, not in the
+fixture. Two cautions when you do. Capture the baseline at a moment when the state is real —
+capturing before the system under test has initialised records zeros and then *imposes* them
+after every test, which is the same fault with the sign flipped, and it looks like a fix.
+And this is why an injected-fault control belongs in the harness check: it was injecting a
+known fix and watching a green suite become one that had to be killed that exposed both leaks
+here, neither of which any passing run could have shown.
+
 **The teardown runs outside the protections every test has, and it is not exempt from the rules
 they exist for.** Fixtures redirect output, silence a channel, stand in for a consumer, hold a
 lock — and all of that is scoped to the test. The between-tests hook runs after the last of it
@@ -288,22 +265,72 @@ without touching any fixture. A skipped destructor then leaks a small allocation
 corrupting the process. Make the registry a list rather than a single slot — these things nest,
 because a helper opens one while its caller already holds one.
 
-**Where the system special-cases a dimension, check that your fixture configures it.** Many
-systems have one axis, column, channel or tier that the rest of the code treats differently — and
-the helper that means "all of them" usually excludes it, because it was written for the ordinary
-ones. A fixture that sets limits by iterating that helper leaves the special one at whatever its
-storage was zero-initialised to.
+- **Make the harness check its own invariants between tests, not just the code's.** Shared
+  state that a test registers and the framework dispatches through — callbacks, listeners,
+  handles, anything holding a pointer to a fixture — has to be given back when the fixture
+  goes. When it is not, the next dispatch runs against a dead object, and the damage lands
+  in whichever unrelated test happens to be running: it fails by corruption rather than by
+  assertion, so the failing test is never the one at fault.
 
-The failure mode is what makes this expensive: **an unset limit does not refuse the operation, it
-scales it.** Zero throughput, zero acceleration, zero batch size — the code takes the correct path,
-produces the correct result, and arrives in the correct state, arbitrarily slowly. Nothing throws
-and nothing asserts. What you see is a suite that stopped finishing, usually first noticed in an
-unrelated test whose duration depends on accumulated state.
+  A check that the registry ends each test as it began turns that into a named failure at
+  the test that caused it. Compare against the state before the first test rather than
+  against empty, so fixtures that legitimately install something for the whole run are not
+  reported. Restore what you found, so one fault is reported once instead of by every test
+  after it.
 
-Two habits make it cheap instead. Set the whole configuration in one loop over the widest
-enumeration available rather than several loops over narrower ones — the bug here lived in the gap
-between two such loops that differed by exactly one element. And when a value is a *limit*, prefer
-a fixture that fails loudly on zero to one that inherits it.
+  Run the check *outside* the test, and be careful how it reports. A framework whose failure
+  path is a non-local jump will jump to a stale target if you call its assertion macros
+  after the test has returned — which corrupts the run instead of reporting it. Collect the
+  findings and fail one synthetic test at the end.
+
+  It is also a diagnostic, not only a guard: a clean report at every boundary told me a
+  dangling pointer I was hunting could not have been left by an earlier test, which is half
+  the answer for the cost of running the suite once.
+
+## Diagnosing a harness fault
+
+**A harness whose clock only moves on request cannot terminate the product's timed waits, and
+scores the resulting hangs as detections.** That failure is filed in `scoring.md`, because what it
+damages is the number — but the *fix* is here, in the fake: let a poll that finds nothing charge
+the simulated clock, at a rate a test declares and zero by default. Read it there before
+concluding that a target simply hangs under mutation.
+
+
+- **When a virtual call arrives somewhere impossible, dump the dispatch table.** Symptoms
+  that no ordinary bug explains — a call landing in another class's method, cleanup emitted
+  but never run, an object that is provably intact behaving as though it were not — are
+  usually a *definition* problem rather than a runtime one. In languages that emit
+  per-class dispatch tables, print the table for the type involved and read the entries.
+  It takes one command and it either names the wrong function immediately or rules the
+  whole class of cause out.
+
+  The cause worth suspecting first is **two definitions sharing one name**. Test fixtures
+  are unusually prone to it: they live in headers, they are written quickly, they are named
+  for the thing they stand in for — so two different fixtures for two different aspects of
+  the same physical part end up with the same obvious name. Where the language merges such
+  definitions silently, one wins and objects of the other get its behaviour, with no
+  diagnostic at compile or link time.
+
+  Search the fixture directory for the name before adding a type to it. That is a
+  one-second check against a fault that presents as memory corruption and reads, from
+  every angle except the dispatch table, as something else entirely.
+
+- **A sanitizer's first report is where the damage surfaced, not always where it began.**
+  One fault can produce several, and the tool stops at the first one it meets. If the first
+  report describes a *read* of something already dead, look for the *write* that killed it:
+  most sanitizers can be told to suppress a category so the run continues to the next
+  finding, and the second report is often the cause of the first.
+
+  The tell is a symptom no ordinary bug explains. Cleanup that is emitted but never runs,
+  an object constructed and never destroyed while its neighbours in the same frame are, a
+  failure that moves when unrelated code changes — those are not lifetime bugs, they are
+  what a large stray write looks like from the inside. Do not build a theory that explains
+  them as ordinary; find the write.
+
+  And treat any fixture that writes a large buffer from a callback as a hazard in itself,
+  separately from whatever aims it. A small stray write corrupts one thing and is hard to
+  find; a kilobyte-scale one destroys the evidence, including the frames you would use to
+  work out where it came from.
 
 **When one operation is slow and a related one is not, look for what the fast path selects that
 the slow path does not.** The decisive measurement in the case above was not removing things until
@@ -330,32 +357,38 @@ still; it is not the cheaper option when it will. And when a defensive fix is ke
 was correct hygiene, just not the fix — say so where it lives, or the next reader takes it for
 the explanation and stops looking.
 
-**And the state to reset is not only the state your tests set.** A leak can compose out of
-behaviours that are each correct: one test sets a value, the system reacts by entering a mode,
-that mode arms a monitor, and the monitor acts on the *next* test that idles — which is where
-the damage appears, with nothing in it referring to any of the three. Resetting what the test
-touched is not enough, because the test touched the first link only.
+**Find the caller; do not assume the obvious owner.** A test that drives a feature has to
+invoke whatever the production code actually invokes, and the function that *looks* like the
+owner is often not it — periodic work gets hung off whichever loop was convenient, so a
+temperature adjustment can be driven from the motion subsystem and a cache refresh from the
+display. Guessing costs a full build-and-run and, worse, produces a test that fails against
+working code, which reads as a defect until it is chased down.
 
-Find these by instrumenting the boundary, not by reasoning about which feature could have done
-it. Print the offending state after every test and stop at the first one that shows it; that
-names the culprit in one run, where working backwards from the symptom names candidates for an
-afternoon. Then fix it where the reaction was — the reset belongs next to whatever sets the
-first link, because the two are one leak rather than two.
+Grep for the call site before writing the test, not after it fails. The same applies to the
+*order* of set-up calls: where one setter deliberately clears the state another sets — an
+explicit command overriding an automatic mode is the usual reason — doing it in the wrong order
+switches off the thing under test in the line after enabling it, and the test then fails
+honestly against a system that is fine. Prefer driving set-up through the same public entry
+point a user would, which gets the order right by construction.
 
-The damage lands in a later, unrelated test, and it is usually not a failure. Expect the suite
-to hang or to slow down rather than to report anything: a leaked mode leaves later code waiting
-on a condition nothing will now satisfy, and a leaked *scale* — anything that multiplies how
-much work every subsequent operation does — makes the run take minutes instead of seconds with
-every test still passing. That is worse than a wrong answer, because there is nothing in the
-output to read.
+## Fixtures that quietly disagree with the system
 
-Put the restoration where the jump lands: in the framework's between-tests hook, not in the
-fixture. Two cautions when you do. Capture the baseline at a moment when the state is real —
-capturing before the system under test has initialised records zeros and then *imposes* them
-after every test, which is the same fault with the sign flipped, and it looks like a fix.
-And this is why an injected-fault control belongs in the harness check: it was injecting a
-known fix and watching a green suite become one that had to be killed that exposed both leaks
-here, neither of which any passing run could have shown.
+**Where the system special-cases a dimension, check that your fixture configures it.** Many
+systems have one axis, column, channel or tier that the rest of the code treats differently — and
+the helper that means "all of them" usually excludes it, because it was written for the ordinary
+ones. A fixture that sets limits by iterating that helper leaves the special one at whatever its
+storage was zero-initialised to.
+
+The failure mode is what makes this expensive: **an unset limit does not refuse the operation, it
+scales it.** Zero throughput, zero acceleration, zero batch size — the code takes the correct path,
+produces the correct result, and arrives in the correct state, arbitrarily slowly. Nothing throws
+and nothing asserts. What you see is a suite that stopped finishing, usually first noticed in an
+unrelated test whose duration depends on accumulated state.
+
+Two habits make it cheap instead. Set the whole configuration in one loop over the widest
+enumeration available rather than several loops over narrower ones — the bug here lived in the gap
+between two such loops that differed by exactly one element. And when a value is a *limit*, prefer
+a fixture that fails loudly on zero to one that inherits it.
 
 **A shared fixture accumulates, so derive quantities from it rather than from what your test
 put there.** Where the suite shares one instance of something with state — a database, a
@@ -388,19 +421,7 @@ the code, and it will say something different in every variant. Where the behavi
 is a *rule*, state the size in the test; where it is *what fits*, that is a different test and
 should say so.
 
-**Find the caller; do not assume the obvious owner.** A test that drives a feature has to
-invoke whatever the production code actually invokes, and the function that *looks* like the
-owner is often not it — periodic work gets hung off whichever loop was convenient, so a
-temperature adjustment can be driven from the motion subsystem and a cache refresh from the
-display. Guessing costs a full build-and-run and, worse, produces a test that fails against
-working code, which reads as a defect until it is chased down.
-
-Grep for the call site before writing the test, not after it fails. The same applies to the
-*order* of set-up calls: where one setter deliberately clears the state another sets — an
-explicit command overriding an automatic mode is the usual reason — doing it in the wrong order
-switches off the thing under test in the line after enabling it, and the test then fails
-honestly against a system that is fine. Prefer driving set-up through the same public entry
-point a user would, which gets the order right by construction.
+## The instrument and the measurement
 
 **The act of testing can destroy the instrument that measures it.** Coverage builds, profiling
 data and instrumented binaries are build artifacts, and the ordinary test targets are entitled

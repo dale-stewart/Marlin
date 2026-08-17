@@ -31,7 +31,7 @@ rather than loaded here.
 | `reference/harness-validation.md` | Step 3, before trusting any score |
 | `reference/survivor-taxonomy.md` | Step 4, before writing a test for a survivor |
 | `reference/assertion-patterns.md` | Step 4, once a survivor is confirmed killable |
-| `reference/scoring.md` | Any time a number is reported |
+| `reference/scoring.md` | Any time a number is reported — and before choosing what to measure, since it says which code a mutation run pays off on |
 | `reference/acceptance-scenarios.md` | Steps 6-7 |
 | `reference/refactor-frontier.md` | Step 8, and whenever a surface change is proposed |
 | `reference/delegation.md` | Before handing any step to an agent |
@@ -171,6 +171,11 @@ be far below the coverage number, and treat that gap as the real backlog.
   decide whether to abandon a run. It has caught us twice — once reading six hours
   from a warm-up that finished in one, and once reading three hours from a run that
   had reached five mutants a minute and went on to two hundred.
+
+**If the tool cannot reach the target at all**, that is a finding rather than a dead end:
+`reference/refactor-frontier.md` has the remedy — relocating logic into a unit the instruments
+can see is pure relocation, changes no behaviour, and is usually cheaper than teaching the tool
+about the unit it cannot compile. Read that section now rather than at step 8.
 
 **Then validate the harness before believing any of it** — every harness, every time.
 `reference/harness-validation.md` is that work, and `harness-validator` is the agent

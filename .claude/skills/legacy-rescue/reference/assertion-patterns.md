@@ -7,6 +7,11 @@ The governing idea is the first rule below: assert what the domain guarantees, n
 the code happened to return. Everything after it is a way that an assertion can look
 substantial and say nothing.
 
+- **Before any of this: check the test is exercising the same code the product builds.** Where the
+  target is generic — instantiated per type, per size, per parameter — a fixture that chooses its
+  own parameter exercises a copy the product never compiles, and every assertion below will hold
+  of that copy. `scoring.md` has the full rule and the tell; the short version is to take the
+  parameter from the real caller rather than picking a comfortable one.
 - **Assert derived relationships, not recorded outputs.** The highest-yield tests state
   something that follows from the domain and would be hard to satisfy by accident: a
   known invariant, a conservation law, a scaling relation ("doubling the input doubles
@@ -348,7 +353,7 @@ substantial and say nothing.
   literal input at least looks like a choice; a literal *result* looks like a fact about the
   system. Ours asserted a name truncated to twenty-six characters — correct in the build it
   was written in, wrong in the one where the same limit is five chunks rather than two, where
-  the name came back whole and the test failed as if the firmware had changed. Written as
+  the name came back whole and the test failed as if the product had changed. Written as
   `limit * chunk_size` it holds in both, and it says which rule it is testing rather than
   which build it was run in.
 
