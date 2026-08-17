@@ -663,6 +663,37 @@ turn it back into a duplicate.
 `binary_stream.cpp` **91% -> 92%**, and 31 more decoder survivors killed by assertion. The tree
 77.9% -> 78.2%.
 
+### The split packet, and a test mutation testing cannot value
+
+Last of the decoder's edges, and the case every real upload is actually made of. A file arrives as
+many packets and nothing aligns a packet boundary with a token boundary — a literal is nine bits,
+a back reference thirteen — so a packet almost always ends part way through one. The decoder has
+to hold the bits it has, say it needs more, and carry on when the next packet arrives.
+
+The failure it guards against is quiet in the worst way. A decoder that restarted per packet would
+still decode each packet to *something*, the transfer would still succeed, and the file would be
+wrong only at the seams: a few corrupt bytes every hundred, which is the damage pattern nobody
+notices until the print — or the firmware — misbehaves.
+
+**The first injection I reached for did not justify the test.** Disabling the starvation check
+fails the single-packet test as well, because a payload runs out at its end too, so that path was
+already exercised. What the split test uniquely pins needed a different probe: adding
+`heatshrink_decoder_reset()` to each `file_write`, the shape a future maintainer would most
+plausibly introduce. That fails **exactly one test** — this one.
+
+And here is the part worth keeping. **It killed 4 survivors.** Four, by assertion, out of 238.
+
+That is not a weak test; it is a guarantee that mutation testing cannot express. The probe that
+justified it was an *added line*, and a mutator only deletes and alters text that is already
+there — so "someone reuses this decoder and resets it per call" is nowhere in the mutant
+population. The score measures small edits to code that exists; a test can defend against a
+plausible *rewrite* and score nothing for it.
+
+This is a second, distinct reason a valuable test moves no number, and it is worth keeping apart
+from the first. Earlier the back-reference test killed nothing because the code it pinned lived in
+another file. Here the code is in the target and the *fault* is out of reach. Both look identical
+in a report, and in both the available inference — "revert it" — is wrong.
+
 **One injection is worth recording for what it says about the target rather than the test.**
 Removing the decoder's `if (hsd->output_count < count) count = hsd->output_count;` — the clamp
 that stops a back reference writing past the caller's buffer — fails twenty-six tests across the

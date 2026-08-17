@@ -1123,6 +1123,65 @@ MARLIN_TEST(binary_stream, a_transfer_longer_than_the_decode_buffer_is_joined_co
     "boundary still produces the right number of bytes");
 }
 
+/**
+ * A compressed stream split across packets is resumed, not restarted.
+ *
+ * The case every real upload is made of, and the last one untested. A file is sent as many
+ * packets, and nothing aligns a packet boundary with a token boundary — a literal is nine bits
+ * and a back reference thirteen, so a packet almost always ends part way through one. The
+ * decoder has to hold the bits it has, report that it needs more, and carry on when the next
+ * packet arrives.
+ *
+ * If it did not, the failure would be quiet in the worst way: each packet would decode to
+ * *something*, the transfer would succeed, and the file would be wrong only at the seams. On a
+ * long upload that is a handful of corrupt bytes every hundred, which is exactly the damage
+ * pattern nobody notices until the print — or the firmware — misbehaves.
+ *
+ * The split is deliberately at an odd byte so it lands mid-token rather than between tokens, and
+ * the expected text is the same pattern as the single-packet test, so this differs from that one
+ * only in how the bytes arrived. That is the point of it: same input, same output, different
+ * arrival.
+ */
+MARLIN_TEST(binary_stream, a_compressed_stream_split_across_packets_is_resumed) {
+  FreshTransfer transfer;
+
+  const std::string pattern = "0123456789ABCDEF";
+  const int repeats = 40;
+  std::string expected = pattern;
+
+  HeatshrinkStream stream;
+  for (const unsigned char c : pattern) stream.literal(c);
+  for (int i = 0; i < repeats; ++i) { stream.backref(16, 16); expected += pattern; }
+  const std::string payload = stream.bytes();
+
+  // 41 bytes is 328 bits: past the sixteen literals (144) and 14.15 back references in, so the
+  // first packet ends part way through a token rather than politely between two.
+  const size_t split = 41;
+  TEST_ASSERT_TRUE_MESSAGE(split < payload.size(), "the split has to leave something for the second packet");
+
+  transfer.send_file_packet(FILE_OPEN, open_payload("split.gco", false, /*compressed=*/true));
+  transfer.send_file_packet(FILE_WRITE, payload.substr(0, split));
+  transfer.send_file_packet(FILE_WRITE, payload.substr(split));
+  TEST_ASSERT_TRUE_MESSAGE(said(transfer.send_file_packet(FILE_CLOSE), "PFT:success"),
+    "the transfer should close cleanly");
+
+  NoHostAttached quiet;
+  card.mount();
+  card.openFileRead("split.gco");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(), "the file should exist on the card");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(expected.size(), card.getFileSize(),
+    "and be the same length as the same stream sent in one packet - a decoder that restarted at "
+    "the packet boundary would drop the token it was part way through");
+
+  std::vector<char> back(expected.size() + 1, '\0');
+  card.read(back.data(), expected.size());
+  card.closefile();
+
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(expected.c_str(), back.data(),
+    "and byte for byte the same file - a seam that decodes to something plausible is the damage "
+    "nobody notices until the print goes wrong");
+}
+
 MARLIN_TEST(binary_stream, binary_mode_hands_the_port_to_the_stream_rather_than_the_parser) {
   FreshStream stream;
   queue.clear();

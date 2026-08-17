@@ -32,6 +32,22 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
   visible. Silent success on a target that was never really mutated is the bad one, and the tell
   is a suspiciously perfect score over a suspiciously small mutant population.
 
+- **The mutant population is small edits to code that exists — so a whole class of guarantee
+  cannot score.** A mutator deletes and alters text that is already there. It does not *add*
+  anything, and it does not restructure. So a test defending against a plausible future
+  rewrite — state reset where it should have persisted, a call moved inside a loop, a resource
+  reacquired per item instead of held — has no corresponding mutant, and killing zero is the only
+  possible outcome no matter how good the test is.
+
+  The tell is that the probe you used to justify the test was an *insertion* rather than an edit.
+  When that happens, say so and keep the test: the injection is the evidence, and the score was
+  never able to be. Ours pinned that a decoder's state survives across input chunks, proved it by
+  adding a reset that failed exactly one test in the suite, and killed four mutants out of 238.
+
+  Keep this apart from the case below where the code lives elsewhere — they look identical in a
+  report and have different causes. There the *code* is out of the target; here the *fault* is out
+  of the population.
+
 - **A test can add real coverage and real assertions and move the target's score not at all.**
   A mutation score is about one *file*; a guarantee is usually about a *path through several*.
   Where the behaviour you just pinned is implemented in a dependency — a decoder, a formatter, a
