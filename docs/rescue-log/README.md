@@ -24,6 +24,7 @@ there, or a test was written against a fixture note that had stopped being true.
 | [pause-and-filament.md](pause-and-filament.md) | `pause.cpp` and `e_parser.cpp`, and the fixture fault beneath them |
 | [binary-transfer.md](binary-transfer.md) | `binary_stream.h`, the framed packet protocol |
 | [sd-and-files.md](sd-and-files.md) | `SdBaseFile.cpp` — why its coverage gap is four fifths unused library API |
+| [what-coverage-predicted.md](what-coverage-predicted.md) | `numtostr`, `utf8` and `SdVolume` measured together — 96.5%, 90.7%, 55.1%, and why coverage did not predict the order |
 | [survey-2026-08-14.md](survey-2026-08-14.md) | What is left, measured — the evidence base for choosing a target |
 
 ## Where a finding goes

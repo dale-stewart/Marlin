@@ -48,6 +48,23 @@ re-checks.
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **A fixture that only builds valid input leaves every validator covered and unexercised.**
+  Watch for a survivor cluster sitting inside a single guard-shaped function — a parser's
+  well-formedness checks, a loader's header validation, a request's schema test. They run on
+  every test, because everything goes through them, so coverage is satisfied; and none of them
+  has ever been given something to *reject*, so removing any of them changes nothing.
+
+  The cause is usually one fixture that constructs one perfect example, shared by the whole
+  suite. Ours built exactly one valid filesystem volume, and **151 of 290 survivors in that file
+  were its boot-sector checks** — more than half the file's entire remaining gap, from one
+  missing input class.
+
+  This is the "needs an input, not an assertion" category wearing a disguise, and it is usually
+  cheap to close: a fixture that already builds the structure field by field can be asked to
+  build a broken one with a parameter rather than a new mechanism. It is also worth doing rather
+  than dismissing, because validators exist for input you did not write — a corrupt file, a
+  foreign disk, a hostile request — and untested ones fail open.
+
 - **Some mutants are detected by everything and pinned by nothing — safety invariants.**
   Removing a bounds clamp, a null guard, an overflow check or a capacity limit does not change
   what the code *decides*; it changes whether the code stays inside its own memory. Under mutation

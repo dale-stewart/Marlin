@@ -4,6 +4,22 @@ Loaded from `legacy-rescue` Steps 3 and 5. Any agent reporting a score reads thi
 
 **Scoring conventions**, stated up front so the number means something:
 
+- **How far the mutation score sits below the coverage number is a property of the code, not of
+  the coverage.** Three files measured together, all well covered and none previously mutated:
+  a pure formatter at 98% coverage scored 96.5%; a decoder at 100% scored 90.7%; a stateful
+  allocator at 75% scored 55.1%. The order does not follow the coverage at all — the 100% file
+  scored below the 98% one.
+
+  What it follows is **how directly the code's decisions are observed**. Pure functions asserted
+  on their exact output have nowhere for a wrong decision to hide. Code whose effects are seen
+  several layers away, through some later operation, can execute completely while almost nothing
+  it decides ever reaches an assertion.
+
+  Use it to schedule: mutation runs are expensive, and they buy least on pure code with exact
+  assertions and most on stateful code observed indirectly. And use it to set expectations before
+  the run, so a high score is not read as "the tool found nothing useful" — on the pure file it
+  is the correct answer.
+
 - Timeout = **killed**. A mutant that hangs is a mutant the suite detected.
 - **Derive the timeout from the measured suite runtime, and record it beside the score.**
   Because a timeout counts as detected, one that is too tight converts survivors into
