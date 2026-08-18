@@ -341,6 +341,33 @@ and it is why these mutants stay classified by reasoning rather than by diagnosi
 Recorded rather than fixed: the cause is somewhere between the sanitizer's reporting path and a
 test HAL whose peripherals are backed by real signals, and finding it is its own piece of work.
 
+### `diveToFile`: two levels again, and the same shape a third time
+
+`diveToFile()` cannot hold a whole path open at once. It keeps two scratch `MediaFile` objects and
+alternates: open the next directory into whichever one is free, close the one behind, swap.
+
+Both of those steps are dead at one level — the loop runs once, `inDirPtr` is still the starting
+directory so nothing is closed, and the swap happens on the way out of a loop that will not run
+again. Every path test here opened something exactly one directory down, including the two whose
+names suggest otherwise.
+
+`a_path_two_directories_deep_is_walked_with_both_scratch_objects` opens `/ALPHA/BETA/BURIED.GCO`
+in a single call and asserts the rebuilt working directory, which is what says *both* levels were
+recorded on the way down. Removing the alternation fails exactly that test and nothing else.
+`cardreader.cpp` 62.6% -> **63.3%**.
+
+**The second injection failed nothing, and that is the classification.** Never closing the
+intermediate directory leaves a scratch object open that will be reused and closed later anyway;
+the only cost is resource hygiene, which nothing observes. Those mutants are unkillable for the
+same reason the bounds clamp was — an invariant whose whole purpose is that nothing else notices.
+
+**This is the third cluster in a row explained by "one level is not enough".** The long-filename
+decoder needed two VFAT chunks, `printListing` needed a subdirectory inside a subdirectory, and
+`diveToFile` needs two directories in one path. In each case a passing test existed at depth one
+and the interesting branch begins at depth two, because the first iteration is always the special
+case — nothing to prepend, nothing to close, nothing to swap. Worth carrying as a habit: **where
+code walks a structure, the test that matters is the second step, not the first.**
+
 ## What is left
 
 Fifty-six lines, scattered across the `open` overloads, `write`, `openRoot`, and a handful of

@@ -334,6 +334,55 @@ MARLIN_TEST(media_directories, opening_an_absolute_path_rebuilds_the_working_dir
   TEST_ASSERT_FALSE_MESSAGE(card.flag.workDirIsRoot, "one directory down is not the root");
 }
 
+/**
+ * A path two directories deep is walked with two scratch objects, alternately.
+ *
+ * `diveToFile()` cannot hold the whole chain open — it keeps two `MediaFile` scratch objects and
+ * ping-pongs between them, opening the next directory into whichever one is not currently in use
+ * and closing the one behind it:
+ *
+ *     if (inDirPtr != startDirPtr) inDirPtr->close();
+ *     inDirPtr = sub;
+ *     sub = (inDirPtr != &newDir1) ? &newDir1 : &newDir2;
+ *
+ * Both of those lines are dead at one level. The loop runs once, `inDirPtr` is still the starting
+ * directory so nothing is closed, and the swap happens on the way out of a loop that will not run
+ * again. Every path test here — including the two below, which look like deep-path tests — opens
+ * something one directory down.
+ *
+ * Two levels is the smallest path that makes the alternation matter: the second iteration has to
+ * open into the *other* object, because the first one is still the directory it is opening from.
+ * Getting that wrong means opening a directory into the object being read from, which is the kind
+ * of fault that produces a file that cannot be found rather than a diagnostic.
+ *
+ * The rebuilt working directory is asserted rather than just the open succeeding, because that is
+ * what says both levels were recorded on the way down.
+ */
+MARLIN_TEST(media_directories, a_path_two_directories_deep_is_walked_with_both_scratch_objects) {
+  NoHostAttached quiet;
+  start_at_the_root();
+
+  make_dir("ALPHA/BETA");
+  card.cd("ALPHA"); card.cd("BETA");
+  write_file_here("BURIED.GCO", "G28\n");
+  card.cdroot();
+
+  card.openFileRead("/ALPHA/BETA/BURIED.GCO");
+  TEST_ASSERT_TRUE_MESSAGE(card.isFileOpen(),
+    "a file two directories down should open from a single path - the walk has to alternate "
+    "between its two scratch objects to get there");
+
+  char got[MAXPATHNAMELENGTH] = { 0 }, want[MAXPATHNAMELENGTH] = { 0 };
+  card.getAbsFilenameInCWD(got);
+  card.closefile();
+
+  const char * const dirs[] = { "ALPHA", "BETA" };
+  expected_path(want, dirs, 2, "BURIED.GCO");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(want, got,
+    "and both directories should be recorded on the way down - a walk that kept only the last "
+    "one would still open the file and then be unable to say where it is");
+}
+
 // The same dive, ending at the root, says so.
 MARLIN_TEST(media_directories, opening_a_path_at_the_root_leaves_the_machine_at_the_root) {
   NoHostAttached quiet;

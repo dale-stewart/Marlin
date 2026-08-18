@@ -48,6 +48,21 @@ re-checks.
   operator, a reset, a signal that only exists in production — then the substitute is
   being accurate, and the instrument-defect exception does not apply however inconvenient
   that is.
+- **Where the code walks a structure, the branch you are missing usually begins at the second
+  step.** Recursion and iteration over a path, a chain, a tree or a stream almost always make the
+  first step a special case — there is nothing accumulated yet, nothing to join to, nothing to
+  release, no previous buffer to swap away from. So a test that exercises *one* level runs the
+  loop once and leaves every one of those branches untaken, while looking exactly like a test of
+  the traversal.
+
+  Three separate clusters in one target were this: a decoder needing two chunks rather than one,
+  a listing needing a directory inside a directory, a path walk needing two directories in one
+  request. Each already had a passing one-level test.
+
+  When a survivor cluster sits inside a loop or a recursive call, check the *depth* of the inputs
+  before concluding the assertions are weak. Going from one to two is usually a trivial change to
+  a fixture and is where the yield is.
+
 - **A fixture that only builds valid input leaves every validator covered and unexercised.**
   Watch for a survivor cluster sitting inside a single guard-shaped function — a parser's
   well-formedness checks, a loader's header validation, a request's schema test. They run on
